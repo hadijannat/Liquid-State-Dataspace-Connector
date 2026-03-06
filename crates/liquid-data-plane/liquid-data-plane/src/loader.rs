@@ -4,12 +4,14 @@ use chrono::{DateTime, Utc};
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::traits::{DataPlane, EnforcementHandle, EnforcementStatus};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[cfg(target_os = "linux")]
-use crate::maps::{ACTIVE_AGREEMENT_KEY, ACTIVE_AGREEMENT_MAP, PACKET_COUNT_MAP, RATE_LIMIT_MAP};
+use crate::maps::{
+    BYTE_COUNT_MAP, BYTE_LIMIT_MAP, PACKET_COUNT_MAP, PACKET_LIMIT_MAP, SESSION_AGREEMENT_MAP,
+};
 #[cfg(target_os = "linux")]
 use aya::{
     maps::HashMap as BpfHashMap,
@@ -24,16 +26,20 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 const XDP_PROGRAM_NAME: &str = "lsdc_xdp";
 
-/// The Liquid Data Plane enforces the reduced Sprint 0 policy DSL via XDP.
-///
-/// Linux hosts attach a real XDP program and populate maps.
-/// Other platforms keep the same lifecycle semantics in simulation mode.
 pub struct LiquidDataPlane {
-    inner: Arc<Inner>,
+    inner: Arc<Mutex<State>>,
 }
 
-struct Inner {
-    tracked: Mutex<HashMap<String, TrackedEnforcement>>,
+#[derive(Default)]
+struct State {
+    tracked: HashMap<String, TrackedEnforcement>,
+    interfaces: HashMap<String, InterfaceRuntime>,
+}
+
+struct InterfaceRuntime {
+    active_handles: HashSet<String>,
+    #[cfg(target_os = "linux")]
+    attachment: LinuxAttachment,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,19 +47,22 @@ enum LifecycleState {
     Active,
     Expired,
     Revoked,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[allow(dead_code)]
     Error(String),
 }
 
 struct TrackedEnforcement {
     interface: String,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[allow(dead_code)]
     enforcement_key: u32,
-    max_packets: u64,
+    session_port: u16,
+    #[allow(dead_code)]
+    max_packets: Option<u64>,
+    #[allow(dead_code)]
+    max_bytes: Option<u64>,
+    #[allow(dead_code)]
     expires_at: Option<DateTime<Utc>>,
     state: LifecycleState,
-    #[cfg(target_os = "linux")]
-    platform: Option<LinuxAttachment>,
 }
 
 #[cfg(target_os = "linux")]
@@ -65,9 +74,7 @@ struct LinuxAttachment {
 impl Default for LiquidDataPlane {
     fn default() -> Self {
         Self {
-            inner: Arc::new(Inner {
-                tracked: Mutex::new(HashMap::new()),
-            }),
+            inner: Arc::new(Mutex::new(State::default())),
         }
     }
 }
@@ -77,61 +84,8 @@ impl LiquidDataPlane {
         Self::default()
     }
 
-    /// Compile and return the reduced enforcement plan without attaching it.
     pub fn compile(&self, agreement: &ContractAgreement) -> Result<CompiledPolicy> {
         compile_agreement(agreement)
-    }
-
-    async fn reserve_tracking(
-        &self,
-        handle: &EnforcementHandle,
-        compiled: &CompiledPolicy,
-    ) -> Result<()> {
-        let mut tracked = self.inner.tracked.lock().await;
-        if tracked.values().any(|entry| {
-            entry.interface == handle.interface && entry.state == LifecycleState::Active
-        }) {
-            return Err(LsdcError::Enforcement(format!(
-                "interface `{}` already has an active agreement",
-                handle.interface
-            )));
-        }
-
-        tracked.insert(
-            handle.id.clone(),
-            TrackedEnforcement {
-                interface: handle.interface.clone(),
-                enforcement_key: compiled.enforcement_key,
-                max_packets: compiled.max_packets,
-                expires_at: compiled.expires_at,
-                state: LifecycleState::Active,
-                #[cfg(target_os = "linux")]
-                platform: None,
-            },
-        );
-
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    async fn remove_tracking(&self, handle_id: &str) {
-        self.inner.tracked.lock().await.remove(handle_id);
-    }
-
-    #[cfg(target_os = "linux")]
-    async fn install_linux_attachment(
-        &self,
-        handle_id: &str,
-        attachment: LinuxAttachment,
-    ) -> Result<()> {
-        let mut tracked = self.inner.tracked.lock().await;
-        let entry = tracked.get_mut(handle_id).ok_or_else(|| {
-            LsdcError::Enforcement(format!(
-                "cannot install Linux attachment for unknown handle `{handle_id}`"
-            ))
-        })?;
-        entry.platform = Some(attachment);
-        Ok(())
     }
 
     fn spawn_expiry_task(&self, handle_id: String, expires_at: Option<DateTime<Utc>>) {
@@ -146,49 +100,8 @@ impl LiquidDataPlane {
         let inner = self.inner.clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            let _ = inner.deactivate(&handle_id, LifecycleState::Expired).await;
+            let _ = deactivate_inner(&inner, &handle_id, LifecycleState::Expired).await;
         });
-    }
-}
-
-impl Inner {
-    #[cfg(target_os = "linux")]
-    async fn deactivate(&self, handle_id: &str, next_state: LifecycleState) -> Result<()> {
-        let platform = {
-            let mut tracked = self.tracked.lock().await;
-            let Some(entry) = tracked.get_mut(handle_id) else {
-                return Ok(());
-            };
-
-            if entry.state != LifecycleState::Active {
-                return Ok(());
-            }
-
-            entry.state = next_state;
-            entry.platform.take()
-        };
-        if let Some(attachment) = platform {
-            if let Err(err) = detach_linux(attachment) {
-                let mut tracked = self.tracked.lock().await;
-                if let Some(entry) = tracked.get_mut(handle_id) {
-                    entry.state = LifecycleState::Error(err.to_string());
-                }
-                return Err(err);
-            }
-        }
-
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    async fn deactivate(&self, handle_id: &str, next_state: LifecycleState) -> Result<()> {
-        let mut tracked = self.tracked.lock().await;
-        if let Some(entry) = tracked.get_mut(handle_id) {
-            if entry.state == LifecycleState::Active {
-                entry.state = next_state;
-            }
-        }
-        Ok(())
     }
 }
 
@@ -200,55 +113,95 @@ impl DataPlane for LiquidDataPlane {
         iface: &str,
     ) -> Result<EnforcementHandle> {
         let compiled = compile_agreement(agreement)?;
-        tracing::info!(
-            agreement_id = %compiled.agreement_id,
-            enforcement_key = compiled.enforcement_key,
-            max_packets = compiled.max_packets,
-            interface = iface,
-            "Enforcing Sprint 0 packet-cap policy"
-        );
-
         let handle = EnforcementHandle {
             id: agreement.agreement_id.0.clone(),
             interface: iface.to_string(),
+            session_port: compiled.session_port,
             active: true,
         };
 
-        self.reserve_tracking(&handle, &compiled).await?;
-
-        #[cfg(target_os = "linux")]
         {
-            match enforce_linux(&compiled, iface).await {
-                Ok(attachment) => {
-                    self.install_linux_attachment(&handle.id, attachment)
-                        .await?
-                }
-                Err(err) => {
-                    self.remove_tracking(&handle.id).await;
-                    return Err(err);
+            let mut state = self.inner.lock().await;
+            let State { tracked, interfaces } = &mut *state;
+
+            if tracked
+                .get(&handle.id)
+                .is_some_and(|entry| entry.state == LifecycleState::Active)
+            {
+                return Err(LsdcError::Enforcement(format!(
+                    "agreement `{}` is already active",
+                    handle.id
+                )));
+            }
+
+            if tracked.values().any(|entry| {
+                entry.interface == handle.interface
+                    && entry.session_port == compiled.session_port
+                    && entry.state == LifecycleState::Active
+            }) {
+                return Err(LsdcError::Enforcement(format!(
+                    "session port `{}` is already active on interface `{}`",
+                    compiled.session_port, handle.interface
+                )));
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                if let Some(runtime) = interfaces.get_mut(iface) {
+                    insert_linux_maps(&mut runtime.attachment.ebpf, &compiled)?;
+                } else {
+                    let mut attachment = attach_linux(iface)?;
+                    insert_linux_maps(&mut attachment.ebpf, &compiled)?;
+                    interfaces.insert(
+                        iface.to_string(),
+                        InterfaceRuntime {
+                            active_handles: HashSet::new(),
+                            attachment,
+                        },
+                    );
                 }
             }
-        }
 
-        #[cfg(not(target_os = "linux"))]
-        tracing::warn!(
-            agreement_id = %compiled.agreement_id,
-            "Non-Linux platform: running in simulation mode"
-        );
+            #[cfg(not(target_os = "linux"))]
+            {
+                interfaces
+                    .entry(iface.to_string())
+                    .or_insert_with(|| InterfaceRuntime {
+                        active_handles: HashSet::new(),
+                    });
+            }
+
+            interfaces
+                .get_mut(iface)
+                .expect("interface runtime must exist after install")
+                .active_handles
+                .insert(handle.id.clone());
+
+            tracked.insert(
+                handle.id.clone(),
+                TrackedEnforcement {
+                    interface: handle.interface.clone(),
+                    enforcement_key: compiled.enforcement_key,
+                    session_port: compiled.session_port,
+                    max_packets: compiled.max_packets,
+                    max_bytes: compiled.max_bytes,
+                    expires_at: compiled.expires_at,
+                    state: LifecycleState::Active,
+                },
+            );
+        }
 
         self.spawn_expiry_task(handle.id.clone(), compiled.expires_at);
         Ok(handle)
     }
 
     async fn revoke(&self, handle: &EnforcementHandle) -> Result<()> {
-        tracing::info!(handle_id = %handle.id, "Revoking enforcement");
-        self.inner
-            .deactivate(&handle.id, LifecycleState::Revoked)
-            .await
+        deactivate_inner(&self.inner, &handle.id, LifecycleState::Revoked).await
     }
 
     async fn status(&self, handle: &EnforcementHandle) -> Result<EnforcementStatus> {
-        let tracked = self.inner.tracked.lock().await;
+        let state = self.inner.lock().await;
+        let tracked = &state.tracked;
         let Some(entry) = tracked.get(&handle.id) else {
             return Ok(EnforcementStatus::Revoked);
         };
@@ -256,23 +209,21 @@ impl DataPlane for LiquidDataPlane {
         match &entry.state {
             LifecycleState::Active => {
                 #[cfg(target_os = "linux")]
-                let packets_processed = match entry.platform.as_ref() {
-                    Some(platform) => read_packet_count(platform, entry.enforcement_key)?,
-                    None => 0,
-                };
+                let (packets_processed, bytes_processed) =
+                    if let Some(interface) = interfaces.get(&entry.interface) {
+                        read_counters(&interface.attachment, entry.enforcement_key)?
+                    } else {
+                        (0, 0)
+                    };
 
                 #[cfg(not(target_os = "linux"))]
-                let packets_processed = 0;
+                let (packets_processed, bytes_processed) = (0, 0);
 
-                tracing::debug!(
-                    handle_id = %handle.id,
-                    max_packets = entry.max_packets,
-                    expires_at = ?entry.expires_at,
+                Ok(EnforcementStatus::Active {
                     packets_processed,
-                    "Read enforcement status"
-                );
-
-                Ok(EnforcementStatus::Active { packets_processed })
+                    bytes_processed,
+                    session_port: entry.session_port,
+                })
             }
             LifecycleState::Expired => Ok(EnforcementStatus::Expired),
             LifecycleState::Revoked => Ok(EnforcementStatus::Revoked),
@@ -281,11 +232,71 @@ impl DataPlane for LiquidDataPlane {
     }
 }
 
-#[cfg(target_os = "linux")]
-async fn enforce_linux(compiled: &CompiledPolicy, iface: &str) -> Result<LinuxAttachment> {
-    let mut ebpf = load_ebpf_object()?;
-    populate_linux_maps(&mut ebpf, compiled)?;
+async fn deactivate_inner(
+    inner: &Arc<Mutex<State>>,
+    handle_id: &str,
+    next_state: LifecycleState,
+) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    let mut detach: Option<LinuxAttachment> = None;
 
+    {
+        let mut state = inner.lock().await;
+        let State { tracked, interfaces } = &mut *state;
+        let Some(entry) = tracked.get_mut(handle_id) else {
+            return Ok(());
+        };
+
+        if entry.state != LifecycleState::Active {
+            return Ok(());
+        }
+
+        entry.state = next_state;
+        let interface_name = entry.interface.clone();
+        #[cfg(target_os = "linux")]
+        let enforcement_key = entry.enforcement_key;
+        #[cfg(target_os = "linux")]
+        let session_port = entry.session_port;
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(interface) = interfaces.get_mut(&interface_name) {
+                if let Err(err) =
+                    remove_linux_maps(&mut interface.attachment.ebpf, enforcement_key, session_port)
+                {
+                    entry.state = LifecycleState::Error(err.to_string());
+                    return Err(err);
+                }
+
+                interface.active_handles.remove(handle_id);
+                if interface.active_handles.is_empty() {
+                    detach = interfaces.remove(&interface_name).map(|runtime| runtime.attachment);
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            if let Some(interface) = interfaces.get_mut(&interface_name) {
+                interface.active_handles.remove(handle_id);
+                if interface.active_handles.is_empty() {
+                    interfaces.remove(&interface_name);
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(attachment) = detach {
+        detach_linux(attachment)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn attach_linux(iface: &str) -> Result<LinuxAttachment> {
+    let mut ebpf = load_ebpf_object()?;
     let program: &mut Xdp = ebpf
         .program_mut(XDP_PROGRAM_NAME)
         .ok_or_else(|| {
@@ -315,75 +326,121 @@ async fn enforce_linux(compiled: &CompiledPolicy, iface: &str) -> Result<LinuxAt
 }
 
 #[cfg(target_os = "linux")]
-fn populate_linux_maps(ebpf: &mut Ebpf, compiled: &CompiledPolicy) -> Result<()> {
+fn insert_linux_maps(ebpf: &mut Ebpf, compiled: &CompiledPolicy) -> Result<()> {
     {
-        let map = ebpf.map_mut(ACTIVE_AGREEMENT_MAP).ok_or_else(|| {
-            LsdcError::Enforcement(format!("missing map `{ACTIVE_AGREEMENT_MAP}`"))
+        let map = ebpf.map_mut(SESSION_AGREEMENT_MAP).ok_or_else(|| {
+            LsdcError::Enforcement(format!("missing map `{SESSION_AGREEMENT_MAP}`"))
         })?;
-        let mut active_map = BpfHashMap::<_, u32, u32>::try_from(map).map_err(|err| {
+        let mut session_map = BpfHashMap::<_, u16, u32>::try_from(map).map_err(|err| {
             LsdcError::Enforcement(format!(
-                "failed to open `{ACTIVE_AGREEMENT_MAP}` as hash map: {err}"
+                "failed to open `{SESSION_AGREEMENT_MAP}` as hash map: {err}"
             ))
         })?;
-        active_map
-            .insert(ACTIVE_AGREEMENT_KEY, compiled.enforcement_key, 0)
+        session_map
+            .insert(compiled.session_port, compiled.enforcement_key, 0)
             .map_err(|err| {
                 LsdcError::Enforcement(format!(
-                    "failed to populate `{ACTIVE_AGREEMENT_MAP}`: {err}"
+                    "failed to populate `{SESSION_AGREEMENT_MAP}`: {err}"
                 ))
             })?;
     }
 
     {
         let map = ebpf
-            .map_mut(RATE_LIMIT_MAP)
-            .ok_or_else(|| LsdcError::Enforcement(format!("missing map `{RATE_LIMIT_MAP}`")))?;
-        let mut rate_limit_map = BpfHashMap::<_, u32, u64>::try_from(map).map_err(|err| {
+            .map_mut(PACKET_LIMIT_MAP)
+            .ok_or_else(|| LsdcError::Enforcement(format!("missing map `{PACKET_LIMIT_MAP}`")))?;
+        let mut limit_map = BpfHashMap::<_, u32, u64>::try_from(map).map_err(|err| {
             LsdcError::Enforcement(format!(
-                "failed to open `{RATE_LIMIT_MAP}` as hash map: {err}"
+                "failed to open `{PACKET_LIMIT_MAP}` as hash map: {err}"
             ))
         })?;
-        rate_limit_map
-            .insert(compiled.enforcement_key, compiled.max_packets, 0)
-            .map_err(|err| {
-                LsdcError::Enforcement(format!("failed to populate `{RATE_LIMIT_MAP}`: {err}"))
-            })?;
+        let packet_cap = compiled.max_packets.unwrap_or(u64::MAX);
+        limit_map.insert(compiled.enforcement_key, packet_cap, 0).map_err(|err| {
+            LsdcError::Enforcement(format!("failed to populate `{PACKET_LIMIT_MAP}`: {err}"))
+        })?;
     }
 
     {
         let map = ebpf
-            .map_mut(PACKET_COUNT_MAP)
-            .ok_or_else(|| LsdcError::Enforcement(format!("missing map `{PACKET_COUNT_MAP}`")))?;
-        let mut packet_count_map = BpfHashMap::<_, u32, u64>::try_from(map).map_err(|err| {
+            .map_mut(BYTE_LIMIT_MAP)
+            .ok_or_else(|| LsdcError::Enforcement(format!("missing map `{BYTE_LIMIT_MAP}`")))?;
+        let mut limit_map = BpfHashMap::<_, u32, u64>::try_from(map).map_err(|err| {
             LsdcError::Enforcement(format!(
-                "failed to open `{PACKET_COUNT_MAP}` as hash map: {err}"
+                "failed to open `{BYTE_LIMIT_MAP}` as hash map: {err}"
             ))
         })?;
-        let _ = packet_count_map.remove(&compiled.enforcement_key);
-        packet_count_map
-            .insert(compiled.enforcement_key, 0_u64, 0)
-            .map_err(|err| {
-                LsdcError::Enforcement(format!("failed to initialize `{PACKET_COUNT_MAP}`: {err}"))
-            })?;
+        let byte_cap = compiled.max_bytes.unwrap_or(u64::MAX);
+        limit_map.insert(compiled.enforcement_key, byte_cap, 0).map_err(|err| {
+            LsdcError::Enforcement(format!("failed to populate `{BYTE_LIMIT_MAP}`: {err}"))
+        })?;
     }
+
+    initialize_counter_map(ebpf, PACKET_COUNT_MAP, compiled.enforcement_key)?;
+    initialize_counter_map(ebpf, BYTE_COUNT_MAP, compiled.enforcement_key)?;
 
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn read_packet_count(platform: &LinuxAttachment, enforcement_key: u32) -> Result<u64> {
-    let map = platform
-        .ebpf
-        .map(PACKET_COUNT_MAP)
-        .ok_or_else(|| LsdcError::Enforcement(format!("missing map `{PACKET_COUNT_MAP}`")))?;
-    let packet_count_map = BpfHashMap::<_, u32, u64>::try_from(map).map_err(|err| {
-        LsdcError::Enforcement(format!(
-            "failed to open `{PACKET_COUNT_MAP}` as hash map: {err}"
-        ))
+fn initialize_counter_map(ebpf: &mut Ebpf, map_name: &str, enforcement_key: u32) -> Result<()> {
+    let map = ebpf
+        .map_mut(map_name)
+        .ok_or_else(|| LsdcError::Enforcement(format!("missing map `{map_name}`")))?;
+    let mut counter_map = BpfHashMap::<_, u32, u64>::try_from(map).map_err(|err| {
+        LsdcError::Enforcement(format!("failed to open `{map_name}` as hash map: {err}"))
     })?;
-    packet_count_map.get(&enforcement_key, 0).map_err(|err| {
+    let _ = counter_map.remove(&enforcement_key);
+    counter_map.insert(enforcement_key, 0, 0).map_err(|err| {
+        LsdcError::Enforcement(format!("failed to initialize `{map_name}`: {err}"))
+    })?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn remove_linux_maps(ebpf: &mut Ebpf, enforcement_key: u32, session_port: u16) -> Result<()> {
+    remove_map_entry::<u16, u32>(ebpf, SESSION_AGREEMENT_MAP, session_port)?;
+    remove_map_entry::<u32, u64>(ebpf, PACKET_LIMIT_MAP, enforcement_key)?;
+    remove_map_entry::<u32, u64>(ebpf, BYTE_LIMIT_MAP, enforcement_key)?;
+    remove_map_entry::<u32, u64>(ebpf, PACKET_COUNT_MAP, enforcement_key)?;
+    remove_map_entry::<u32, u64>(ebpf, BYTE_COUNT_MAP, enforcement_key)?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn remove_map_entry<K, V>(ebpf: &mut Ebpf, map_name: &str, key: K) -> Result<()>
+where
+    K: std::borrow::Borrow<K> + Copy,
+    V: Copy,
+{
+    let map = ebpf
+        .map_mut(map_name)
+        .ok_or_else(|| LsdcError::Enforcement(format!("missing map `{map_name}`")))?;
+    let mut typed = BpfHashMap::<_, K, V>::try_from(map).map_err(|err| {
+        LsdcError::Enforcement(format!("failed to open `{map_name}` as hash map: {err}"))
+    })?;
+    let _ = typed.remove(&key);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn read_counters(attachment: &LinuxAttachment, enforcement_key: u32) -> Result<(u64, u64)> {
+    Ok((
+        read_counter(&attachment.ebpf, PACKET_COUNT_MAP, enforcement_key)?,
+        read_counter(&attachment.ebpf, BYTE_COUNT_MAP, enforcement_key)?,
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn read_counter(ebpf: &Ebpf, map_name: &str, enforcement_key: u32) -> Result<u64> {
+    let map = ebpf
+        .map(map_name)
+        .ok_or_else(|| LsdcError::Enforcement(format!("missing map `{map_name}`")))?;
+    let counter_map = BpfHashMap::<_, u32, u64>::try_from(map).map_err(|err| {
+        LsdcError::Enforcement(format!("failed to open `{map_name}` as hash map: {err}"))
+    })?;
+    counter_map.get(&enforcement_key, 0).map_err(|err| {
         LsdcError::Enforcement(format!(
-            "failed to read packet count for key `{enforcement_key}`: {err}"
+            "failed to read counter from `{map_name}` for key `{enforcement_key}`: {err}"
         ))
     })
 }
@@ -394,41 +451,19 @@ fn detach_linux(mut attachment: LinuxAttachment) -> Result<()> {
         return Ok(());
     };
 
-    {
-        let program: &mut Xdp = attachment
-            .ebpf
-            .program_mut(XDP_PROGRAM_NAME)
-            .ok_or_else(|| {
-                LsdcError::Enforcement(format!(
-                    "missing XDP program `{XDP_PROGRAM_NAME}` in eBPF object"
-                ))
-            })?
-            .try_into()
-            .map_err(|err| {
-                LsdcError::Enforcement(format!("failed to convert program to XDP: {err}"))
-            })?;
-        program
-            .detach(link_id)
-            .map_err(|err| LsdcError::Enforcement(format!("failed to detach XDP link: {err}")))?;
-    }
-
-    clear_linux_maps(&mut attachment.ebpf)?;
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn clear_linux_maps(ebpf: &mut Ebpf) -> Result<()> {
-    {
-        let map = ebpf.map_mut(ACTIVE_AGREEMENT_MAP).ok_or_else(|| {
-            LsdcError::Enforcement(format!("missing map `{ACTIVE_AGREEMENT_MAP}`"))
-        })?;
-        let mut active_map = BpfHashMap::<_, u32, u32>::try_from(map).map_err(|err| {
+    let program: &mut Xdp = attachment
+        .ebpf
+        .program_mut(XDP_PROGRAM_NAME)
+        .ok_or_else(|| {
             LsdcError::Enforcement(format!(
-                "failed to open `{ACTIVE_AGREEMENT_MAP}` as hash map: {err}"
+                "missing XDP program `{XDP_PROGRAM_NAME}` in eBPF object"
             ))
-        })?;
-        let _ = active_map.remove(&ACTIVE_AGREEMENT_KEY);
-    }
+        })?
+        .try_into()
+        .map_err(|err| LsdcError::Enforcement(format!("failed to convert program to XDP: {err}")))?;
+    program
+        .detach(link_id)
+        .map_err(|err| LsdcError::Enforcement(format!("failed to detach XDP link: {err}")))?;
     Ok(())
 }
 
@@ -503,25 +538,40 @@ fn workspace_root() -> Result<&'static Path> {
 mod tests {
     use super::*;
     use chrono::Duration;
-    use lsdc_common::odrl::ast::{Action, Constraint, Permission, PolicyAgreement, PolicyId};
+    use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement, TransportProtocol};
+    use lsdc_common::liquid::{LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard};
+    use lsdc_common::odrl::ast::PolicyId;
 
-    fn make_agreement(valid_until: Option<DateTime<Utc>>) -> ContractAgreement {
+    fn make_agreement(id: &str, valid_until: Option<DateTime<Utc>>) -> ContractAgreement {
         ContractAgreement {
-            agreement_id: PolicyId("agreement-test".into()),
-            policy: PolicyAgreement {
-                id: PolicyId("policy-test".into()),
-                provider: "did:web:provider".into(),
-                consumer: "did:web:consumer".into(),
-                target: "urn:data:test".into(),
-                permissions: vec![Permission {
-                    action: Action::Stream,
-                    constraints: vec![Constraint::Count { max: 5 }],
-                    duties: vec![],
-                }],
-                prohibitions: vec![],
-                obligations: vec![],
-                valid_from: Utc::now(),
-                valid_until,
+            agreement_id: PolicyId(id.into()),
+            asset_id: format!("asset-{id}"),
+            provider_id: "did:web:provider".into(),
+            consumer_id: "did:web:consumer".into(),
+            odrl_policy: serde_json::json!({ "permission": [{ "action": ["read", "transfer"] }] }),
+            policy_hash: "policy-hash".into(),
+            evidence_requirements: vec![EvidenceRequirement::ProvenanceReceipt],
+            liquid_policy: LiquidPolicyIr {
+                transport_guard: TransportGuard {
+                    allow_read: true,
+                    allow_transfer: true,
+                    packet_cap: Some(5),
+                    byte_cap: Some(1024),
+                    allowed_regions: vec!["EU".into()],
+                    valid_until,
+                    protocol: TransportProtocol::Udp,
+                    session_port: None,
+                },
+                transform_guard: TransformGuard {
+                    allow_anonymize: true,
+                    allowed_purposes: vec!["analytics".into()],
+                    required_ops: vec![],
+                },
+                runtime_guard: RuntimeGuard {
+                    delete_after_seconds: Some(30),
+                    evidence_requirements: vec![EvidenceRequirement::ProvenanceReceipt],
+                    approval_required: false,
+                },
             },
         }
     }
@@ -529,32 +579,34 @@ mod tests {
     #[tokio::test]
     async fn test_reuses_agreement_id_for_handle_identity() {
         let plane = LiquidDataPlane::new();
-        let agreement = make_agreement(None);
+        let agreement = make_agreement("agreement-test", None);
 
         let handle = plane.enforce(&agreement, "lo").await.unwrap();
 
         assert_eq!(handle.id, agreement.agreement_id.0);
         assert_eq!(handle.interface, "lo");
+        assert!(handle.session_port >= 20_000);
     }
 
     #[tokio::test]
-    async fn test_rejects_second_active_agreement_on_interface() {
+    async fn test_allows_multiple_active_agreements_on_interface() {
         let plane = LiquidDataPlane::new();
-        let first = make_agreement(None);
-        let second = ContractAgreement {
-            agreement_id: PolicyId("agreement-test-2".into()),
-            policy: first.policy.clone(),
-        };
+        let first = make_agreement("agreement-test-1", None);
+        let second = make_agreement("agreement-test-2", None);
 
-        plane.enforce(&first, "lo").await.unwrap();
-        let err = plane.enforce(&second, "lo").await.unwrap_err();
-        assert!(err.to_string().contains("already has an active agreement"));
+        let first_handle = plane.enforce(&first, "lo").await.unwrap();
+        let second_handle = plane.enforce(&second, "lo").await.unwrap();
+
+        assert_ne!(first_handle.session_port, second_handle.session_port);
     }
 
     #[tokio::test]
     async fn test_expiry_transitions_status_to_expired() {
         let plane = LiquidDataPlane::new();
-        let agreement = make_agreement(Some(Utc::now() + Duration::milliseconds(20)));
+        let agreement = make_agreement(
+            "agreement-expiring",
+            Some(Utc::now() + Duration::milliseconds(20)),
+        );
 
         let handle = plane.enforce(&agreement, "lo").await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -566,7 +618,7 @@ mod tests {
     #[tokio::test]
     async fn test_revoke_transitions_status_to_revoked() {
         let plane = LiquidDataPlane::new();
-        let agreement = make_agreement(None);
+        let agreement = make_agreement("agreement-revoked", None);
 
         let handle = plane.enforce(&agreement, "lo").await.unwrap();
         plane.revoke(&handle).await.unwrap();

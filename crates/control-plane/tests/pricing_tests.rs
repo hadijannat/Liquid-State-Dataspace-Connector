@@ -1,58 +1,108 @@
 use async_trait::async_trait;
 use control_plane::orchestrator::Orchestrator;
-use control_plane::pricing::RestPricingOracle;
+use control_plane::pricing::proto::pricing_oracle_server::{PricingOracle, PricingOracleServer};
+use control_plane::pricing::proto::{
+    PriceDecisionRequest, PriceDecisionResponse, ShapleyResponse, UtilityRequest,
+};
+use control_plane::pricing::GrpcPricingOracle;
 use liquid_data_plane::loader::LiquidDataPlane;
-use lsdc_common::crypto::{PriceAdjustment, ShapleyValue};
+use lsdc_common::crypto::{PriceDecision, ShapleyValue};
 use lsdc_common::error::Result;
-use lsdc_common::traits::{PricingOracle, TrainingMetrics};
+use lsdc_common::traits::{PricingOracle as PricingOracleTrait, TrainingMetrics};
+use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+use tonic::{transport::Server, Request, Response, Status};
+
+#[derive(Default)]
+struct TestPricingService;
+
+#[async_trait]
+impl PricingOracle for TestPricingService {
+    async fn evaluate_utility(
+        &self,
+        request: Request<UtilityRequest>,
+    ) -> std::result::Result<Response<ShapleyResponse>, Status> {
+        let request = request.into_inner();
+        Ok(Response::new(ShapleyResponse {
+            dataset_id: request.dataset_id,
+            transformed_asset_hash: request.transformed_asset_hash,
+            marginal_contribution: 0.14,
+            confidence: 0.9,
+            algorithm_version: "tmc_shapley_v0".into(),
+        }))
+    }
+
+    async fn decide_price(
+        &self,
+        request: Request<PriceDecisionRequest>,
+    ) -> std::result::Result<Response<PriceDecisionResponse>, Status> {
+        let request = request.into_inner();
+        let shapley = request
+            .shapley_value
+            .ok_or_else(|| Status::invalid_argument("missing shapley value"))?;
+
+        Ok(Response::new(PriceDecisionResponse {
+            agreement_id: request.agreement_id,
+            dataset_id: request.dataset_id,
+            original_price: request.current_price,
+            adjusted_price: request.current_price + 15.0,
+            approval_required: true,
+            shapley_value: Some(shapley),
+            signed_by: "pricing-oracle-test".into(),
+            signature_hex: "cafebabe".into(),
+        }))
+    }
+}
 
 struct MockPricingOracle;
 
 #[async_trait]
-impl PricingOracle for MockPricingOracle {
+impl PricingOracleTrait for MockPricingOracle {
     async fn evaluate_utility(
         &self,
         dataset_id: &str,
+        transformed_asset_hash: &str,
         _metrics: &TrainingMetrics,
     ) -> Result<ShapleyValue> {
         Ok(ShapleyValue {
             dataset_id: dataset_id.to_string(),
+            transformed_asset_hash: transformed_asset_hash.to_string(),
             marginal_contribution: 0.2,
             confidence: 0.9,
-            algorithm_version: "heuristic_v0".into(),
+            algorithm_version: "tmc_shapley_v0".into(),
         })
     }
 
-    async fn renegotiate(
+    async fn decide_price(
         &self,
         agreement_id: &str,
         current_price: f64,
         value: &ShapleyValue,
-    ) -> Result<PriceAdjustment> {
-        Ok(PriceAdjustment {
+    ) -> Result<PriceDecision> {
+        Ok(PriceDecision {
             agreement_id: agreement_id.to_string(),
+            dataset_id: value.dataset_id.clone(),
             original_price: current_price,
             adjusted_price: current_price + 25.0,
+            approval_required: true,
             shapley_value: value.clone(),
+            signed_by: "mock-pricing".into(),
+            signature_hex: "deadbeef".into(),
         })
     }
 }
 
 #[tokio::test]
-async fn test_rest_pricing_oracle_evaluate_utility_contract() {
-    let (base_url, request_rx) = spawn_json_server(
-        r#"{"dataset_id":"ds-1","marginal_contribution":0.14,"confidence":0.9,"algorithm_version":"heuristic_v0"}"#,
-    )
-    .await;
-    let oracle = RestPricingOracle::new(base_url);
+async fn test_grpc_pricing_oracle_evaluate_utility_contract() {
+    let (endpoint, shutdown_tx) = spawn_pricing_server().await;
+    let oracle = GrpcPricingOracle::new(endpoint);
 
     let value = oracle
         .evaluate_utility(
             "ds-1",
+            "hash-1",
             &TrainingMetrics {
                 loss_with_dataset: 0.3,
                 loss_without_dataset: 0.5,
@@ -63,58 +113,48 @@ async fn test_rest_pricing_oracle_evaluate_utility_contract() {
         .await
         .unwrap();
 
-    assert_eq!(value.algorithm_version, "heuristic_v0");
-
-    let request = request_rx.await.unwrap();
-    assert!(request.starts_with("POST /evaluate HTTP/1.1"));
-    assert!(request.contains("\"dataset_id\":\"ds-1\""));
-    assert!(request.contains("\"loss_with_dataset\":0.3"));
-    assert!(request.contains("\"accuracy_without_dataset\":0.75"));
+    assert_eq!(value.algorithm_version, "tmc_shapley_v0");
+    assert_eq!(value.transformed_asset_hash, "hash-1");
+    let _ = shutdown_tx.send(());
 }
 
 #[tokio::test]
-async fn test_rest_pricing_oracle_renegotiate_contract() {
-    let (base_url, request_rx) = spawn_json_server(
-        r#"{"agreement_id":"agreement-1","original_price":100.0,"adjusted_price":115.0,"shapley_value":{"dataset_id":"ds-1","marginal_contribution":0.1,"confidence":0.9,"algorithm_version":"heuristic_v0"}}"#,
-    )
-    .await;
-    let oracle = RestPricingOracle::new(base_url);
+async fn test_grpc_pricing_oracle_decide_price_contract() {
+    let (endpoint, shutdown_tx) = spawn_pricing_server().await;
+    let oracle = GrpcPricingOracle::new(endpoint);
 
-    let adjustment = oracle
-        .renegotiate(
+    let decision = oracle
+        .decide_price(
             "agreement-1",
             100.0,
             &ShapleyValue {
                 dataset_id: "ds-1".into(),
+                transformed_asset_hash: "hash-1".into(),
                 marginal_contribution: 0.1,
                 confidence: 0.9,
-                algorithm_version: "heuristic_v0".into(),
+                algorithm_version: "tmc_shapley_v0".into(),
             },
         )
         .await
         .unwrap();
 
-    assert_eq!(adjustment.adjusted_price, 115.0);
-    assert_eq!(adjustment.shapley_value.algorithm_version, "heuristic_v0");
-
-    let request = request_rx.await.unwrap();
-    assert!(request.starts_with("POST /renegotiate HTTP/1.1"));
-    assert!(request.contains("\"agreement_id\":\"agreement-1\""));
-    assert!(request.contains("\"current_price\":100.0"));
-    assert!(request.contains("\"shapley_value\":{\"dataset_id\":\"ds-1\""));
+    assert_eq!(decision.adjusted_price, 115.0);
+    assert!(decision.approval_required);
+    let _ = shutdown_tx.send(());
 }
 
 #[tokio::test]
-async fn test_orchestrator_returns_advisory_price_adjustment() {
+async fn test_orchestrator_returns_price_decision() {
     let orchestrator = Orchestrator::with_pricing(
         Arc::new(LiquidDataPlane::new()),
         Arc::new(MockPricingOracle),
     );
 
-    let adjustment = orchestrator
-        .advise_price_adjustment(
+    let decision = orchestrator
+        .request_price_decision(
             "agreement-1",
             "dataset-1",
+            "hash-1",
             100.0,
             &TrainingMetrics {
                 loss_with_dataset: 0.2,
@@ -126,84 +166,28 @@ async fn test_orchestrator_returns_advisory_price_adjustment() {
         .await
         .unwrap();
 
-    assert_eq!(adjustment.agreement_id, "agreement-1");
-    assert_eq!(adjustment.original_price, 100.0);
-    assert_eq!(adjustment.adjusted_price, 125.0);
-    assert_eq!(adjustment.shapley_value.algorithm_version, "heuristic_v0");
+    assert_eq!(decision.agreement_id, "agreement-1");
+    assert_eq!(decision.adjusted_price, 125.0);
+    assert!(decision.approval_required);
 }
 
-async fn spawn_json_server(response_body: &'static str) -> (String, oneshot::Receiver<String>) {
+async fn spawn_pricing_server() -> (String, oneshot::Sender<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let (request_tx, request_rx) = oneshot::channel();
+    let address: SocketAddr = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let request = read_http_request(&mut socket).await;
-        let _ = request_tx.send(request);
-
-        let body = response_body.as_bytes();
-        let headers = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-            body.len()
-        );
-
-        socket.write_all(headers.as_bytes()).await.unwrap();
-        socket.write_all(body).await.unwrap();
+        Server::builder()
+            .add_service(PricingOracleServer::new(TestPricingService))
+            .serve_with_incoming_shutdown(
+                tokio_stream::wrappers::TcpListenerStream::new(listener),
+                async move {
+                    let _ = shutdown_rx.await;
+                },
+            )
+            .await
+            .unwrap();
     });
 
-    (format!("http://{}", address), request_rx)
-}
-
-async fn read_http_request(socket: &mut tokio::net::TcpStream) -> String {
-    let mut buffer = Vec::new();
-    let mut chunk = [0_u8; 1024];
-    let mut content_length = 0_usize;
-    let mut headers_end = None;
-
-    loop {
-        let read = socket.read(&mut chunk).await.unwrap();
-        if read == 0 {
-            break;
-        }
-
-        buffer.extend_from_slice(&chunk[..read]);
-
-        if headers_end.is_none() {
-            headers_end = find_headers_end(&buffer);
-            if let Some(end) = headers_end {
-                content_length = parse_content_length(&buffer[..end]);
-            }
-        }
-
-        if let Some(end) = headers_end {
-            if buffer.len() >= end + content_length {
-                break;
-            }
-        }
-    }
-
-    String::from_utf8(buffer).unwrap()
-}
-
-fn find_headers_end(buffer: &[u8]) -> Option<usize> {
-    buffer
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|position| position + 4)
-}
-
-fn parse_content_length(headers: &[u8]) -> usize {
-    let headers = String::from_utf8_lossy(headers);
-    headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.eq_ignore_ascii_case("content-length") {
-                value.trim().parse().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0)
+    (format!("http://{}", address), shutdown_tx)
 }

@@ -9,3 +9,5 @@ aya-ebpf = "0.1"
 [[bin]]
 name = "lsdc-xdp"
 path = "src/main.rs"
+test = false
+bench = false

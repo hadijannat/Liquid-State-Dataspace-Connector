@@ -7,20 +7,22 @@ use aya_ebpf::{
     maps::HashMap,
     programs::XdpContext,
 };
+use core::mem;
 
-const ACTIVE_AGREEMENT_KEY: u32 = 0;
-
-/// Config map storing the single active agreement for this interface.
 #[map]
-static ACTIVE_AGREEMENT_MAP: HashMap<u32, u32> = HashMap::with_max_entries(1, 0);
+static SESSION_AGREEMENT_MAP: HashMap<u16, u32> = HashMap::with_max_entries(1024, 0);
 
-/// Rate limit map: agreement_id (u32) -> max_packets (u64)
 #[map]
-static RATE_LIMIT_MAP: HashMap<u32, u64> = HashMap::with_max_entries(256, 0);
+static PACKET_LIMIT_MAP: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
 
-/// Packet counter map: agreement_id (u32) -> current_count (u64)
 #[map]
-static PACKET_COUNT_MAP: HashMap<u32, u64> = HashMap::with_max_entries(256, 0);
+static BYTE_LIMIT_MAP: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
+
+#[map]
+static PACKET_COUNT_MAP: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
+
+#[map]
+static BYTE_COUNT_MAP: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
 
 #[xdp]
 pub fn lsdc_xdp(ctx: XdpContext) -> u32 {
@@ -31,30 +33,78 @@ pub fn lsdc_xdp(ctx: XdpContext) -> u32 {
 }
 
 fn try_lsdc_xdp(ctx: XdpContext) -> Result<u32, u32> {
-    let Some(agreement_id) = (unsafe { ACTIVE_AGREEMENT_MAP.get(&ACTIVE_AGREEMENT_KEY) }).copied() else {
-        // No active enforcement — pass all traffic
+    let Some(dst_port) = parse_destination_port(&ctx)? else {
         return Ok(xdp_action::XDP_PASS);
     };
 
-    // Check rate limit
-    if let Some(max_packets) = unsafe { RATE_LIMIT_MAP.get(&agreement_id) } {
-        let count = unsafe { PACKET_COUNT_MAP.get(&agreement_id) }
-            .copied()
-            .unwrap_or(0);
+    let Some(agreement_id) = unsafe { SESSION_AGREEMENT_MAP.get(&dst_port) }.copied() else {
+        return Ok(xdp_action::XDP_PASS);
+    };
 
-        if count >= *max_packets {
-            // Rate limit exceeded — drop packet
-            return Ok(xdp_action::XDP_DROP);
-        }
+    let packet_length = (ctx.data_end() - ctx.data()) as u64;
+    let max_packets = unsafe { PACKET_LIMIT_MAP.get(&agreement_id) }
+        .copied()
+        .unwrap_or(u64::MAX);
+    let max_bytes = unsafe { BYTE_LIMIT_MAP.get(&agreement_id) }
+        .copied()
+        .unwrap_or(u64::MAX);
 
-        // Increment counter
-        let new_count = count + 1;
-        unsafe {
-            let _ = PACKET_COUNT_MAP.insert(&agreement_id, &new_count, 0);
-        }
+    let packet_count = unsafe { PACKET_COUNT_MAP.get(&agreement_id) }
+        .copied()
+        .unwrap_or(0);
+    let byte_count = unsafe { BYTE_COUNT_MAP.get(&agreement_id) }
+        .copied()
+        .unwrap_or(0);
+
+    if packet_count >= max_packets || byte_count.saturating_add(packet_length) > max_bytes {
+        return Ok(xdp_action::XDP_DROP);
+    }
+
+    let next_packets = packet_count + 1;
+    let next_bytes = byte_count + packet_length;
+
+    unsafe {
+        let _ = PACKET_COUNT_MAP.insert(&agreement_id, &next_packets, 0);
+        let _ = BYTE_COUNT_MAP.insert(&agreement_id, &next_bytes, 0);
     }
 
     Ok(xdp_action::XDP_PASS)
+}
+
+fn parse_destination_port(ctx: &XdpContext) -> Result<Option<u16>, u32> {
+    let start = ctx.data();
+    let first = unsafe { ptr_at::<u8>(ctx, 0)? };
+    let version = unsafe { *first } >> 4;
+    let ip_offset = if version == 4 || version == 6 { 0 } else { 14 };
+
+    let version_ihl = unsafe { *ptr_at::<u8>(ctx, ip_offset)? };
+    if version_ihl >> 4 != 4 {
+        return Ok(None);
+    }
+
+    let ihl = ((version_ihl & 0x0f) as usize) * 4;
+    let protocol = unsafe { *ptr_at::<u8>(ctx, ip_offset + 9)? };
+    if protocol != 6 && protocol != 17 {
+        return Ok(None);
+    }
+
+    let port_ptr = unsafe { ptr_at::<u16>(ctx, ip_offset + ihl + 2)? };
+    let dst_port = u16::from_be(unsafe { *port_ptr });
+    let _ = start;
+    Ok(Some(dst_port))
+}
+
+#[inline(always)]
+unsafe fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, u32> {
+    let start = ctx.data();
+    let end = ctx.data_end();
+    let len = mem::size_of::<T>();
+
+    if start + offset + len > end {
+        return Err(1);
+    }
+
+    Ok((start + offset) as *const T)
 }
 
 #[cfg(not(test))]

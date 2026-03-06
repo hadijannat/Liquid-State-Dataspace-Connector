@@ -5,6 +5,16 @@ members = [
     "crates/lsdc-common",
     "crates/control-plane",
     "crates/liquid-data-plane/liquid-data-plane",
+    "crates/liquid-data-plane/liquid-data-plane-ebpf",
+    "crates/proof-plane/proof-plane-host",
+    "crates/proof-plane/proof-plane-guest",
+    "crates/tee-orchestrator",
+]
+default-members = [
+    "xtask",
+    "crates/lsdc-common",
+    "crates/control-plane",
+    "crates/liquid-data-plane/liquid-data-plane",
     "crates/proof-plane/proof-plane-host",
     "crates/tee-orchestrator",
 ]
@@ -25,3 +35,6 @@ async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"

@@ -1,0 +1,26 @@
+name: Host CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  host-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy, rust-src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e 'python/pricing-oracle[dev]'
+      - name: Run Rust tests
+        run: cargo test --workspace
+      - name: Run Python tests
+        run: python -m pytest python/pricing-oracle/tests

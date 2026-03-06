@@ -2,8 +2,9 @@
 
 use chrono::Utc;
 use liquid_data_plane::loader::LiquidDataPlane;
-use lsdc_common::dsp::ContractAgreement;
-use lsdc_common::odrl::ast::{Action, Constraint, Permission, PolicyAgreement, PolicyId};
+use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement, TransportProtocol};
+use lsdc_common::liquid::{LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard};
+use lsdc_common::odrl::ast::PolicyId;
 use lsdc_common::traits::{DataPlane, EnforcementStatus};
 use std::net::UdpSocket;
 use std::process::Command;
@@ -17,31 +18,44 @@ async fn test_loopback_packet_cap_enforcement_and_detach() {
     let plane = LiquidDataPlane::new();
     let agreement = ContractAgreement {
         agreement_id: PolicyId("linux-agreement-1".into()),
-        policy: PolicyAgreement {
-            id: PolicyId("linux-policy-1".into()),
-            provider: "did:web:provider.example".into(),
-            consumer: "did:web:consumer.example".into(),
-            target: "urn:data:loopback".into(),
-            permissions: vec![Permission {
-                action: Action::Stream,
-                constraints: vec![Constraint::Count { max: 100 }],
-                duties: vec![],
-            }],
-            prohibitions: vec![],
-            obligations: vec![],
-            valid_from: Utc::now(),
-            valid_until: None,
+        asset_id: "asset-loopback".into(),
+        provider_id: "did:web:provider.example".into(),
+        consumer_id: "did:web:consumer.example".into(),
+        odrl_policy: serde_json::json!({ "permission": [{ "action": ["read", "transfer"] }] }),
+        policy_hash: "policy-hash".into(),
+        evidence_requirements: vec![EvidenceRequirement::ProvenanceReceipt],
+        liquid_policy: LiquidPolicyIr {
+            transport_guard: TransportGuard {
+                allow_read: true,
+                allow_transfer: true,
+                packet_cap: Some(100),
+                byte_cap: None,
+                allowed_regions: vec!["EU".into()],
+                valid_until: Some(Utc::now() + chrono::Duration::minutes(5)),
+                protocol: TransportProtocol::Udp,
+                session_port: Some(31_337),
+            },
+            transform_guard: TransformGuard {
+                allow_anonymize: true,
+                allowed_purposes: vec!["analytics".into()],
+                required_ops: vec![],
+            },
+            runtime_guard: RuntimeGuard {
+                delete_after_seconds: Some(300),
+                evidence_requirements: vec![EvidenceRequirement::ProvenanceReceipt],
+                approval_required: false,
+            },
         },
     };
 
-    let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let handle = plane.enforce(&agreement, "lo").await.unwrap();
+
+    let receiver = UdpSocket::bind(("127.0.0.1", handle.session_port)).unwrap();
     receiver
         .set_read_timeout(Some(Duration::from_millis(100)))
         .unwrap();
     let address = receiver.local_addr().unwrap();
     let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
-
-    let handle = plane.enforce(&agreement, "lo").await.unwrap();
 
     for sequence in 0..150 {
         let payload = format!("pkt-{sequence}");
@@ -52,7 +66,9 @@ async fn test_loopback_packet_cap_enforcement_and_detach() {
 
     let status = plane.status(&handle).await.unwrap();
     match status {
-        EnforcementStatus::Active { packets_processed } => {
+        EnforcementStatus::Active {
+            packets_processed, ..
+        } => {
             assert_eq!(packets_processed, 100);
         }
         other => panic!("expected active enforcement status, got {other:?}"),

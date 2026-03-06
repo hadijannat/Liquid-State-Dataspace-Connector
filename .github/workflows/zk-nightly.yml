@@ -1,0 +1,17 @@
+name: Proof Nightly
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  proof-nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Run proof-plane tests
+        run: cargo test -p proof-plane-host
+      - name: Run two-hop lineage orchestration test
+        run: cargo test -p control-plane --test orchestrator_tests test_two_hop_batch_lineage_flow

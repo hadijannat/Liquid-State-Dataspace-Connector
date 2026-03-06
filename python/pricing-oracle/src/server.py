@@ -1,76 +1,108 @@
 """
-FastAPI server exposing the Shapley pricing oracle.
-
-Sprint 0: REST API. Sprint 1: gRPC service matching pricing.proto.
+FastAPI health endpoint plus a gRPC pricing oracle service.
 """
 
+from __future__ import annotations
+
+import asyncio
+import os
+
+import grpc
 from fastapi import FastAPI
-from pydantic import BaseModel
+import uvicorn
 
-from .shapley import estimate_shapley_value, calculate_price_adjustment
+from .proto_loader import load_pricing_proto
+from .shapley import (
+    ShapleyResult,
+    calculate_price_decision,
+    estimate_shapley_value,
+)
 
-app = FastAPI(title="LSDC Pricing Oracle", version="0.1.0")
+pricing_pb2, pricing_pb2_grpc = load_pricing_proto()
 
-
-class UtilityRequest(BaseModel):
-    dataset_id: str
-    loss_with_dataset: float
-    loss_without_dataset: float
-    accuracy_with_dataset: float
-    accuracy_without_dataset: float
-
-
-class ShapleyResponse(BaseModel):
-    dataset_id: str
-    marginal_contribution: float
-    confidence: float
-    algorithm_version: str
-
-
-class RenegotiateRequest(BaseModel):
-    agreement_id: str
-    current_price: float
-    shapley_value: ShapleyResponse
-
-
-class PriceAdjustmentResponse(BaseModel):
-    agreement_id: str
-    original_price: float
-    adjusted_price: float
-    shapley_value: ShapleyResponse
-
-
-@app.post("/evaluate", response_model=ShapleyResponse)
-async def evaluate_utility(req: UtilityRequest) -> ShapleyResponse:
-    result = estimate_shapley_value(
-        dataset_id=req.dataset_id,
-        loss_with=req.loss_with_dataset,
-        loss_without=req.loss_without_dataset,
-        accuracy_with=req.accuracy_with_dataset,
-        accuracy_without=req.accuracy_without_dataset,
-    )
-    return ShapleyResponse(
-        dataset_id=result.dataset_id,
-        marginal_contribution=result.marginal_contribution,
-        confidence=result.confidence,
-        algorithm_version=result.algorithm_version,
-    )
-
-
-@app.post("/renegotiate", response_model=PriceAdjustmentResponse)
-async def renegotiate(req: RenegotiateRequest) -> PriceAdjustmentResponse:
-    adjusted = calculate_price_adjustment(
-        req.current_price,
-        req.shapley_value.marginal_contribution,
-    )
-    return PriceAdjustmentResponse(
-        agreement_id=req.agreement_id,
-        original_price=req.current_price,
-        adjusted_price=adjusted,
-        shapley_value=req.shapley_value,
-    )
+app = FastAPI(title="LSDC Pricing Oracle", version="0.2.0")
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+class PricingOracleService(pricing_pb2_grpc.PricingOracleServicer):
+    async def EvaluateUtility(self, request, context):
+        result = estimate_shapley_value(
+            dataset_id=request.dataset_id,
+            transformed_asset_hash=request.transformed_asset_hash,
+            loss_with=request.loss_with_dataset,
+            loss_without=request.loss_without_dataset,
+            accuracy_with=request.accuracy_with_dataset,
+            accuracy_without=request.accuracy_without_dataset,
+        )
+        return pricing_pb2.ShapleyResponse(
+            dataset_id=result.dataset_id,
+            transformed_asset_hash=result.transformed_asset_hash,
+            marginal_contribution=result.marginal_contribution,
+            confidence=result.confidence,
+            algorithm_version=result.algorithm_version,
+        )
+
+    async def DecidePrice(self, request, context):
+        shapley = request.shapley_value
+        decision = calculate_price_decision(
+            agreement_id=request.agreement_id,
+            current_price=request.current_price,
+            shapley_value=ShapleyResult(
+                dataset_id=shapley.dataset_id,
+                transformed_asset_hash=shapley.transformed_asset_hash,
+                marginal_contribution=shapley.marginal_contribution,
+                confidence=shapley.confidence,
+                algorithm_version=shapley.algorithm_version,
+            ),
+            signer=os.getenv("LSDC_PRICING_SIGNER", "pricing-oracle"),
+        )
+        return pricing_pb2.PriceDecisionResponse(
+            agreement_id=decision.agreement_id,
+            dataset_id=decision.dataset_id,
+            original_price=decision.original_price,
+            adjusted_price=decision.adjusted_price,
+            approval_required=decision.approval_required,
+            shapley_value=pricing_pb2.ShapleyResponse(
+                dataset_id=decision.shapley_value.dataset_id,
+                transformed_asset_hash=decision.shapley_value.transformed_asset_hash,
+                marginal_contribution=decision.shapley_value.marginal_contribution,
+                confidence=decision.shapley_value.confidence,
+                algorithm_version=decision.shapley_value.algorithm_version,
+            ),
+            signed_by=decision.signed_by,
+            signature_hex=decision.signature_hex,
+        )
+
+
+async def serve_grpc(host: str = "127.0.0.1", port: int = 50051):
+    server = grpc.aio.server()
+    pricing_pb2_grpc.add_PricingOracleServicer_to_server(PricingOracleService(), server)
+    server.add_insecure_port(f"{host}:{port}")
+    await server.start()
+    await server.wait_for_termination()
+
+
+async def serve_health(host: str = "127.0.0.1", port: int = 8000):
+    config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
+async def main():
+    grpc_host = os.getenv("LSDC_PRICING_GRPC_HOST", "127.0.0.1")
+    grpc_port = int(os.getenv("LSDC_PRICING_GRPC_PORT", "50051"))
+    health_host = os.getenv("LSDC_PRICING_HTTP_HOST", "127.0.0.1")
+    health_port = int(os.getenv("LSDC_PRICING_HTTP_PORT", "8000"))
+
+    await asyncio.gather(
+        serve_grpc(grpc_host, grpc_port),
+        serve_health(health_host, health_port),
+    )
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

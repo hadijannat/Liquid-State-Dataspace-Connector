@@ -1,8 +1,8 @@
 use lsdc_common::dsp::{ContractAgreement, ContractOffer, ContractRequest};
-use lsdc_common::error::Result;
+use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::odrl::ast::PolicyId;
+use lsdc_common::odrl::parser::{lower_policy, policy_hash_hex};
 
-/// Handles Dataspace Protocol contract negotiation.
 #[derive(Default)]
 pub struct NegotiationEngine;
 
@@ -11,28 +11,40 @@ impl NegotiationEngine {
         Self
     }
 
-    /// Process an incoming contract request from a consumer.
     pub async fn handle_request(&self, request: ContractRequest) -> Result<ContractOffer> {
-        tracing::info!(
-            consumer = %request.consumer_id,
-            "Received contract request"
-        );
+        let computed_hash = policy_hash_hex(&request.odrl_policy)?;
+        if !request.policy_hash.is_empty() && request.policy_hash != computed_hash {
+            return Err(LsdcError::PolicyCompile(
+                "request policy hash does not match raw ODRL JSON".into(),
+            ));
+        }
+
+        lower_policy(&request.odrl_policy, &request.evidence_requirements)?;
 
         Ok(ContractOffer {
-            provider_id: request.policy.provider.clone(),
+            provider_id: request.provider_id,
+            consumer_id: request.consumer_id,
             offer_id: uuid::Uuid::new_v4().to_string(),
-            policy: request.policy,
+            asset_id: request.asset_id,
+            odrl_policy: request.odrl_policy,
+            policy_hash: computed_hash,
+            evidence_requirements: request.evidence_requirements,
         })
     }
 
-    /// Finalize a contract agreement.
     pub async fn finalize(&self, offer: ContractOffer) -> Result<ContractAgreement> {
         let agreement_id = PolicyId::new();
-        tracing::info!(agreement_id = %agreement_id.0, "Contract finalized");
+        let liquid_policy = lower_policy(&offer.odrl_policy, &offer.evidence_requirements)?;
 
         Ok(ContractAgreement {
             agreement_id,
-            policy: offer.policy,
+            asset_id: offer.asset_id,
+            provider_id: offer.provider_id,
+            consumer_id: offer.consumer_id,
+            odrl_policy: offer.odrl_policy,
+            policy_hash: offer.policy_hash,
+            evidence_requirements: offer.evidence_requirements,
+            liquid_policy,
         })
     }
 }

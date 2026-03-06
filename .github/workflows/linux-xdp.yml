@@ -1,0 +1,17 @@
+name: Linux XDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  linux-xdp:
+    runs-on: [self-hosted, linux, x64, xdp]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Build eBPF object
+        run: cargo xtask build-ebpf
+      - name: Run ignored XDP integration test
+        run: sudo cargo test -p liquid-data-plane --test linux_xdp_tests -- --ignored

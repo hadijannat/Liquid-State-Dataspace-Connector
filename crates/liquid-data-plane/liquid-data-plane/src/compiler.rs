@@ -2,201 +2,121 @@ use crate::maps::CompiledPolicy;
 use chrono::Utc;
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
-use lsdc_common::odrl::ast::{Constraint, PolicyId};
-// FNV-1a constants for deterministic hashing (stable across Rust versions)
+use lsdc_common::odrl::ast::PolicyId;
 
-/// Compile a ContractAgreement into the reduced Sprint 0 XDP policy.
-///
-/// Sprint 0 deliberately supports only:
-/// - `Constraint::Count { max }`
-/// - agreement-level `valid_until`
-///
-/// Everything else is rejected with an explicit error so the runtime,
-/// eBPF maps, and tests all describe the same MVP surface.
+/// Compile a negotiated agreement into the executable transport guard.
 pub fn compile_agreement(agreement: &ContractAgreement) -> Result<CompiledPolicy> {
-    let policy = &agreement.policy;
+    let transport = &agreement.liquid_policy.transport_guard;
 
-    if !policy.prohibitions.is_empty() {
-        return Err(LsdcError::PolicyCompile(
-            "Sprint 0 does not support prohibitions".into(),
-        ));
-    }
-
-    if !policy.obligations.is_empty() {
-        return Err(LsdcError::PolicyCompile(
-            "Sprint 0 does not support obligations".into(),
-        ));
-    }
-
-    if policy.permissions.is_empty() {
-        return Err(LsdcError::PolicyCompile(
-            "Sprint 0 requires at least one permission".into(),
-        ));
-    }
-
-    let mut packet_limits = Vec::new();
-    for permission in &policy.permissions {
-        if !permission.duties.is_empty() {
-            return Err(LsdcError::PolicyCompile(
-                "Sprint 0 does not support duties".into(),
-            ));
-        }
-
-        for constraint in &permission.constraints {
-            match constraint {
-                Constraint::Count { max } => packet_limits.push(*max),
-                Constraint::Spatial { .. } => {
-                    return Err(unsupported_constraint("Spatial"));
-                }
-                Constraint::Temporal { .. } => {
-                    return Err(unsupported_constraint("Temporal"));
-                }
-                Constraint::Purpose { .. } => {
-                    return Err(unsupported_constraint("Purpose"));
-                }
-                Constraint::RateLimit { .. } => {
-                    return Err(unsupported_constraint("RateLimit"));
-                }
-                Constraint::Custom { key, .. } => {
-                    return Err(LsdcError::PolicyCompile(format!(
-                        "Sprint 0 does not support custom constraint `{key}`"
-                    )));
-                }
-            }
-        }
-    }
-
-    let max_packets = packet_limits.into_iter().min().ok_or_else(|| {
-        LsdcError::PolicyCompile(
-            "Sprint 0 requires at least one Count constraint for packet-cap enforcement".into(),
-        )
-    })?;
-
-    if let Some(valid_until) = policy.valid_until {
+    if let Some(valid_until) = transport.valid_until {
         if valid_until <= Utc::now() {
             return Err(LsdcError::PolicyCompile(
-                "Agreement is already expired".into(),
+                "agreement transport guard is already expired".into(),
             ));
         }
+    }
+
+    if !transport.allow_read && !transport.allow_transfer {
+        return Err(LsdcError::PolicyCompile(
+            "agreement does not allow transport admission".into(),
+        ));
     }
 
     Ok(CompiledPolicy {
         agreement_id: agreement.agreement_id.0.clone(),
         enforcement_key: agreement_id_to_enforcement_key(&agreement.agreement_id),
-        max_packets,
-        expires_at: policy.valid_until,
+        session_port: transport
+            .session_port
+            .unwrap_or_else(|| agreement_id_to_session_port(&agreement.agreement_id)),
+        max_packets: transport.packet_cap,
+        max_bytes: transport.byte_cap,
+        expires_at: transport.valid_until,
     })
 }
 
-fn unsupported_constraint(kind: &str) -> LsdcError {
-    LsdcError::PolicyCompile(format!(
-        "Sprint 0 does not support {kind} constraints; only Count plus valid_until are enforceable"
-    ))
-}
-
-/// Derive a stable 32-bit enforcement key from the agreement identifier.
-///
-/// Uses FNV-1a (not `DefaultHasher`) because `DefaultHasher` output is
-/// explicitly not guaranteed to be stable across Rust versions.
 fn agreement_id_to_enforcement_key(agreement_id: &PolicyId) -> u32 {
     let bytes = agreement_id.0.as_bytes();
-    let mut hash: u32 = 2_166_136_261; // FNV-1a offset basis
+    let mut hash: u32 = 2_166_136_261;
     for &b in bytes {
         hash ^= b as u32;
-        hash = hash.wrapping_mul(16_777_619); // FNV-1a prime
+        hash = hash.wrapping_mul(16_777_619);
     }
     hash
+}
+
+fn agreement_id_to_session_port(agreement_id: &PolicyId) -> u16 {
+    let key = agreement_id_to_enforcement_key(agreement_id);
+    let port = 20_000 + (key % 40_000);
+    port as u16
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
-    use lsdc_common::dsp::ContractAgreement;
-    use lsdc_common::odrl::ast::*;
+    use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement, TransportProtocol};
+    use lsdc_common::liquid::{LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard};
 
-    fn make_test_agreement(constraints: Vec<Constraint>) -> ContractAgreement {
+    fn make_test_agreement() -> ContractAgreement {
         ContractAgreement {
             agreement_id: PolicyId("agreement-1".into()),
-            policy: PolicyAgreement {
-                id: PolicyId("policy-1".into()),
-                provider: "did:web:provider".into(),
-                consumer: "did:web:consumer".into(),
-                target: "urn:data:test".into(),
-                permissions: vec![Permission {
-                    action: Action::Stream,
-                    constraints,
-                    duties: vec![],
-                }],
-                prohibitions: vec![],
-                obligations: vec![],
-                valid_from: Utc::now(),
-                valid_until: None,
+            asset_id: "asset-1".into(),
+            provider_id: "did:web:provider".into(),
+            consumer_id: "did:web:consumer".into(),
+            odrl_policy: serde_json::json!({ "permission": [{ "action": "transfer" }] }),
+            policy_hash: "policy-hash".into(),
+            evidence_requirements: vec![EvidenceRequirement::ProvenanceReceipt],
+            liquid_policy: LiquidPolicyIr {
+                transport_guard: TransportGuard {
+                    allow_read: true,
+                    allow_transfer: true,
+                    packet_cap: Some(500),
+                    byte_cap: Some(2048),
+                    allowed_regions: vec!["EU".into()],
+                    valid_until: None,
+                    protocol: TransportProtocol::Udp,
+                    session_port: None,
+                },
+                transform_guard: TransformGuard {
+                    allow_anonymize: true,
+                    allowed_purposes: vec!["analytics".into()],
+                    required_ops: vec![],
+                },
+                runtime_guard: RuntimeGuard {
+                    delete_after_seconds: Some(60),
+                    evidence_requirements: vec![EvidenceRequirement::ProvenanceReceipt],
+                    approval_required: false,
+                },
             },
         }
     }
 
     #[test]
-    fn test_compile_rate_limit() {
-        let agreement = make_test_agreement(vec![Constraint::Count { max: 500 }]);
+    fn test_compile_transport_guard() {
+        let agreement = make_test_agreement();
         let compiled = compile_agreement(&agreement).unwrap();
 
         assert_eq!(compiled.agreement_id, "agreement-1");
-        assert_eq!(compiled.max_packets, 500);
+        assert_eq!(compiled.max_packets, Some(500));
+        assert_eq!(compiled.max_bytes, Some(2048));
+        assert!(compiled.session_port >= 20_000);
     }
 
     #[test]
-    fn test_compile_valid_until_as_expiry() {
+    fn test_compile_honors_expiry() {
+        let mut agreement = make_test_agreement();
         let future = Utc::now() + chrono::Duration::hours(1);
-        let mut agreement = make_test_agreement(vec![Constraint::Count { max: 500 }]);
-        agreement.policy.valid_until = Some(future);
-        let compiled = compile_agreement(&agreement).unwrap();
+        agreement.liquid_policy.transport_guard.valid_until = Some(future);
 
+        let compiled = compile_agreement(&agreement).unwrap();
         assert_eq!(compiled.expires_at, Some(future));
     }
 
     #[test]
-    fn test_compile_spatial_constraint_fails() {
-        let agreement = make_test_agreement(vec![Constraint::Spatial {
-            allowed_regions: vec![GeoRegion::EU],
-        }]);
-        let result = compile_agreement(&agreement);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_compile_rate_per_second_constraint_fails() {
-        let agreement = make_test_agreement(vec![Constraint::RateLimit {
-            max_per_second: 100,
-        }]);
-        let result = compile_agreement(&agreement);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_compile_empty_policy_fails() {
-        let agreement = make_test_agreement(vec![]);
-        let result = compile_agreement(&agreement);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_compile_uses_strictest_count_constraint() {
-        let agreement = make_test_agreement(vec![
-            Constraint::Count { max: 1000 },
-            Constraint::Count { max: 100 },
-        ]);
-        let compiled = compile_agreement(&agreement).unwrap();
-        assert_eq!(compiled.max_packets, 100);
-    }
-
-    #[test]
-    fn test_compile_rejects_permission_duties() {
-        let mut agreement = make_test_agreement(vec![Constraint::Count { max: 10 }]);
-        agreement.policy.permissions[0].duties.push(Duty {
-            action: Action::Delete,
-            constraints: vec![],
-        });
+    fn test_compile_rejects_expired_guard() {
+        let mut agreement = make_test_agreement();
+        agreement.liquid_policy.transport_guard.valid_until =
+            Some(Utc::now() - chrono::Duration::seconds(1));
 
         let result = compile_agreement(&agreement);
         assert!(result.is_err());

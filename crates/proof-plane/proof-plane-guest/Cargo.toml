@@ -3,6 +3,13 @@ name = "proof-plane-guest"
 version = "0.1.0"
 edition = "2021"
 
-# This crate will depend on risc0-zkvm guest library when Sprint 1 begins.
-# [dependencies]
-# risc0-zkvm = { version = "3.0", default-features = false, features = ["guest"] }
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "proof-plane-guest"
+path = "src/main.rs"
+
+[dependencies]
+lsdc-common = { path = "../../lsdc-common" }
+csv = "1.3"

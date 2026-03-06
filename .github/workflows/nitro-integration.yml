@@ -1,0 +1,15 @@
+name: Nitro Integration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  nitro-integration:
+    runs-on: [self-hosted, linux, x64, nitro]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Run tee-orchestrator tests
+        run: cargo test -p tee-orchestrator
+      - name: Run protected lineage orchestration test
+        run: cargo test -p control-plane --test orchestrator_tests test_two_hop_batch_lineage_flow
