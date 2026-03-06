@@ -7,6 +7,7 @@ pub mod identity;
 pub mod liquid;
 pub mod odrl;
 pub mod proof;
+pub mod service;
 pub mod traits;
 
 pub use error::{LsdcError, Result};

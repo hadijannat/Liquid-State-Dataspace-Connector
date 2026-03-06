@@ -32,6 +32,14 @@ pub enum PricingMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActualExecutionProfile {
+    pub transport_backend: TransportBackend,
+    pub proof_backend: ProofBackend,
+    pub tee_backend: TeeBackend,
+    pub pricing_mode: PricingMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RequestedExecutionProfile {
     pub transport_profile: RequestedTransportProfile,
     pub proof_profile: RequestedProofProfile,

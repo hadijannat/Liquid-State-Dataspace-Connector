@@ -177,9 +177,8 @@ fn parse_pricing_mode(value: &str) -> PricingMode {
 }
 
 fn parse_sha256_hex(value: &str) -> Result<Sha256Hash> {
-    Sha256Hash::from_hex(value).map_err(|err| {
-        LsdcError::Pricing(format!("invalid proof receipt hash hex: {err}"))
-    })
+    Sha256Hash::from_hex(value)
+        .map_err(|err| LsdcError::Pricing(format!("invalid proof receipt hash hex: {err}")))
 }
 
 fn parse_rfc3339_utc(value: &str) -> Result<chrono::DateTime<chrono::Utc>> {

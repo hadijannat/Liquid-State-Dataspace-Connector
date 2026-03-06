@@ -3,14 +3,14 @@
 ## Now
 
 - keep the default workspace truthful and green
-- use shared fixtures across proof and TEE tests
+- keep the reference stack runnable across three nodes with shared fixtures
 - keep pricing advisory-only with explicit heuristic metadata
 
 ## Next
 
-1. Stabilize the feature-gated `RISC Zero` single-hop path on a runner with the external toolchain installed.
-2. Harden `nitro-live` around real attestation material on Nitro-capable infrastructure.
-3. Extend executable policy semantics only when enforcement or evidence paths are real.
+1. Stabilize the feature-gated `RISC Zero` single-hop HTTP path on a runner with the external toolchain installed.
+2. Harden `nitro-live` around real attestation material and control-plane startup configuration on Nitro-capable infrastructure.
+3. Add richer operational visibility around job state, enforcement lifecycle, and evidence inspection without changing the truthfulness boundary.
 
 ## Later
 

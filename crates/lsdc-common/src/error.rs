@@ -23,6 +23,9 @@ pub enum LsdcError {
     #[error("Pricing error: {0}")]
     Pricing(String),
 
+    #[error("Database error: {0}")]
+    Database(String),
+
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 

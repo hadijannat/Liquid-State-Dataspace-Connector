@@ -15,5 +15,5 @@ jobs:
         run: cargo install cargo-risczero --version 5.0.0-rc.1 --locked
       - name: Run feature-gated proof-plane tests
         run: cargo test -p proof-plane-host --features risc0
-      - name: Run two-hop lineage orchestration test
-        run: cargo test -p control-plane --test orchestrator_tests test_two_hop_batch_lineage_flow
+      - name: Run feature-gated control API lineage test
+        run: cargo test -p control-plane-api --features risc0 --test risc0_http_tests

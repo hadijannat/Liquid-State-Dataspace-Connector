@@ -22,4 +22,4 @@ The long-term research direction is still the same:
 - No real multi-cloud TEE broker exists.
 - No autonomous contract mutation or billing settlement exists.
 
-This vision document is intentionally aspirational. For truthful implementation details, use [current-state.md](/Users/aeroshariati/Liquid-State-Dataspace-Connector/docs/current-state.md).
+This vision document is intentionally aspirational. For truthful implementation details, use [current-state.md](current-state.md).

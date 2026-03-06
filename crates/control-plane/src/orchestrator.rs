@@ -109,73 +109,81 @@ impl Orchestrator {
         let handle = self
             .activate_agreement(&request.agreement, &request.iface)
             .await?;
-
-        let EnclaveJobRequest {
-            agreement,
-            input_csv,
-            manifest,
-            prior_receipt,
-        } = EnclaveJobRequest {
-            agreement: request.agreement.clone(),
-            input_csv: request.input_csv.clone(),
-            manifest: request.manifest.clone(),
-            prior_receipt: request.prior_receipt.clone(),
-        };
-
-        let job_result = enclave_manager
-            .run_csv_job(EnclaveJobRequest {
+        let result = async {
+            let EnclaveJobRequest {
                 agreement,
                 input_csv,
                 manifest,
                 prior_receipt,
+            } = EnclaveJobRequest {
+                agreement: request.agreement.clone(),
+                input_csv: request.input_csv.clone(),
+                manifest: request.manifest.clone(),
+                prior_receipt: request.prior_receipt.clone(),
+            };
+
+            let job_result = enclave_manager
+                .run_csv_job(EnclaveJobRequest {
+                    agreement,
+                    input_csv,
+                    manifest,
+                    prior_receipt,
+                })
+                .await?;
+
+            let forgetting_valid =
+                verify_proof_of_forgetting(&job_result.proof_bundle.proof_of_forgetting)?;
+            let transformed_hash = Sha256Hash::digest_bytes(&job_result.output_csv).to_hex();
+            let audit_context = PricingAuditContext {
+                dataset_id: request.manifest.dataset_id.clone(),
+                transformed_asset_hash: transformed_hash.clone(),
+                proof_receipt_hash: Some(
+                    job_result
+                        .proof_bundle
+                        .provenance_receipt
+                        .receipt_hash
+                        .clone(),
+                ),
+                model_run_id: request.metrics.model_run_id.clone(),
+                metrics_window: MetricsWindow {
+                    started_at: request.metrics.metrics_window_started_at,
+                    ended_at: request.metrics.metrics_window_ended_at,
+                },
+            };
+
+            let price_decision = self
+                .request_price_decision(
+                    &request.agreement.agreement_id.0,
+                    request.current_price,
+                    &audit_context,
+                    &request.metrics,
+                )
+                .await?;
+
+            let sanction_proposal = (!forgetting_valid).then(|| SanctionProposal {
+                subject_id: request.agreement.consumer_id.clone(),
+                agreement_id: request.agreement.agreement_id.0.clone(),
+                reason: "proof-of-forgetting verification failed; settlement must remain blocked"
+                    .into(),
+                approval_required: true,
+                evidence_hash: job_result.proof_bundle.job_audit_hash.clone(),
+            });
+
+            Ok(BatchLineageResult {
+                enforcement_handle: handle.clone(),
+                transformed_csv: job_result.output_csv,
+                proof_bundle: job_result.proof_bundle,
+                price_decision,
+                sanction_proposal,
+                settlement_allowed: forgetting_valid,
             })
-            .await?;
+        }
+        .await;
 
-        let forgetting_valid =
-            verify_proof_of_forgetting(&job_result.proof_bundle.proof_of_forgetting)?;
-        let transformed_hash = Sha256Hash::digest_bytes(&job_result.output_csv).to_hex();
-        let audit_context = PricingAuditContext {
-            dataset_id: request.manifest.dataset_id.clone(),
-            transformed_asset_hash: transformed_hash.clone(),
-            proof_receipt_hash: Some(
-                job_result
-                    .proof_bundle
-                    .provenance_receipt
-                    .receipt_hash
-                    .clone(),
-            ),
-            model_run_id: request.metrics.model_run_id.clone(),
-            metrics_window: MetricsWindow {
-                started_at: request.metrics.metrics_window_started_at,
-                ended_at: request.metrics.metrics_window_ended_at,
-            },
-        };
+        if result.is_err() {
+            let _ = self.revoke_agreement(&handle).await;
+        }
 
-        let price_decision = self
-            .request_price_decision(
-                &request.agreement.agreement_id.0,
-                request.current_price,
-                &audit_context,
-                &request.metrics,
-            )
-            .await?;
-
-        let sanction_proposal = (!forgetting_valid).then(|| SanctionProposal {
-            subject_id: request.agreement.consumer_id.clone(),
-            agreement_id: request.agreement.agreement_id.0.clone(),
-            reason: "proof-of-forgetting verification failed; settlement must remain blocked"
-                .into(),
-            approval_required: true,
-            evidence_hash: job_result.proof_bundle.job_audit_hash.clone(),
-        });
-
-        Ok(BatchLineageResult {
-            enforcement_handle: handle,
-            transformed_csv: job_result.output_csv,
-            proof_bundle: job_result.proof_bundle,
-            price_decision,
-            sanction_proposal,
-            settlement_allowed: forgetting_valid,
-        })
+        result
     }
 }

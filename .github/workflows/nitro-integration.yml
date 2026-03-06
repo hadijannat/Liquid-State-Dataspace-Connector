@@ -11,5 +11,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
       - name: Run tee-orchestrator tests
         run: cargo test -p tee-orchestrator
-      - name: Run protected lineage orchestration test
-        run: cargo test -p control-plane --test orchestrator_tests test_two_hop_batch_lineage_flow
+      - name: Run protected lineage HTTP demo test
+        run: cargo test -p control-plane-api --test http_api_tests test_phase3_three_party_demo_flow

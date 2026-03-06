@@ -1,0 +1,32 @@
+[package]
+name = "control-plane-api"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+risc0 = ["proof-plane-host/risc0"]
+
+[dependencies]
+control-plane = { path = "../../crates/control-plane" }
+liquid-agent = { path = "../liquid-agent" }
+lsdc-common = { path = "../../crates/lsdc-common" }
+proof-plane-host = { path = "../../crates/proof-plane/host" }
+tee-orchestrator = { path = "../../crates/tee-orchestrator" }
+tokio = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+liquid-data-plane = { path = "../../crates/liquid-data-plane/host" }

@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package lsdc.agent;
+
+service LiquidAgent {
+    rpc ActivateAgreement(ActivateAgreementRequest) returns (ActivateAgreementResponse);
+    rpc RevokeEnforcement(RevokeEnforcementRequest) returns (RevokeEnforcementResponse);
+    rpc GetEnforcementStatus(GetEnforcementStatusRequest) returns (GetEnforcementStatusResponse);
+}
+
+message ActivateAgreementRequest {
+    string agreement_json = 1;
+    string iface = 2;
+}
+
+message ActivateAgreementResponse {
+    string handle_json = 1;
+}
+
+message RevokeEnforcementRequest {
+    string handle_json = 1;
+}
+
+message RevokeEnforcementResponse {}
+
+message GetEnforcementStatusRequest {
+    string handle_json = 1;
+}
+
+message GetEnforcementStatusResponse {
+    string status_json = 1;
+}

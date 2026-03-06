@@ -25,13 +25,12 @@ impl Risc0ProofEngine {
     }
 
     fn verify_receipt_inner(receipt: &Receipt) -> Result<CsvTransformProofJournal> {
-        receipt
-            .verify(methods::CSV_TRANSFORM_ID)
-            .map_err(|err| LsdcError::ProofGeneration(format!("risc0 receipt verification failed: {err}")))?;
-        receipt
-            .journal
-            .decode()
-            .map_err(|err| LsdcError::ProofGeneration(format!("failed to decode risc0 receipt journal: {err}")))
+        receipt.verify(methods::CSV_TRANSFORM_ID).map_err(|err| {
+            LsdcError::ProofGeneration(format!("risc0 receipt verification failed: {err}"))
+        })?;
+        receipt.journal.decode().map_err(|err| {
+            LsdcError::ProofGeneration(format!("failed to decode risc0 receipt journal: {err}"))
+        })
     }
 }
 
@@ -61,17 +60,22 @@ impl ProofEngine for Risc0ProofEngine {
                 manifest: manifest.clone(),
                 input_csv: input_csv.to_vec(),
             })
-            .map_err(|err| LsdcError::ProofGeneration(format!("failed to encode risc0 proof input: {err}")))?
+            .map_err(|err| {
+                LsdcError::ProofGeneration(format!("failed to encode risc0 proof input: {err}"))
+            })?
             .build()
-            .map_err(|err| LsdcError::ProofGeneration(format!("failed to build risc0 executor env: {err}")))?;
+            .map_err(|err| {
+                LsdcError::ProofGeneration(format!("failed to build risc0 executor env: {err}"))
+            })?;
 
         let prove_info = default_prover()
             .prove(env, methods::CSV_TRANSFORM_ELF)
             .map_err(|err| LsdcError::ProofGeneration(format!("risc0 proving failed: {err}")))?;
         let receipt = prove_info.receipt;
         let journal = Self::verify_receipt_inner(&receipt)?;
-        let receipt_bytes = bincode::serialize(&receipt)
-            .map_err(|err| LsdcError::ProofGeneration(format!("failed to serialize risc0 receipt: {err}")))?;
+        let receipt_bytes = bincode::serialize(&receipt).map_err(|err| {
+            LsdcError::ProofGeneration(format!("failed to serialize risc0 receipt: {err}"))
+        })?;
         let receipt_hash = Sha256Hash::digest_bytes(&receipt_bytes);
 
         Ok(ProofExecutionResult {
@@ -103,8 +107,9 @@ impl ProofEngine for Risc0ProofEngine {
             return Ok(false);
         }
 
-        let decoded: Receipt = bincode::deserialize(&receipt.receipt_bytes)
-            .map_err(|err| LsdcError::ProofGeneration(format!("failed to deserialize risc0 receipt: {err}")))?;
+        let decoded: Receipt = bincode::deserialize(&receipt.receipt_bytes).map_err(|err| {
+            LsdcError::ProofGeneration(format!("failed to deserialize risc0 receipt: {err}"))
+        })?;
         let journal = Self::verify_receipt_inner(&decoded)?;
 
         Ok(

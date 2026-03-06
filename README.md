@@ -4,16 +4,18 @@ The Liquid-State Dataspace Connector (LSDC) is a Rust-first dataspace prototype 
 
 This repository is intentionally split across three documentation layers:
 
-- Vision: [docs/vision.md](/Users/aeroshariati/Liquid-State-Dataspace-Connector/docs/vision.md)
-- Current state: [docs/current-state.md](/Users/aeroshariati/Liquid-State-Dataspace-Connector/docs/current-state.md)
-- Next milestone: [docs/next-milestone.md](/Users/aeroshariati/Liquid-State-Dataspace-Connector/docs/next-milestone.md)
+- Vision: [docs/vision.md](docs/vision.md)
+- Current state: [docs/current-state.md](docs/current-state.md)
+- Next milestone: [docs/next-milestone.md](docs/next-milestone.md)
+- Phase 3 reference stack: [docs/phase3-reference-stack.md](docs/phase3-reference-stack.md)
 
 ## Implemented Today
 
 - DSP contract request and agreement flow with stable raw-ODRL policy hashing.
-- Lowering of the executable ODRL subset into `LiquidPolicyIr`.
-- Multi-agreement Aya/XDP enforcement for packet and byte caps on Linux, with simulation mode elsewhere.
-- Batch CSV transform lineage with the default `DevReceiptProofEngine`.
+- Lowering of the executable ODRL subset into `LiquidPolicyIr` and `RequestedExecutionProfile`.
+- `apps/control-plane-api`: an `axum` + SQLite service that exposes DSP-style contract and transfer endpoints plus LSDC lineage, evidence, and settlement endpoints.
+- `apps/liquid-agent`: a loopback gRPC daemon that runs real Aya/XDP enforcement on Linux and simulated enforcement elsewhere.
+- Batch CSV transform lineage with the default `DevReceiptProofEngine`, proof-of-forgetting, and advisory pricing behind the HTTP service surface.
 - Feature-gated single-hop `RISC Zero` proof backend in `proof-plane-host`.
 - Nitro-oriented attestation and proof-of-forgetting flows for `nitro-dev` plus pinned-measurement validation for `nitro-live`.
 - Advisory-only pricing over gRPC with truthful heuristic algorithm metadata.
@@ -22,7 +24,7 @@ This repository is intentionally split across three documentation layers:
 
 - Experimental:
   - `RISC Zero` proving is feature-gated and off by default.
-  - `nitro-live` validates pinned measurements and raw attestation shape, but local CI does not launch real enclaves.
+  - `nitro-live` validates pinned measurements and raw attestation shape, but the local reference stack does not launch real enclaves.
 - Future:
   - recursive proof rollups
   - live enclave lifecycle orchestration on Nitro-capable runners
@@ -31,6 +33,8 @@ This repository is intentionally split across three documentation layers:
 
 ## Workspace
 
+- `apps/control-plane-api`: DSP-style HTTP API, SQLite persistence, async lineage jobs, settlement view
+- `apps/liquid-agent`: privileged or simulated transport daemon with loopback gRPC API
 - `crates/lsdc-common`: shared DSP types, requested execution profile, liquid policy IR, crypto/evidence models, fixtures loader
 - `crates/control-plane`: negotiation, orchestration, gRPC pricing client, smoke example
 - `crates/liquid-data-plane/host`: userspace loader and agreement lifecycle management
@@ -57,17 +61,23 @@ cargo test --workspace
 .venv/bin/python -m pytest python/pricing-oracle/tests
 ```
 
+Run the local Phase 3 reference stack:
+
+```bash
+./scripts/run-phase3-demo.sh
+```
+
 Linux XDP integration:
 
 ```bash
 cargo xtask build-ebpf
-sudo cargo test -p liquid-data-plane --test linux_xdp_tests -- --ignored
+sudo cargo test -p liquid-agent --test linux_agent_tests -- --ignored
 ```
 
-Feature-gated `RISC Zero` backend:
+Feature-gated `RISC Zero` control-plane path:
 
 ```bash
-cargo test -p proof-plane-host --features risc0
+cargo test -p control-plane-api --features risc0 --test risc0_http_tests
 ```
 
 The `RISC Zero` feature requires the external `cargo risczero` toolchain to be installed on the machine that runs it.

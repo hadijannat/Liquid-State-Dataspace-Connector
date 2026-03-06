@@ -13,5 +13,5 @@ jobs:
           components: rust-src
       - name: Build eBPF object
         run: cargo xtask build-ebpf
-      - name: Run ignored XDP integration test
-        run: sudo cargo test -p liquid-data-plane --test linux_xdp_tests -- --ignored
+      - name: Run ignored liquid agent XDP integration test
+        run: sudo cargo test -p liquid-agent --test linux_agent_tests -- --ignored
