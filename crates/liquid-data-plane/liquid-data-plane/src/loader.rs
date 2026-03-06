@@ -28,6 +28,7 @@ const XDP_PROGRAM_NAME: &str = "lsdc_xdp";
 
 pub struct LiquidDataPlane {
     inner: Arc<Mutex<State>>,
+    mode: DataPlaneMode,
 }
 
 #[derive(Default)]
@@ -36,10 +37,16 @@ struct State {
     interfaces: HashMap<String, InterfaceRuntime>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DataPlaneMode {
+    Kernel,
+    Simulated,
+}
+
 struct InterfaceRuntime {
     active_handles: HashSet<String>,
     #[cfg(target_os = "linux")]
-    attachment: LinuxAttachment,
+    attachment: Option<LinuxAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +82,7 @@ impl Default for LiquidDataPlane {
     fn default() -> Self {
         Self {
             inner: Arc::new(Mutex::new(State::default())),
+            mode: DataPlaneMode::Kernel,
         }
     }
 }
@@ -82,6 +90,13 @@ impl Default for LiquidDataPlane {
 impl LiquidDataPlane {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn new_simulated() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(State::default())),
+            mode: DataPlaneMode::Simulated,
+        }
     }
 
     pub fn compile(&self, agreement: &ContractAgreement) -> Result<CompiledPolicy> {
@@ -98,10 +113,21 @@ impl LiquidDataPlane {
         };
 
         let inner = self.inner.clone();
+        let use_kernel_enforcement = self.uses_kernel_enforcement();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            let _ = deactivate_inner(&inner, &handle_id, LifecycleState::Expired).await;
+            let _ = deactivate_inner(
+                &inner,
+                &handle_id,
+                LifecycleState::Expired,
+                use_kernel_enforcement,
+            )
+            .await;
         });
+    }
+
+    fn uses_kernel_enforcement(&self) -> bool {
+        matches!(self.mode, DataPlaneMode::Kernel)
     }
 }
 
@@ -113,6 +139,8 @@ impl DataPlane for LiquidDataPlane {
         iface: &str,
     ) -> Result<EnforcementHandle> {
         let compiled = compile_agreement(agreement)?;
+        #[cfg(target_os = "linux")]
+        let use_kernel_enforcement = self.uses_kernel_enforcement();
         let handle = EnforcementHandle {
             id: agreement.agreement_id.0.clone(),
             interface: iface.to_string(),
@@ -147,18 +175,32 @@ impl DataPlane for LiquidDataPlane {
 
             #[cfg(target_os = "linux")]
             {
-                if let Some(runtime) = interfaces.get_mut(iface) {
-                    insert_linux_maps(&mut runtime.attachment.ebpf, &compiled)?;
+                if use_kernel_enforcement {
+                    if let Some(runtime) = interfaces.get_mut(iface) {
+                        let attachment = runtime.attachment.as_mut().ok_or_else(|| {
+                            LsdcError::Enforcement(format!(
+                                "interface `{iface}` is missing its XDP attachment"
+                            ))
+                        })?;
+                        insert_linux_maps(&mut attachment.ebpf, &compiled)?;
+                    } else {
+                        let mut attachment = attach_linux(iface)?;
+                        insert_linux_maps(&mut attachment.ebpf, &compiled)?;
+                        interfaces.insert(
+                            iface.to_string(),
+                            InterfaceRuntime {
+                                active_handles: HashSet::new(),
+                                attachment: Some(attachment),
+                            },
+                        );
+                    }
                 } else {
-                    let mut attachment = attach_linux(iface)?;
-                    insert_linux_maps(&mut attachment.ebpf, &compiled)?;
-                    interfaces.insert(
-                        iface.to_string(),
-                        InterfaceRuntime {
+                    interfaces
+                        .entry(iface.to_string())
+                        .or_insert_with(|| InterfaceRuntime {
                             active_handles: HashSet::new(),
-                            attachment,
-                        },
-                    );
+                            attachment: None,
+                        });
                 }
             }
 
@@ -196,12 +238,20 @@ impl DataPlane for LiquidDataPlane {
     }
 
     async fn revoke(&self, handle: &EnforcementHandle) -> Result<()> {
-        deactivate_inner(&self.inner, &handle.id, LifecycleState::Revoked).await
+        deactivate_inner(
+            &self.inner,
+            &handle.id,
+            LifecycleState::Revoked,
+            self.uses_kernel_enforcement(),
+        )
+        .await
     }
 
     async fn status(&self, handle: &EnforcementHandle) -> Result<EnforcementStatus> {
         let state = self.inner.lock().await;
         let tracked = &state.tracked;
+        #[cfg(target_os = "linux")]
+        let use_kernel_enforcement = self.uses_kernel_enforcement();
         #[cfg(target_os = "linux")]
         let interfaces = &state.interfaces;
         let Some(entry) = tracked.get(&handle.id) else {
@@ -211,12 +261,21 @@ impl DataPlane for LiquidDataPlane {
         match &entry.state {
             LifecycleState::Active => {
                 #[cfg(target_os = "linux")]
-                let (packets_processed, bytes_processed) =
+                let (packets_processed, bytes_processed) = if use_kernel_enforcement {
                     if let Some(interface) = interfaces.get(&entry.interface) {
-                        read_counters(&interface.attachment, entry.enforcement_key)?
+                        let attachment = interface.attachment.as_ref().ok_or_else(|| {
+                            LsdcError::Enforcement(format!(
+                                "interface `{}` is missing its XDP attachment",
+                                entry.interface
+                            ))
+                        })?;
+                        read_counters(attachment, entry.enforcement_key)?
                     } else {
                         (0, 0)
-                    };
+                    }
+                } else {
+                    (0, 0)
+                };
 
                 #[cfg(not(target_os = "linux"))]
                 let (packets_processed, bytes_processed) = (0, 0);
@@ -238,9 +297,12 @@ async fn deactivate_inner(
     inner: &Arc<Mutex<State>>,
     handle_id: &str,
     next_state: LifecycleState,
+    _use_kernel_enforcement: bool,
 ) -> Result<()> {
     #[cfg(target_os = "linux")]
     let mut detach: Option<LinuxAttachment> = None;
+    #[cfg(target_os = "linux")]
+    let use_kernel_enforcement = _use_kernel_enforcement;
 
     {
         let mut state = inner.lock().await;
@@ -263,16 +325,31 @@ async fn deactivate_inner(
         #[cfg(target_os = "linux")]
         {
             if let Some(interface) = interfaces.get_mut(&interface_name) {
-                if let Err(err) =
-                    remove_linux_maps(&mut interface.attachment.ebpf, enforcement_key, session_port)
-                {
-                    entry.state = LifecycleState::Error(err.to_string());
-                    return Err(err);
+                if use_kernel_enforcement {
+                    let attachment = interface.attachment.as_mut().ok_or_else(|| {
+                        LsdcError::Enforcement(format!(
+                            "interface `{interface_name}` is missing its XDP attachment"
+                        ))
+                    })?;
+                    if let Err(err) = remove_linux_maps(
+                        &mut attachment.ebpf,
+                        enforcement_key,
+                        session_port,
+                    ) {
+                        entry.state = LifecycleState::Error(err.to_string());
+                        return Err(err);
+                    }
                 }
 
                 interface.active_handles.remove(handle_id);
                 if interface.active_handles.is_empty() {
-                    detach = interfaces.remove(&interface_name).map(|runtime| runtime.attachment);
+                    if use_kernel_enforcement {
+                        detach = interfaces
+                            .remove(&interface_name)
+                            .and_then(|runtime| runtime.attachment);
+                    } else {
+                        interfaces.remove(&interface_name);
+                    }
                 }
             }
         }
@@ -588,7 +665,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reuses_agreement_id_for_handle_identity() {
-        let plane = LiquidDataPlane::new();
+        let plane = LiquidDataPlane::new_simulated();
         let agreement = make_agreement("agreement-test", None);
 
         let handle = plane.enforce(&agreement, "lo").await.unwrap();
@@ -600,7 +677,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_allows_multiple_active_agreements_on_interface() {
-        let plane = LiquidDataPlane::new();
+        let plane = LiquidDataPlane::new_simulated();
         let first = make_agreement("agreement-test-1", None);
         let second = make_agreement("agreement-test-2", None);
 
@@ -612,7 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_expiry_transitions_status_to_expired() {
-        let plane = LiquidDataPlane::new();
+        let plane = LiquidDataPlane::new_simulated();
         let agreement = make_agreement(
             "agreement-expiring",
             Some(Utc::now() + Duration::milliseconds(20)),
@@ -627,7 +704,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_revoke_transitions_status_to_revoked() {
-        let plane = LiquidDataPlane::new();
+        let plane = LiquidDataPlane::new_simulated();
         let agreement = make_agreement("agreement-revoked", None);
 
         let handle = plane.enforce(&agreement, "lo").await.unwrap();

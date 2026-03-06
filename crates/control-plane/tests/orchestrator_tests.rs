@@ -85,7 +85,7 @@ async fn test_full_negotiation_and_enforcement() {
     let offer = engine.handle_request(request).await.unwrap();
     let agreement = engine.finalize(offer).await.unwrap();
 
-    let data_plane = Arc::new(LiquidDataPlane::new());
+    let data_plane = Arc::new(LiquidDataPlane::new_simulated());
     let orch = Orchestrator::new(data_plane.clone());
     let handle = orch.activate_agreement(&agreement, "lo").await.unwrap();
 
@@ -138,7 +138,7 @@ async fn test_two_hop_batch_lineage_flow() {
 
     let proof_engine = Arc::new(RiscZeroProofEngine::new());
     let enclave = Arc::new(NitroEnclaveManager::new(proof_engine.clone()));
-    let data_plane = Arc::new(LiquidDataPlane::new());
+    let data_plane = Arc::new(LiquidDataPlane::new_simulated());
     let orch = Orchestrator::with_full_stack(data_plane, enclave, Arc::new(MockPricingOracle));
 
     let first_manifest = CsvTransformManifest {

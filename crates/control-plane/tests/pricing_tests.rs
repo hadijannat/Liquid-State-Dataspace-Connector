@@ -146,7 +146,7 @@ async fn test_grpc_pricing_oracle_decide_price_contract() {
 #[tokio::test]
 async fn test_orchestrator_returns_price_decision() {
     let orchestrator = Orchestrator::with_pricing(
-        Arc::new(LiquidDataPlane::new()),
+        Arc::new(LiquidDataPlane::new_simulated()),
         Arc::new(MockPricingOracle),
     );
 
