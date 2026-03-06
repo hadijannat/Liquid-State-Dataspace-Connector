@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package lsdc.pricing;
+
+service PricingOracle {
+    rpc EvaluateUtility(UtilityRequest) returns (ShapleyResponse);
+    rpc Renegotiate(RenegotiateRequest) returns (PriceAdjustmentResponse);
+}
+
+message UtilityRequest {
+    string dataset_id = 1;
+    double loss_with_dataset = 2;
+    double loss_without_dataset = 3;
+    double accuracy_with_dataset = 4;
+    double accuracy_without_dataset = 5;
+}
+
+message ShapleyResponse {
+    string dataset_id = 1;
+    double marginal_contribution = 2;
+    double confidence = 3;
+}
+
+message RenegotiateRequest {
+    string agreement_id = 1;
+    double marginal_contribution = 2;
+    double current_price = 3;
+}
+
+message PriceAdjustmentResponse {
+    string agreement_id = 1;
+    double original_price = 2;
+    double adjusted_price = 3;
+}
