@@ -1,84 +1,105 @@
-use crate::maps::{CompiledPolicy, MapEntry};
+use crate::maps::CompiledPolicy;
+use chrono::Utc;
+use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
-use lsdc_common::odrl::ast::{Constraint, PolicyAgreement};
+use lsdc_common::odrl::ast::{Constraint, PolicyId};
 // FNV-1a constants for deterministic hashing (stable across Rust versions)
 
-/// Compile an ODRL PolicyAgreement into eBPF map entries.
+/// Compile a ContractAgreement into the reduced Sprint 0 XDP policy.
 ///
-/// This translates high-level semantic constraints into concrete
-/// key-value pairs that the XDP program reads at packet-processing time.
-pub fn compile_policy(policy: &PolicyAgreement) -> Result<CompiledPolicy> {
-    let contract_id = policy_to_contract_id(policy);
-    let mut entries = Vec::new();
+/// Sprint 0 deliberately supports only:
+/// - `Constraint::Count { max }`
+/// - agreement-level `valid_until`
+///
+/// Everything else is rejected with an explicit error so the runtime,
+/// eBPF maps, and tests all describe the same MVP surface.
+pub fn compile_agreement(agreement: &ContractAgreement) -> Result<CompiledPolicy> {
+    let policy = &agreement.policy;
 
-    for permission in &policy.permissions {
-        for constraint in &permission.constraints {
-            let entry = compile_constraint(contract_id, constraint)?;
-            entries.push(entry);
-        }
-    }
-
-    // If the policy has a valid_until, add an expiry entry
-    if let Some(until) = &policy.valid_until {
-        entries.push(MapEntry::Expiry {
-            contract_id,
-            expiry_ts: until.timestamp(),
-        });
-    }
-
-    if entries.is_empty() {
+    if !policy.prohibitions.is_empty() {
         return Err(LsdcError::PolicyCompile(
-            "Policy produced no enforceable constraints".into(),
+            "Sprint 0 does not support prohibitions".into(),
         ));
     }
 
+    if !policy.obligations.is_empty() {
+        return Err(LsdcError::PolicyCompile(
+            "Sprint 0 does not support obligations".into(),
+        ));
+    }
+
+    if policy.permissions.is_empty() {
+        return Err(LsdcError::PolicyCompile(
+            "Sprint 0 requires at least one permission".into(),
+        ));
+    }
+
+    let mut packet_limits = Vec::new();
+    for permission in &policy.permissions {
+        if !permission.duties.is_empty() {
+            return Err(LsdcError::PolicyCompile(
+                "Sprint 0 does not support duties".into(),
+            ));
+        }
+
+        for constraint in &permission.constraints {
+            match constraint {
+                Constraint::Count { max } => packet_limits.push(*max),
+                Constraint::Spatial { .. } => {
+                    return Err(unsupported_constraint("Spatial"));
+                }
+                Constraint::Temporal { .. } => {
+                    return Err(unsupported_constraint("Temporal"));
+                }
+                Constraint::Purpose { .. } => {
+                    return Err(unsupported_constraint("Purpose"));
+                }
+                Constraint::RateLimit { .. } => {
+                    return Err(unsupported_constraint("RateLimit"));
+                }
+                Constraint::Custom { key, .. } => {
+                    return Err(LsdcError::PolicyCompile(format!(
+                        "Sprint 0 does not support custom constraint `{key}`"
+                    )));
+                }
+            }
+        }
+    }
+
+    let max_packets = packet_limits.into_iter().min().ok_or_else(|| {
+        LsdcError::PolicyCompile(
+            "Sprint 0 requires at least one Count constraint for packet-cap enforcement".into(),
+        )
+    })?;
+
+    if let Some(valid_until) = policy.valid_until {
+        if valid_until <= Utc::now() {
+            return Err(LsdcError::PolicyCompile(
+                "Agreement is already expired".into(),
+            ));
+        }
+    }
+
     Ok(CompiledPolicy {
-        contract_id,
-        entries,
+        agreement_id: agreement.agreement_id.0.clone(),
+        enforcement_key: agreement_id_to_enforcement_key(&agreement.agreement_id),
+        max_packets,
+        expires_at: policy.valid_until,
     })
 }
 
-fn compile_constraint(contract_id: u32, constraint: &Constraint) -> Result<MapEntry> {
-    match constraint {
-        Constraint::Count { max } => Ok(MapEntry::RateLimit {
-            contract_id,
-            max_packets: *max,
-        }),
-        Constraint::RateLimit { max_per_second } => Ok(MapEntry::RatePerSecond {
-            contract_id,
-            max_per_second: *max_per_second,
-        }),
-        Constraint::Temporal { not_after } => Ok(MapEntry::Expiry {
-            contract_id,
-            expiry_ts: not_after.timestamp(),
-        }),
-        Constraint::Spatial { allowed_regions } => {
-            // In a real implementation, GeoRegion would map to IP CIDR blocks
-            // via a GeoIP database. For Sprint 0, we use placeholder CIDRs.
-            let cidrs: Vec<u32> = allowed_regions
-                .iter()
-                .enumerate()
-                .map(|(i, _)| i as u32 + 1) // placeholder
-                .collect();
-            Ok(MapEntry::GeoFence {
-                allowed_cidrs: cidrs,
-            })
-        }
-        Constraint::Purpose { .. } => Err(LsdcError::PolicyCompile(
-            "Purpose constraints cannot be enforced at packet level".into(),
-        )),
-        Constraint::Custom { key, .. } => Err(LsdcError::PolicyCompile(format!(
-            "Unknown constraint type: {key}"
-        ))),
-    }
+fn unsupported_constraint(kind: &str) -> LsdcError {
+    LsdcError::PolicyCompile(format!(
+        "Sprint 0 does not support {kind} constraints; only Count plus valid_until are enforceable"
+    ))
 }
 
-/// Derive a stable 32-bit contract ID from the policy's string ID.
+/// Derive a stable 32-bit enforcement key from the agreement identifier.
 ///
 /// Uses FNV-1a (not `DefaultHasher`) because `DefaultHasher` output is
 /// explicitly not guaranteed to be stable across Rust versions.
-fn policy_to_contract_id(policy: &PolicyAgreement) -> u32 {
-    let bytes = policy.id.0.as_bytes();
+fn agreement_id_to_enforcement_key(agreement_id: &PolicyId) -> u32 {
+    let bytes = agreement_id.0.as_bytes();
     let mut hash: u32 = 2_166_136_261; // FNV-1a offset basis
     for &b in bytes {
         hash ^= b as u32;
@@ -91,90 +112,93 @@ fn policy_to_contract_id(policy: &PolicyAgreement) -> u32 {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use lsdc_common::dsp::ContractAgreement;
     use lsdc_common::odrl::ast::*;
 
-    fn make_test_policy(constraints: Vec<Constraint>) -> PolicyAgreement {
-        PolicyAgreement {
-            id: PolicyId("test-1".into()),
-            provider: "did:web:provider".into(),
-            consumer: "did:web:consumer".into(),
-            target: "urn:data:test".into(),
-            permissions: vec![Permission {
-                action: Action::Stream,
-                constraints,
-                duties: vec![],
-            }],
-            prohibitions: vec![],
-            obligations: vec![],
-            valid_from: Utc::now(),
-            valid_until: None,
+    fn make_test_agreement(constraints: Vec<Constraint>) -> ContractAgreement {
+        ContractAgreement {
+            agreement_id: PolicyId("agreement-1".into()),
+            policy: PolicyAgreement {
+                id: PolicyId("policy-1".into()),
+                provider: "did:web:provider".into(),
+                consumer: "did:web:consumer".into(),
+                target: "urn:data:test".into(),
+                permissions: vec![Permission {
+                    action: Action::Stream,
+                    constraints,
+                    duties: vec![],
+                }],
+                prohibitions: vec![],
+                obligations: vec![],
+                valid_from: Utc::now(),
+                valid_until: None,
+            },
         }
     }
 
     #[test]
     fn test_compile_rate_limit() {
-        let policy = make_test_policy(vec![Constraint::Count { max: 500 }]);
-        let compiled = compile_policy(&policy).unwrap();
+        let agreement = make_test_agreement(vec![Constraint::Count { max: 500 }]);
+        let compiled = compile_agreement(&agreement).unwrap();
 
-        assert_eq!(compiled.entries.len(), 1);
-        match &compiled.entries[0] {
-            MapEntry::RateLimit { max_packets, .. } => assert_eq!(*max_packets, 500),
-            other => panic!("Expected RateLimit, got {:?}", other),
-        }
+        assert_eq!(compiled.agreement_id, "agreement-1");
+        assert_eq!(compiled.max_packets, 500);
     }
 
     #[test]
-    fn test_compile_temporal_constraint() {
+    fn test_compile_valid_until_as_expiry() {
         let future = Utc::now() + chrono::Duration::hours(1);
-        let policy = make_test_policy(vec![Constraint::Temporal { not_after: future }]);
-        let compiled = compile_policy(&policy).unwrap();
+        let mut agreement = make_test_agreement(vec![Constraint::Count { max: 500 }]);
+        agreement.policy.valid_until = Some(future);
+        let compiled = compile_agreement(&agreement).unwrap();
 
-        assert_eq!(compiled.entries.len(), 1);
-        match &compiled.entries[0] {
-            MapEntry::Expiry { expiry_ts, .. } => {
-                assert_eq!(*expiry_ts, future.timestamp());
-            }
-            other => panic!("Expected Expiry, got {:?}", other),
-        }
+        assert_eq!(compiled.expires_at, Some(future));
     }
 
     #[test]
-    fn test_compile_geo_fence() {
-        let policy = make_test_policy(vec![Constraint::Spatial {
-            allowed_regions: vec![GeoRegion::EU, GeoRegion::US],
+    fn test_compile_spatial_constraint_fails() {
+        let agreement = make_test_agreement(vec![Constraint::Spatial {
+            allowed_regions: vec![GeoRegion::EU],
         }]);
-        let compiled = compile_policy(&policy).unwrap();
-
-        assert_eq!(compiled.entries.len(), 1);
-        match &compiled.entries[0] {
-            MapEntry::GeoFence { allowed_cidrs } => assert_eq!(allowed_cidrs.len(), 2),
-            other => panic!("Expected GeoFence, got {:?}", other),
-        }
+        let result = compile_agreement(&agreement);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_compile_purpose_constraint_fails() {
-        let policy = make_test_policy(vec![Constraint::Purpose {
-            allowed: vec!["research".into()],
+    fn test_compile_rate_per_second_constraint_fails() {
+        let agreement = make_test_agreement(vec![Constraint::RateLimit {
+            max_per_second: 100,
         }]);
-        let result = compile_policy(&policy);
+        let result = compile_agreement(&agreement);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_compile_empty_policy_fails() {
-        let policy = make_test_policy(vec![]);
-        let result = compile_policy(&policy);
+        let agreement = make_test_agreement(vec![]);
+        let result = compile_agreement(&agreement);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_compile_multiple_constraints() {
-        let policy = make_test_policy(vec![
+    fn test_compile_uses_strictest_count_constraint() {
+        let agreement = make_test_agreement(vec![
             Constraint::Count { max: 1000 },
-            Constraint::RateLimit { max_per_second: 100 },
+            Constraint::Count { max: 100 },
         ]);
-        let compiled = compile_policy(&policy).unwrap();
-        assert_eq!(compiled.entries.len(), 2);
+        let compiled = compile_agreement(&agreement).unwrap();
+        assert_eq!(compiled.max_packets, 100);
+    }
+
+    #[test]
+    fn test_compile_rejects_permission_duties() {
+        let mut agreement = make_test_agreement(vec![Constraint::Count { max: 10 }]);
+        agreement.policy.permissions[0].duties.push(Duty {
+            action: Action::Delete,
+            constraints: vec![],
+        });
+
+        let result = compile_agreement(&agreement);
+        assert!(result.is_err());
     }
 }

@@ -1,8 +1,8 @@
 use crate::crypto::{
     AttestationDocument, PriceAdjustment, ProofOfForgetting, ProvenanceReceipt, ShapleyValue,
 };
+use crate::dsp::ContractAgreement;
 use crate::error::Result;
-use crate::odrl::ast::PolicyAgreement;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +23,11 @@ pub enum EnforcementStatus {
 
 #[async_trait]
 pub trait DataPlane: Send + Sync {
-    async fn enforce(&self, policy: &PolicyAgreement, iface: &str) -> Result<EnforcementHandle>;
+    async fn enforce(
+        &self,
+        agreement: &ContractAgreement,
+        iface: &str,
+    ) -> Result<EnforcementHandle>;
     async fn revoke(&self, handle: &EnforcementHandle) -> Result<()>;
     async fn status(&self, handle: &EnforcementHandle) -> Result<EnforcementStatus>;
 }
@@ -39,7 +43,7 @@ pub trait ProofEngine: Send + Sync {
     async fn prove_transform(
         &self,
         input_hash: &[u8; 32],
-        policy: &PolicyAgreement,
+        policy: &crate::odrl::ast::PolicyAgreement,
         transform: &TransformSpec,
     ) -> Result<ProvenanceReceipt>;
     async fn verify_receipt(&self, receipt: &ProvenanceReceipt) -> Result<bool>;
@@ -77,6 +81,7 @@ pub trait PricingOracle: Send + Sync {
     async fn renegotiate(
         &self,
         agreement_id: &str,
+        current_price: f64,
         value: &ShapleyValue,
     ) -> Result<PriceAdjustment>;
 }

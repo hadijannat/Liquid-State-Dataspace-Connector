@@ -19,7 +19,9 @@ impl PolicyId {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyAgreement {
+    /// Internal Sprint 0 policy identifier.
     pub id: PolicyId,
+    /// Sprint 0 keeps participant identities as strings rather than full DID types.
     pub provider: String,
     pub consumer: String,
     pub target: String,
@@ -63,12 +65,26 @@ pub enum Action {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Constraint {
-    Count { max: u64 },
-    Spatial { allowed_regions: Vec<GeoRegion> },
-    Temporal { not_after: DateTime<Utc> },
-    Purpose { allowed: Vec<String> },
-    RateLimit { max_per_second: u64 },
-    Custom { key: String, value: serde_json::Value },
+    /// The only packet-level enforcement constraint supported in Sprint 0.
+    Count {
+        max: u64,
+    },
+    Spatial {
+        allowed_regions: Vec<GeoRegion>,
+    },
+    Temporal {
+        not_after: DateTime<Utc>,
+    },
+    Purpose {
+        allowed: Vec<String>,
+    },
+    RateLimit {
+        max_per_second: u64,
+    },
+    Custom {
+        key: String,
+        value: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

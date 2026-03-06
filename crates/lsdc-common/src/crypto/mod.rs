@@ -32,6 +32,7 @@ pub struct ShapleyValue {
     pub dataset_id: String,
     pub marginal_contribution: f64,
     pub confidence: f64,
+    pub algorithm_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -19,16 +19,18 @@ message ShapleyResponse {
     string dataset_id = 1;
     double marginal_contribution = 2;
     double confidence = 3;
+    string algorithm_version = 4;
 }
 
 message RenegotiateRequest {
     string agreement_id = 1;
-    double marginal_contribution = 2;
-    double current_price = 3;
+    double current_price = 2;
+    ShapleyResponse shapley_value = 3;
 }
 
 message PriceAdjustmentResponse {
     string agreement_id = 1;
     double original_price = 2;
     double adjusted_price = 3;
+    ShapleyResponse shapley_value = 4;
 }

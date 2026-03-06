@@ -13,6 +13,7 @@ class ShapleyResult:
     dataset_id: str
     marginal_contribution: float
     confidence: float
+    algorithm_version: str
 
 
 def estimate_shapley_value(
@@ -49,6 +50,7 @@ def estimate_shapley_value(
         dataset_id=dataset_id,
         marginal_contribution=round(marginal, 6),
         confidence=confidence,
+        algorithm_version="heuristic_v0",
     )
 
 

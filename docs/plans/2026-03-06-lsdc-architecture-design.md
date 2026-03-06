@@ -1,155 +1,115 @@
-# Liquid-State Dataspace Connector (LSDC) — Architecture Design
+# Liquid-State Dataspace Connector (LSDC) — Sprint 0 Architecture Rebaseline
 
-**Date:** 2026-03-06
-**Status:** Approved
-**Scope:** Full monorepo scaffold + Pillar 1 (Liquid Data Plane) live implementation
+**Date:** 2026-03-06  
+**Status:** Implemented and verified for the Sprint 0 MVP surface
 
-## Overview
+## Summary
 
-The LSDC replaces the traditional heavyweight Data Plane proxy with four pillars:
+This repository now describes a truthful Sprint 0 MVP instead of the full four-pillar LSDC vision.
 
-1. **Liquid Data Plane** — Compiles ODRL policies into eBPF map parameters, enforced at NIC line rate
-2. **Proof Plane** — Recursive zk-SNARKs for multi-hop data provenance
-3. **TEE Orchestrator** — Hardware-anchored Proof-of-Forgetting via Trusted Execution Environments
-4. **Pricing Oracle** — Shapley value-based dynamic data pricing
+Implemented now:
 
-Sprint 0 builds all four pillar crates with real trait boundaries, but only Pillar 1 has runtime logic.
+1. **Reduced policy DSL** in Rust, parsed as the serde representation of `PolicyAgreement`
+2. **Agreement-aware Liquid Data Plane** keyed by DSP `agreement_id`
+3. **Real Linux XDP attachment path** for packet-cap enforcement, with simulation mode on non-Linux hosts
+4. **REST-based pricing oracle boundary** with a concrete Rust client and advisory renegotiation flow
 
-## Repository Structure
+Deferred:
 
-```
-lsdc-core/
-├── Cargo.toml                          # Workspace root
-├── rust-toolchain.toml                 # Nightly + bpfel target
-├── .cargo/config.toml                  # Cross-compile settings
-├── xtask/src/main.rs                   # Build orchestration (eBPF compile)
-├── crates/
-│   ├── lsdc-common/src/                # Shared types & crypto primitives
-│   │   ├── lib.rs
-│   │   ├── odrl/                       # ODRL AST, policy types, parser
-│   │   ├── identity/                   # W3C DID types
-│   │   ├── dsp/                        # Dataspace Protocol messages
-│   │   └── crypto/                     # Shared hashing, key types
-│   ├── control-plane/src/              # DSP negotiation, orchestration
-│   ├── liquid-data-plane/
-│   │   ├── liquid-data-plane/src/      # User-space: compiler, loader, maps
-│   │   └── liquid-data-plane-ebpf/src/ # Kernel-space: #![no_std] XDP
-│   ├── proof-plane/
-│   │   ├── proof-plane-host/src/       # zkVM host: prove & verify
-│   │   └── proof-plane-guest/src/      # zkVM guest: runs inside RISC Zero
-│   └── tee-orchestrator/src/           # Enclave lifecycle, attestation
-├── python/pricing-oracle/              # Shapley value gRPC sidecar
-└── docs/plans/                         # Design documents
-```
+1. JSON-LD / RDF / ODRL translation
+2. Multi-agreement packet classification on a single interface
+3. gRPC pricing transport
+4. Recursive proofs, zk receipts, and proof chaining
+5. Hardware attestation and Proof-of-Forgetting execution
 
-## Decisions
+## Implemented MVP Surface
 
-### Approach B: Nested Workspace with Host/Guest Splits
+### Policy Model
 
-aya-rs requires a `#![no_std]` eBPF crate separate from user-space. RISC Zero requires a host/guest split. These are non-negotiable toolchain constraints. Each pillar that needs a split gets nested sub-crates within the workspace.
+Sprint 0 uses a reduced internal policy DSL:
 
-### Cross-Compile + Test Stubs for macOS
+- `Constraint::Count { max }` is the only packet-level constraint enforced in XDP
+- `valid_until` is honored by a user-space expiry timer
+- `Spatial`, `RateLimit`, `Purpose`, `Temporal`, `Custom`, prohibitions, duties, and obligations are rejected with explicit errors
 
-eBPF requires Linux kernel >= 5.15. On macOS, kernel-dependent code is gated behind `#[cfg(target_os = "linux")]`. User-space logic (ODRL parsing, policy compilation) compiles and tests everywhere. Real XDP attachment tests run in Linux CI.
+The parser in [`crates/lsdc-common/src/odrl/parser.rs`](/Users/aeroshariati/Liquid-State-Dataspace-Connector/crates/lsdc-common/src/odrl/parser.rs) parses the internal JSON shape directly. It is not a JSON-LD parser.
 
-### RISC Zero as zkVM
+### Enforcement Identity
 
-More mature Rust ecosystem, well-documented dev-mode for fast testing. Concrete `RiscZeroProofEngine` implements the `ProofEngine` trait.
+The canonical runtime identity is the DSP `agreement_id`, not `policy.id`.
 
-## Core Type System
+- Public handle id: agreement id string
+- Kernel map key: stable 32-bit hash derived from agreement id
+- Supported topology: one active agreement per interface in Sprint 0
 
-### ODRL Policy Types
+### Liquid Data Plane
 
-```rust
-pub struct PolicyAgreement {
-    pub id: PolicyId,
-    pub provider: Did,
-    pub consumer: Did,
-    pub permissions: Vec<Permission>,
-    pub prohibitions: Vec<Prohibition>,
-    pub obligations: Vec<Duty>,
-    pub valid_from: DateTime<Utc>,
-    pub valid_until: Option<DateTime<Utc>>,
-}
+The data plane in [`crates/liquid-data-plane/liquid-data-plane/src/loader.rs`](/Users/aeroshariati/Liquid-State-Dataspace-Connector/crates/liquid-data-plane/liquid-data-plane/src/loader.rs) now tracks lifecycle state across:
 
-pub enum Constraint {
-    Count { max: u64 },
-    Spatial { allowed_regions: Vec<GeoRegion> },
-    Temporal { not_after: DateTime<Utc> },
-    Purpose { allowed: Vec<String> },
-    RateLimit { max_per_second: u64 },
-    Custom { key: String, value: serde_json::Value },
-}
-```
+- `Active`
+- `Expired`
+- `Revoked`
+- `Error`
 
-### Pillar Trait Boundaries
+Linux behavior:
 
-Each pillar exposes an async trait in `lsdc-common`:
+- Load the eBPF object built by `cargo xtask build-ebpf`
+- Attach `lsdc_xdp` to the interface in `SKB_MODE`
+- Populate three maps:
+  - `ACTIVE_AGREEMENT_MAP`
+  - `RATE_LIMIT_MAP`
+  - `PACKET_COUNT_MAP`
+- Read live packet counters from the kernel map in `status()`
+- Detach and clear active configuration on revoke or expiry
 
-- `DataPlane` — enforce/revoke/status
-- `ProofEngine` — prove_transform/verify_receipt/verify_chain
-- `EnclaveManager` — create_enclave/attest/destroy_and_prove
-- `PricingOracle` — evaluate_utility/renegotiate
+Non-Linux behavior:
 
-## Pillar 1: Liquid Data Plane (Live in Sprint 0)
+- Preserve the same lifecycle and agreement-aware API in simulation mode
+- Skip XDP attach while keeping tests executable on macOS
 
-### Compilation Pipeline
+### Pricing Boundary
 
-```
-JSON-LD ODRL → (oxrdf) → PolicyAgreement AST → (compiler.rs) → Vec<MapEntry>
-                                                                     │
-                                                          eBPF maps populated
-                                                                     │
-                                                          XDP attached to NIC
-```
+Sprint 0 makes REST the canonical pricing transport.
 
-The XDP program is parameterized, not JIT-compiled. It reads enforcement rules from eBPF hash maps at runtime. The "compilation" step translates ODRL constraints into map key-value entries.
+- Python service: [`python/pricing-oracle/src/server.py`](/Users/aeroshariati/Liquid-State-Dataspace-Connector/python/pricing-oracle/src/server.py)
+- Rust client: [`crates/control-plane/src/pricing.rs`](/Users/aeroshariati/Liquid-State-Dataspace-Connector/crates/control-plane/src/pricing.rs)
+- Orchestrator advisory entrypoint: [`crates/control-plane/src/orchestrator.rs`](/Users/aeroshariati/Liquid-State-Dataspace-Connector/crates/control-plane/src/orchestrator.rs)
 
-### XDP Program Behavior
+The canonical payload now includes:
 
-1. Read source IP from packet header
-2. Check GEO_FENCE_MAP — drop if outside allowed regions
-3. Increment PACKET_COUNT_MAP — drop if over rate limit
-4. Check EXPIRY_MAP — signal user-space if contract expired
+- full `ShapleyValue`
+- `algorithm_version = "heuristic_v0"`
+- advisory `PriceAdjustment` responses that do not mutate DSP contracts automatically
 
-### Lifecycle
+The proto file remains as a forward-looking schema reference and mirrors the REST contract shape.
 
-- On contract signature: attach XDP, populate maps
-- On contract expiry: async timer calls `xdp::detach()`
-- On revocation: immediate detach + map cleanup
+## Deferred Work
 
-## Pillars 2-4: Stubbed in Sprint 0
+### Proof Plane
 
-Each pillar has:
-- Concrete struct implementing the trait
-- Method bodies containing `todo!()` with descriptive messages
-- Correct type signatures matching the trait boundary
-- Enough structure that Sprint 1 teams can implement without refactoring interfaces
+[`crates/proof-plane/proof-plane-host/src/lib.rs`](/Users/aeroshariati/Liquid-State-Dataspace-Connector/crates/proof-plane/proof-plane-host/src/lib.rs) remains a trait-complete stub. No zk proof generation or recursive verification is implemented in Sprint 0.
 
-### Pillar 2: Proof Plane
+### TEE Orchestrator
 
-- `RiscZeroProofEngine` struct with stub methods
-- `proof-plane-guest` skeleton with RISC Zero entry macro
-- Recursive proof verification chain typed but not implemented
+[`crates/tee-orchestrator/src/enclave.rs`](/Users/aeroshariati/Liquid-State-Dataspace-Connector/crates/tee-orchestrator/src/enclave.rs) remains a trait-complete stub. No live enclave provisioning or attestation verification is implemented in Sprint 0.
 
-### Pillar 3: TEE Orchestrator
+### Beyond Sprint 0
 
-- `NitroEnclaveManager` struct targeting AWS Nitro Enclaves
-- Attestation document types defined
-- `ProofOfForgetting` type with timestamp and attestation fields
+Future milestones should build in this order:
 
-### Pillar 4: Pricing Oracle
+1. Real JSON-LD / ODRL subset translation into the reduced enforcement DSL
+2. Multi-agreement classification and richer XDP policy maps
+3. Pricing transport hardening and optional gRPC migration
+4. Proof-plane implementation
+5. TEE orchestration and proof-of-forgetting flow
 
-- Python gRPC service skeleton with `pricing.proto`
-- Rust `GrpcPricingOracle` client stub in control-plane
-- TMC-Shapley algorithm placeholder in Python
+## Verification
 
-## Testing Strategy
+Verified in this repo today:
 
-| Layer | Platform | Method |
-|-------|----------|--------|
-| ODRL parser | All | Unit tests with sample JSON-LD |
-| Policy compiler | All | Unit + property tests (proptest) |
-| XDP attachment | Linux CI | Integration tests with raw sockets |
-| ZK proofs | All (dev-mode) | RISC Zero dev-mode bypasses crypto |
-| TEE attestation | AWS only | Requires enclave-enabled EC2 |
+- `cargo test`
+- `python3 -m pytest python/pricing-oracle/tests`
+
+Included but not executed in this environment:
+
+- Linux-only ignored integration test for loopback XDP attach and revoke: [`crates/liquid-data-plane/liquid-data-plane/tests/linux_xdp_tests.rs`](/Users/aeroshariati/Liquid-State-Dataspace-Connector/crates/liquid-data-plane/liquid-data-plane/tests/linux_xdp_tests.rs)

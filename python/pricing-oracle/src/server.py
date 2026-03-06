@@ -24,18 +24,20 @@ class ShapleyResponse(BaseModel):
     dataset_id: str
     marginal_contribution: float
     confidence: float
+    algorithm_version: str
 
 
 class RenegotiateRequest(BaseModel):
     agreement_id: str
-    marginal_contribution: float
     current_price: float
+    shapley_value: ShapleyResponse
 
 
 class PriceAdjustmentResponse(BaseModel):
     agreement_id: str
     original_price: float
     adjusted_price: float
+    shapley_value: ShapleyResponse
 
 
 @app.post("/evaluate", response_model=ShapleyResponse)
@@ -51,16 +53,21 @@ async def evaluate_utility(req: UtilityRequest) -> ShapleyResponse:
         dataset_id=result.dataset_id,
         marginal_contribution=result.marginal_contribution,
         confidence=result.confidence,
+        algorithm_version=result.algorithm_version,
     )
 
 
 @app.post("/renegotiate", response_model=PriceAdjustmentResponse)
 async def renegotiate(req: RenegotiateRequest) -> PriceAdjustmentResponse:
-    adjusted = calculate_price_adjustment(req.current_price, req.marginal_contribution)
+    adjusted = calculate_price_adjustment(
+        req.current_price,
+        req.shapley_value.marginal_contribution,
+    )
     return PriceAdjustmentResponse(
         agreement_id=req.agreement_id,
         original_price=req.current_price,
         adjusted_price=adjusted,
+        shapley_value=req.shapley_value,
     )
 
 

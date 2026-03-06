@@ -12,7 +12,9 @@ fn test_parse_simple_policy() {
         permissions: vec![Permission {
             action: Action::Stream,
             constraints: vec![
-                Constraint::RateLimit { max_per_second: 1000 },
+                Constraint::RateLimit {
+                    max_per_second: 1000,
+                },
                 Constraint::Spatial {
                     allowed_regions: vec![GeoRegion::EU],
                 },

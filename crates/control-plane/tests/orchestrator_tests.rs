@@ -1,10 +1,10 @@
 use chrono::Utc;
 use control_plane::negotiation::NegotiationEngine;
 use control_plane::orchestrator::Orchestrator;
+use liquid_data_plane::loader::LiquidDataPlane;
 use lsdc_common::dsp::ContractRequest;
 use lsdc_common::odrl::ast::*;
 use lsdc_common::traits::{DataPlane, EnforcementStatus};
-use liquid_data_plane::loader::LiquidDataPlane;
 use std::sync::Arc;
 
 #[tokio::test]
