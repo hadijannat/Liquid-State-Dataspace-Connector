@@ -1,0 +1,21 @@
+[package]
+name = "liquid-data-plane"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lsdc-common = { path = "../../lsdc-common" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+
+# eBPF user-space loader — Linux only
+[target.'cfg(target_os = "linux")'.dependencies]
+aya = "0.13"
+aya-log = "0.2"
