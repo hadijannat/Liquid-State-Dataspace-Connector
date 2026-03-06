@@ -15,7 +15,7 @@ use crate::maps::{
 #[cfg(target_os = "linux")]
 use aya::{
     maps::HashMap as BpfHashMap,
-    programs::{Xdp, XdpFlags, XdpLinkId},
+    programs::{xdp::XdpLinkId, Xdp, XdpFlags},
     Ebpf,
 };
 #[cfg(target_os = "linux")]
@@ -202,6 +202,8 @@ impl DataPlane for LiquidDataPlane {
     async fn status(&self, handle: &EnforcementHandle) -> Result<EnforcementStatus> {
         let state = self.inner.lock().await;
         let tracked = &state.tracked;
+        #[cfg(target_os = "linux")]
+        let interfaces = &state.interfaces;
         let Some(entry) = tracked.get(&handle.id) else {
             return Ok(EnforcementStatus::Revoked);
         };
@@ -398,24 +400,32 @@ fn initialize_counter_map(ebpf: &mut Ebpf, map_name: &str, enforcement_key: u32)
 
 #[cfg(target_os = "linux")]
 fn remove_linux_maps(ebpf: &mut Ebpf, enforcement_key: u32, session_port: u16) -> Result<()> {
-    remove_map_entry::<u16, u32>(ebpf, SESSION_AGREEMENT_MAP, session_port)?;
-    remove_map_entry::<u32, u64>(ebpf, PACKET_LIMIT_MAP, enforcement_key)?;
-    remove_map_entry::<u32, u64>(ebpf, BYTE_LIMIT_MAP, enforcement_key)?;
-    remove_map_entry::<u32, u64>(ebpf, PACKET_COUNT_MAP, enforcement_key)?;
-    remove_map_entry::<u32, u64>(ebpf, BYTE_COUNT_MAP, enforcement_key)?;
+    remove_u16_u32_entry(ebpf, SESSION_AGREEMENT_MAP, session_port)?;
+    remove_u32_u64_entry(ebpf, PACKET_LIMIT_MAP, enforcement_key)?;
+    remove_u32_u64_entry(ebpf, BYTE_LIMIT_MAP, enforcement_key)?;
+    remove_u32_u64_entry(ebpf, PACKET_COUNT_MAP, enforcement_key)?;
+    remove_u32_u64_entry(ebpf, BYTE_COUNT_MAP, enforcement_key)?;
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn remove_map_entry<K, V>(ebpf: &mut Ebpf, map_name: &str, key: K) -> Result<()>
-where
-    K: std::borrow::Borrow<K> + Copy,
-    V: Copy,
-{
+fn remove_u16_u32_entry(ebpf: &mut Ebpf, map_name: &str, key: u16) -> Result<()> {
     let map = ebpf
         .map_mut(map_name)
         .ok_or_else(|| LsdcError::Enforcement(format!("missing map `{map_name}`")))?;
-    let mut typed = BpfHashMap::<_, K, V>::try_from(map).map_err(|err| {
+    let mut typed = BpfHashMap::<_, u16, u32>::try_from(map).map_err(|err| {
+        LsdcError::Enforcement(format!("failed to open `{map_name}` as hash map: {err}"))
+    })?;
+    let _ = typed.remove(&key);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn remove_u32_u64_entry(ebpf: &mut Ebpf, map_name: &str, key: u32) -> Result<()> {
+    let map = ebpf
+        .map_mut(map_name)
+        .ok_or_else(|| LsdcError::Enforcement(format!("missing map `{map_name}`")))?;
+    let mut typed = BpfHashMap::<_, u32, u64>::try_from(map).map_err(|err| {
         LsdcError::Enforcement(format!("failed to open `{map_name}` as hash map: {err}"))
     })?;
     let _ = typed.remove(&key);
