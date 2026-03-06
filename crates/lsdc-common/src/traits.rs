@@ -1,6 +1,9 @@
-use crate::crypto::{PriceDecision, ProofBundle, ProvenanceReceipt, ShapleyValue};
+use crate::crypto::{
+    PriceDecision, PricingAuditContext, ProofBundle, ProvenanceReceipt, ShapleyValue,
+};
 use crate::dsp::ContractAgreement;
 use crate::error::Result;
+use crate::execution::{ProofBackend, TeeBackend};
 use crate::liquid::CsvTransformManifest;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -45,6 +48,7 @@ pub struct ProofExecutionResult {
 
 #[async_trait]
 pub trait ProofEngine: Send + Sync {
+    fn proof_backend(&self) -> ProofBackend;
     async fn execute_csv_transform(
         &self,
         agreement: &ContractAgreement,
@@ -72,6 +76,7 @@ pub struct EnclaveJobResult {
 
 #[async_trait]
 pub trait EnclaveManager: Send + Sync {
+    fn tee_backend(&self) -> TeeBackend;
     async fn run_csv_job(&self, request: EnclaveJobRequest) -> Result<EnclaveJobResult>;
 }
 
@@ -81,14 +86,16 @@ pub struct TrainingMetrics {
     pub loss_without_dataset: f64,
     pub accuracy_with_dataset: f64,
     pub accuracy_without_dataset: f64,
+    pub model_run_id: String,
+    pub metrics_window_started_at: chrono::DateTime<chrono::Utc>,
+    pub metrics_window_ended_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[async_trait]
 pub trait PricingOracle: Send + Sync {
     async fn evaluate_utility(
         &self,
-        dataset_id: &str,
-        transformed_asset_hash: &str,
+        audit_context: &PricingAuditContext,
         metrics: &TrainingMetrics,
     ) -> Result<ShapleyValue>;
     async fn decide_price(

@@ -19,8 +19,14 @@ def test_evaluate_utility_service():
     response = asyncio.run(
         service.EvaluateUtility(
             pricing_pb2.UtilityRequest(
-                dataset_id="ds-1",
-                transformed_asset_hash="hash-1",
+                audit_context=pricing_pb2.PricingAuditContext(
+                    dataset_id="ds-1",
+                    transformed_asset_hash="hash-1",
+                    proof_receipt_hash="receipt-1",
+                    model_run_id="run-1",
+                    metrics_window_started_at="2026-03-06T10:00:00Z",
+                    metrics_window_ended_at="2026-03-06T10:05:00Z",
+                ),
                 loss_with_dataset=0.3,
                 loss_without_dataset=0.5,
                 accuracy_with_dataset=0.85,
@@ -33,3 +39,4 @@ def test_evaluate_utility_service():
     assert response.dataset_id == "ds-1"
     assert response.transformed_asset_hash == "hash-1"
     assert response.algorithm_version == "tmc_shapley_v0"
+    assert response.audit_context.model_run_id == "run-1"

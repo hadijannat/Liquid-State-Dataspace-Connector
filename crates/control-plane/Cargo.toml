@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 lsdc-common = { path = "../lsdc-common" }
-liquid-data-plane = { path = "../liquid-data-plane/liquid-data-plane" }
+liquid-data-plane = { path = "../liquid-data-plane/host" }
 tee-orchestrator = { path = "../tee-orchestrator" }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -14,14 +14,15 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
 tonic = { version = "0.12", features = ["transport"] }
 prost = "0.13"
 tokio-stream = "0.1"
 
 [dev-dependencies]
-chrono = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-proof-plane-host = { path = "../proof-plane/proof-plane-host" }
+proof-plane-host = { path = "../proof-plane/host" }
 
 [build-dependencies]
 tonic-build = "0.12"

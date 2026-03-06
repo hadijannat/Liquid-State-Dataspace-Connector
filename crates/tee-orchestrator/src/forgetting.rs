@@ -1,6 +1,4 @@
-use lsdc_common::crypto::{
-    sign_bytes, verify_signature, ProofOfForgetting, Sha256Hash,
-};
+use lsdc_common::crypto::{sign_bytes, verify_signature, ProofOfForgetting, Sha256Hash};
 use lsdc_common::error::{LsdcError, Result};
 
 pub(crate) const DEFAULT_FORGETTING_SECRET: &str = "lsdc-forgetting-dev-secret";
@@ -24,8 +22,11 @@ pub(crate) fn build_proof_of_forgetting(
 }
 
 pub fn verify_proof_of_forgetting(proof: &ProofOfForgetting) -> Result<bool> {
-    let payload =
-        forgetting_payload_bytes(&proof.attestation, proof.destruction_timestamp, &proof.data_hash)?;
+    let payload = forgetting_payload_bytes(
+        &proof.attestation,
+        proof.destruction_timestamp,
+        &proof.data_hash,
+    )?;
 
     Ok(proof.proof_hash == Sha256Hash::digest_bytes(&payload)
         && verify_signature(&forgetting_secret(), &payload, &proof.signature_hex))
@@ -59,7 +60,6 @@ mod tests {
     fn test_build_and_verify_forgetting_proof() {
         let attestation = build_attestation_document(
             "enclave-1",
-            "aws-nitro-prototype",
             &Sha256Hash::digest_bytes(b"binary"),
             chrono::Utc::now(),
         )

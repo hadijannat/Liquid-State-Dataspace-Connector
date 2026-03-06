@@ -7,13 +7,21 @@ service PricingOracle {
     rpc DecidePrice(PriceDecisionRequest) returns (PriceDecisionResponse);
 }
 
-message UtilityRequest {
+message PricingAuditContext {
     string dataset_id = 1;
     string transformed_asset_hash = 2;
-    double loss_with_dataset = 3;
-    double loss_without_dataset = 4;
-    double accuracy_with_dataset = 5;
-    double accuracy_without_dataset = 6;
+    string proof_receipt_hash = 3;
+    string model_run_id = 4;
+    string metrics_window_started_at = 5;
+    string metrics_window_ended_at = 6;
+}
+
+message UtilityRequest {
+    PricingAuditContext audit_context = 1;
+    double loss_with_dataset = 2;
+    double loss_without_dataset = 3;
+    double accuracy_with_dataset = 4;
+    double accuracy_without_dataset = 5;
 }
 
 message ShapleyResponse {
@@ -22,13 +30,13 @@ message ShapleyResponse {
     double marginal_contribution = 3;
     double confidence = 4;
     string algorithm_version = 5;
+    PricingAuditContext audit_context = 6;
 }
 
 message PriceDecisionRequest {
     string agreement_id = 1;
-    string dataset_id = 2;
-    double current_price = 3;
-    ShapleyResponse shapley_value = 4;
+    double current_price = 2;
+    ShapleyResponse shapley_value = 3;
 }
 
 message PriceDecisionResponse {
@@ -37,7 +45,8 @@ message PriceDecisionResponse {
     double original_price = 3;
     double adjusted_price = 4;
     bool approval_required = 5;
-    ShapleyResponse shapley_value = 6;
-    string signed_by = 7;
-    string signature_hex = 8;
+    string pricing_mode = 6;
+    ShapleyResponse shapley_value = 7;
+    string signed_by = 8;
+    string signature_hex = 9;
 }

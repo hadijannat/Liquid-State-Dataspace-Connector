@@ -1,10 +1,16 @@
 use lsdc_common::dsp::{ContractAgreement, ContractOffer, ContractRequest};
 use lsdc_common::error::{LsdcError, Result};
+use lsdc_common::execution::ExecutionProfile;
 use lsdc_common::odrl::ast::PolicyId;
 use lsdc_common::odrl::parser::{lower_policy, policy_hash_hex};
 
 #[derive(Default)]
 pub struct NegotiationEngine;
+
+pub struct NegotiatedAgreement {
+    pub agreement: ContractAgreement,
+    pub execution_profile: ExecutionProfile,
+}
 
 impl NegotiationEngine {
     pub fn new() -> Self {
@@ -33,10 +39,13 @@ impl NegotiationEngine {
     }
 
     pub async fn finalize(&self, offer: ContractOffer) -> Result<ContractAgreement> {
+        Ok(self.finalize_profiled(offer).await?.agreement)
+    }
+
+    pub async fn finalize_profiled(&self, offer: ContractOffer) -> Result<NegotiatedAgreement> {
         let agreement_id = PolicyId::new();
         let liquid_policy = lower_policy(&offer.odrl_policy, &offer.evidence_requirements)?;
-
-        Ok(ContractAgreement {
+        let agreement = ContractAgreement {
             agreement_id,
             asset_id: offer.asset_id,
             provider_id: offer.provider_id,
@@ -45,6 +54,11 @@ impl NegotiationEngine {
             policy_hash: offer.policy_hash,
             evidence_requirements: offer.evidence_requirements,
             liquid_policy,
+        };
+
+        Ok(NegotiatedAgreement {
+            execution_profile: ExecutionProfile::from_agreement(&agreement),
+            agreement,
         })
     }
 }

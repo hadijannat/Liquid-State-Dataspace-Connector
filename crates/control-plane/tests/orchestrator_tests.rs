@@ -2,12 +2,13 @@ use async_trait::async_trait;
 use control_plane::negotiation::NegotiationEngine;
 use control_plane::orchestrator::{BatchLineageRequest, Orchestrator};
 use liquid_data_plane::loader::LiquidDataPlane;
-use lsdc_common::crypto::{PriceDecision, ShapleyValue};
+use lsdc_common::crypto::{PriceDecision, PricingAuditContext, ShapleyValue};
 use lsdc_common::dsp::{ContractRequest, EvidenceRequirement};
 use lsdc_common::error::Result;
+use lsdc_common::execution::PricingMode;
 use lsdc_common::liquid::{CsvTransformManifest, CsvTransformOp};
 use lsdc_common::traits::{DataPlane, PricingOracle, ProofEngine, TrainingMetrics};
-use proof_plane_host::RiscZeroProofEngine;
+use proof_plane_host::DevReceiptProofEngine;
 use std::sync::Arc;
 use tee_orchestrator::enclave::NitroEnclaveManager;
 
@@ -17,16 +18,16 @@ struct MockPricingOracle;
 impl PricingOracle for MockPricingOracle {
     async fn evaluate_utility(
         &self,
-        dataset_id: &str,
-        transformed_asset_hash: &str,
+        audit_context: &PricingAuditContext,
         _metrics: &TrainingMetrics,
     ) -> Result<ShapleyValue> {
         Ok(ShapleyValue {
-            dataset_id: dataset_id.to_string(),
-            transformed_asset_hash: transformed_asset_hash.to_string(),
+            dataset_id: audit_context.dataset_id.clone(),
+            transformed_asset_hash: audit_context.transformed_asset_hash.clone(),
             marginal_contribution: 0.2,
             confidence: 0.9,
             algorithm_version: "tmc_shapley_v0".into(),
+            audit_context: audit_context.clone(),
         })
     }
 
@@ -42,6 +43,7 @@ impl PricingOracle for MockPricingOracle {
             original_price: current_price,
             adjusted_price: current_price + 25.0,
             approval_required: true,
+            pricing_mode: PricingMode::Advisory,
             shapley_value: value.clone(),
             signed_by: "mock-pricing-oracle".into(),
             signature_hex: "deadbeef".into(),
@@ -91,7 +93,10 @@ async fn test_full_negotiation_and_enforcement() {
 
     assert!(handle.active);
     let status = data_plane.status(&handle).await.unwrap();
-    assert!(matches!(status, lsdc_common::traits::EnforcementStatus::Active { .. }));
+    assert!(matches!(
+        status,
+        lsdc_common::traits::EnforcementStatus::Active { .. }
+    ));
 }
 
 #[tokio::test]
@@ -136,7 +141,7 @@ async fn test_two_hop_batch_lineage_flow() {
         .await
         .unwrap();
 
-    let proof_engine = Arc::new(RiscZeroProofEngine::new());
+    let proof_engine = Arc::new(DevReceiptProofEngine::new());
     let enclave = Arc::new(NitroEnclaveManager::new(proof_engine.clone()));
     let data_plane = Arc::new(LiquidDataPlane::new_simulated());
     let orch = Orchestrator::with_full_stack(data_plane, enclave, Arc::new(MockPricingOracle));
@@ -162,6 +167,9 @@ async fn test_two_hop_batch_lineage_flow() {
                 loss_without_dataset: 0.4,
                 accuracy_with_dataset: 0.91,
                 accuracy_without_dataset: 0.86,
+                model_run_id: "tier-b-run".into(),
+                metrics_window_started_at: chrono::Utc::now() - chrono::Duration::minutes(5),
+                metrics_window_ended_at: chrono::Utc::now(),
             },
             prior_receipt: None,
         })
@@ -170,7 +178,7 @@ async fn test_two_hop_batch_lineage_flow() {
 
     assert!(first.settlement_allowed);
     assert!(first.sanction_proposal.is_none());
-    assert!(first.amendment_proposal.is_some());
+    assert_eq!(first.price_decision.pricing_mode, PricingMode::Advisory);
 
     let second = orch
         .run_batch_csv_lineage(BatchLineageRequest {
@@ -197,6 +205,9 @@ async fn test_two_hop_batch_lineage_flow() {
                 loss_without_dataset: 0.4,
                 accuracy_with_dataset: 0.93,
                 accuracy_without_dataset: 0.86,
+                model_run_id: "tier-c-run".into(),
+                metrics_window_started_at: chrono::Utc::now() - chrono::Duration::minutes(5),
+                metrics_window_ended_at: chrono::Utc::now(),
             },
             prior_receipt: Some(first.proof_bundle.provenance_receipt.clone()),
         })

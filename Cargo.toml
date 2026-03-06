@@ -4,18 +4,18 @@ members = [
     "xtask",
     "crates/lsdc-common",
     "crates/control-plane",
-    "crates/liquid-data-plane/liquid-data-plane",
-    "crates/liquid-data-plane/liquid-data-plane-ebpf",
-    "crates/proof-plane/proof-plane-host",
-    "crates/proof-plane/proof-plane-guest",
+    "crates/liquid-data-plane/host",
+    "crates/liquid-data-plane/ebpf",
+    "crates/proof-plane/host",
+    "crates/proof-plane/guest",
     "crates/tee-orchestrator",
 ]
 default-members = [
     "xtask",
     "crates/lsdc-common",
     "crates/control-plane",
-    "crates/liquid-data-plane/liquid-data-plane",
-    "crates/proof-plane/proof-plane-host",
+    "crates/liquid-data-plane/host",
+    "crates/proof-plane/host",
     "crates/tee-orchestrator",
 ]
 

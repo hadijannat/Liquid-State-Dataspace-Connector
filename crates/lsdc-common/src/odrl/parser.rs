@@ -31,7 +31,9 @@ pub fn lower_policy(
     let permissions = policy
         .get("permission")
         .and_then(Value::as_array)
-        .ok_or_else(|| LsdcError::OdrlParse("ODRL policy must contain a permission array".into()))?;
+        .ok_or_else(|| {
+            LsdcError::OdrlParse("ODRL policy must contain a permission array".into())
+        })?;
 
     if permissions.is_empty() {
         return Err(LsdcError::PolicyCompile(
@@ -77,10 +79,14 @@ pub fn lower_policy(
                 let operand = required_string(constraint, "leftOperand")?;
                 match operand.as_str() {
                     "count" => packet_caps.push(parse_u64_right_operand(constraint)?),
-                    "spatial" => extend_unique(&mut allowed_regions, parse_string_list_right_operand(constraint)?),
-                    "purpose" => {
-                        extend_unique(&mut allowed_purposes, parse_string_list_right_operand(constraint)?)
-                    }
+                    "spatial" => extend_unique(
+                        &mut allowed_regions,
+                        parse_string_list_right_operand(constraint)?,
+                    ),
+                    "purpose" => extend_unique(
+                        &mut allowed_purposes,
+                        parse_string_list_right_operand(constraint)?,
+                    ),
                     other => {
                         return Err(LsdcError::PolicyCompile(format!(
                             "unsupported ODRL constraint `{other}`"
@@ -110,9 +116,10 @@ pub fn lower_policy(
                                 "unsupported delete duty operand `{operand}`"
                             )));
                         }
-                        delete_after_seconds = Some(parse_duration_seconds(
-                            &required_string(constraint, "rightOperand")?,
-                        )?);
+                        delete_after_seconds = Some(parse_duration_seconds(&required_string(
+                            constraint,
+                            "rightOperand",
+                        )?)?);
                     }
                     "anonymize" => {
                         allow_anonymize = true;
@@ -189,7 +196,10 @@ fn parse_actions(value: Option<&Value>) -> Result<Vec<String>> {
     })?;
 
     match value {
-        Value::Array(items) => items.iter().map(|item| parse_action_value(Some(item))).collect(),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| parse_action_value(Some(item)))
+            .collect(),
         _ => Ok(vec![parse_action_value(Some(value))?]),
     }
 }

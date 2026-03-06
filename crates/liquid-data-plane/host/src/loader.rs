@@ -150,7 +150,10 @@ impl DataPlane for LiquidDataPlane {
 
         {
             let mut state = self.inner.lock().await;
-            let State { tracked, interfaces } = &mut *state;
+            let State {
+                tracked,
+                interfaces,
+            } = &mut *state;
 
             if tracked
                 .get(&handle.id)
@@ -306,7 +309,10 @@ async fn deactivate_inner(
 
     {
         let mut state = inner.lock().await;
-        let State { tracked, interfaces } = &mut *state;
+        let State {
+            tracked,
+            interfaces,
+        } = &mut *state;
         let Some(entry) = tracked.get_mut(handle_id) else {
             return Ok(());
         };
@@ -331,11 +337,9 @@ async fn deactivate_inner(
                             "interface `{interface_name}` is missing its XDP attachment"
                         ))
                     })?;
-                    if let Err(err) = remove_linux_maps(
-                        &mut attachment.ebpf,
-                        enforcement_key,
-                        session_port,
-                    ) {
+                    if let Err(err) =
+                        remove_linux_maps(&mut attachment.ebpf, enforcement_key, session_port)
+                    {
                         entry.state = LifecycleState::Error(err.to_string());
                         return Err(err);
                     }
@@ -434,9 +438,11 @@ fn insert_linux_maps(ebpf: &mut Ebpf, compiled: &CompiledPolicy) -> Result<()> {
             ))
         })?;
         let packet_cap = compiled.max_packets.unwrap_or(u64::MAX);
-        limit_map.insert(compiled.enforcement_key, packet_cap, 0).map_err(|err| {
-            LsdcError::Enforcement(format!("failed to populate `{PACKET_LIMIT_MAP}`: {err}"))
-        })?;
+        limit_map
+            .insert(compiled.enforcement_key, packet_cap, 0)
+            .map_err(|err| {
+                LsdcError::Enforcement(format!("failed to populate `{PACKET_LIMIT_MAP}`: {err}"))
+            })?;
     }
 
     {
@@ -449,9 +455,11 @@ fn insert_linux_maps(ebpf: &mut Ebpf, compiled: &CompiledPolicy) -> Result<()> {
             ))
         })?;
         let byte_cap = compiled.max_bytes.unwrap_or(u64::MAX);
-        limit_map.insert(compiled.enforcement_key, byte_cap, 0).map_err(|err| {
-            LsdcError::Enforcement(format!("failed to populate `{BYTE_LIMIT_MAP}`: {err}"))
-        })?;
+        limit_map
+            .insert(compiled.enforcement_key, byte_cap, 0)
+            .map_err(|err| {
+                LsdcError::Enforcement(format!("failed to populate `{BYTE_LIMIT_MAP}`: {err}"))
+            })?;
     }
 
     initialize_counter_map(ebpf, PACKET_COUNT_MAP, compiled.enforcement_key)?;
@@ -547,7 +555,9 @@ fn detach_linux(mut attachment: LinuxAttachment) -> Result<()> {
             ))
         })?
         .try_into()
-        .map_err(|err| LsdcError::Enforcement(format!("failed to convert program to XDP: {err}")))?;
+        .map_err(|err| {
+            LsdcError::Enforcement(format!("failed to convert program to XDP: {err}"))
+        })?;
     program
         .detach(link_id)
         .map_err(|err| LsdcError::Enforcement(format!("failed to detach XDP link: {err}")))?;
@@ -588,7 +598,7 @@ fn resolve_ebpf_object_path() -> Result<PathBuf> {
     let path = workspace_root
         .join("crates")
         .join("liquid-data-plane")
-        .join("liquid-data-plane-ebpf")
+        .join("ebpf")
         .join("target")
         .join("bpfel-unknown-none")
         .join(profile)
@@ -712,5 +722,26 @@ mod tests {
 
         let status = plane.status(&handle).await.unwrap();
         assert!(matches!(status, EnforcementStatus::Revoked));
+    }
+
+    #[tokio::test]
+    async fn test_revoke_only_clears_targeted_agreement_on_interface() {
+        let plane = LiquidDataPlane::new_simulated();
+        let first = make_agreement("agreement-target-a", None);
+        let second = make_agreement("agreement-target-b", None);
+
+        let first_handle = plane.enforce(&first, "lo").await.unwrap();
+        let second_handle = plane.enforce(&second, "lo").await.unwrap();
+
+        plane.revoke(&first_handle).await.unwrap();
+
+        assert!(matches!(
+            plane.status(&first_handle).await.unwrap(),
+            EnforcementStatus::Revoked
+        ));
+        assert!(matches!(
+            plane.status(&second_handle).await.unwrap(),
+            EnforcementStatus::Active { .. }
+        ));
     }
 }

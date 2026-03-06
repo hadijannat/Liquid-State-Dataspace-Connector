@@ -1,18 +1,19 @@
 use async_trait::async_trait;
-use lsdc_common::crypto::{
-    hash_json, sign_bytes, verify_signature, ProvenanceReceipt, Sha256Hash,
-};
+use lsdc_common::crypto::{hash_json, sign_bytes, verify_signature, ProvenanceReceipt, Sha256Hash};
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
+use lsdc_common::execution::ProofBackend;
 use lsdc_common::liquid::{validate_transform_manifest, CsvTransformManifest};
 use lsdc_common::traits::{ProofEngine, ProofExecutionResult};
 use proof_plane_guest::apply_manifest;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_PROOF_SECRET: &str = "lsdc-proof-dev-secret";
+const DEV_RECEIPT_FORMAT_VERSION: &str = "lsdc.dev-receipt.v1";
+const DEV_RECEIPT_METHOD_ID: &str = "dev-hmac-manifest-v1";
 
 #[derive(Clone)]
-pub struct RiscZeroProofEngine {
+pub struct DevReceiptProofEngine {
     secret: String,
 }
 
@@ -33,13 +34,13 @@ struct ProofEnvelope {
     signature_hex: String,
 }
 
-impl Default for RiscZeroProofEngine {
+impl Default for DevReceiptProofEngine {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl RiscZeroProofEngine {
+impl DevReceiptProofEngine {
     pub fn new() -> Self {
         Self {
             secret: std::env::var("LSDC_PROOF_SECRET")
@@ -49,7 +50,11 @@ impl RiscZeroProofEngine {
 }
 
 #[async_trait]
-impl ProofEngine for RiscZeroProofEngine {
+impl ProofEngine for DevReceiptProofEngine {
+    fn proof_backend(&self) -> ProofBackend {
+        ProofBackend::DevReceipt
+    }
+
     async fn execute_csv_transform(
         &self,
         agreement: &ContractAgreement,
@@ -105,12 +110,10 @@ impl ProofEngine for RiscZeroProofEngine {
                 transform_manifest_hash,
                 prior_receipt_hash,
                 receipt_hash,
-                proof_system: if recursion_used {
-                    "risc0-dev-recursive".into()
-                } else {
-                    "risc0-dev-local".into()
-                },
-                proof_bytes,
+                proof_backend: ProofBackend::DevReceipt,
+                receipt_format_version: DEV_RECEIPT_FORMAT_VERSION.into(),
+                proof_method_id: DEV_RECEIPT_METHOD_ID.into(),
+                receipt_bytes: proof_bytes,
                 timestamp: chrono::Utc::now(),
             },
         })
@@ -118,22 +121,29 @@ impl ProofEngine for RiscZeroProofEngine {
 
     async fn verify_receipt(&self, receipt: &ProvenanceReceipt) -> Result<bool> {
         let envelope: ProofEnvelope =
-            serde_json::from_slice(&receipt.proof_bytes).map_err(LsdcError::from)?;
+            serde_json::from_slice(&receipt.receipt_bytes).map_err(LsdcError::from)?;
         let claims_bytes = serde_json::to_vec(&envelope.claims).map_err(LsdcError::from)?;
 
-        let signature_valid = verify_signature(&self.secret, &claims_bytes, &envelope.signature_hex);
+        let signature_valid =
+            verify_signature(&self.secret, &claims_bytes, &envelope.signature_hex);
         if !signature_valid {
             return Ok(false);
         }
 
-        Ok(receipt.receipt_hash == Sha256Hash::digest_bytes(&receipt.proof_bytes)
-            && envelope.claims.agreement_id == receipt.agreement_id
-            && envelope.claims.input_hash == receipt.input_hash.to_hex()
-            && envelope.claims.output_hash == receipt.output_hash.to_hex()
-            && envelope.claims.policy_hash == receipt.policy_hash.to_hex()
-            && envelope.claims.transform_manifest_hash == receipt.transform_manifest_hash.to_hex()
-            && envelope.claims.prior_receipt_hash
-                == receipt.prior_receipt_hash.as_ref().map(Sha256Hash::to_hex))
+        Ok(
+            receipt.receipt_hash == Sha256Hash::digest_bytes(&receipt.receipt_bytes)
+                && receipt.proof_backend == ProofBackend::DevReceipt
+                && receipt.receipt_format_version == DEV_RECEIPT_FORMAT_VERSION
+                && receipt.proof_method_id == DEV_RECEIPT_METHOD_ID
+                && envelope.claims.agreement_id == receipt.agreement_id
+                && envelope.claims.input_hash == receipt.input_hash.to_hex()
+                && envelope.claims.output_hash == receipt.output_hash.to_hex()
+                && envelope.claims.policy_hash == receipt.policy_hash.to_hex()
+                && envelope.claims.transform_manifest_hash
+                    == receipt.transform_manifest_hash.to_hex()
+                && envelope.claims.prior_receipt_hash
+                    == receipt.prior_receipt_hash.as_ref().map(Sha256Hash::to_hex),
+        )
     }
 
     async fn verify_chain(&self, chain: &[ProvenanceReceipt]) -> Result<bool> {
@@ -220,24 +230,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_proves_and_verifies_transform() {
-        let engine = RiscZeroProofEngine::new();
+        let engine = DevReceiptProofEngine::new();
         let result = engine
-            .execute_csv_transform(
-                &agreement(),
-                b"id,name\n1,Alice\n",
-                &manifest(),
-                None,
-            )
+            .execute_csv_transform(&agreement(), b"id,name\n1,Alice\n", &manifest(), None)
             .await
             .unwrap();
 
-        assert!(String::from_utf8(result.output_csv).unwrap().contains("***"));
+        assert!(String::from_utf8(result.output_csv)
+            .unwrap()
+            .contains("***"));
         assert!(engine.verify_receipt(&result.receipt).await.unwrap());
     }
 
     #[tokio::test]
     async fn test_verifies_receipt_chain() {
-        let engine = RiscZeroProofEngine::new();
+        let engine = DevReceiptProofEngine::new();
         let agreement = agreement();
         let manifest = manifest();
         let first = engine

@@ -48,10 +48,21 @@ pub enum CsvTransformOpKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CsvTransformOp {
-    DropColumns { columns: Vec<String> },
-    RedactColumns { columns: Vec<String>, replacement: String },
-    HashColumns { columns: Vec<String>, salt: String },
-    RowFilter { column: String, equals: String },
+    DropColumns {
+        columns: Vec<String>,
+    },
+    RedactColumns {
+        columns: Vec<String>,
+        replacement: String,
+    },
+    HashColumns {
+        columns: Vec<String>,
+        salt: String,
+    },
+    RowFilter {
+        column: String,
+        equals: String,
+    },
 }
 
 impl CsvTransformOp {
@@ -95,7 +106,8 @@ pub fn validate_transform_manifest(
         ));
     }
 
-    let actual_kinds: Vec<CsvTransformOpKind> = manifest.ops.iter().map(CsvTransformOp::kind).collect();
+    let actual_kinds: Vec<CsvTransformOpKind> =
+        manifest.ops.iter().map(CsvTransformOp::kind).collect();
     for required in &policy.transform_guard.required_ops {
         if !actual_kinds.iter().any(|kind| kind == required) {
             return Err(LsdcError::PolicyCompile(format!(

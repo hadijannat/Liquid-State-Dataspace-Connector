@@ -13,6 +13,8 @@ import uvicorn
 
 from .proto_loader import load_pricing_proto
 from .shapley import (
+    MetricsWindow,
+    PricingAuditContext,
     ShapleyResult,
     calculate_price_decision,
     estimate_shapley_value,
@@ -30,9 +32,18 @@ async def health():
 
 class PricingOracleService(pricing_pb2_grpc.PricingOracleServicer):
     async def EvaluateUtility(self, request, context):
+        audit_context = PricingAuditContext(
+            dataset_id=request.audit_context.dataset_id,
+            transformed_asset_hash=request.audit_context.transformed_asset_hash,
+            proof_receipt_hash=request.audit_context.proof_receipt_hash,
+            model_run_id=request.audit_context.model_run_id,
+            metrics_window=MetricsWindow(
+                started_at=request.audit_context.metrics_window_started_at,
+                ended_at=request.audit_context.metrics_window_ended_at,
+            ),
+        )
         result = estimate_shapley_value(
-            dataset_id=request.dataset_id,
-            transformed_asset_hash=request.transformed_asset_hash,
+            audit_context=audit_context,
             loss_with=request.loss_with_dataset,
             loss_without=request.loss_without_dataset,
             accuracy_with=request.accuracy_with_dataset,
@@ -44,6 +55,14 @@ class PricingOracleService(pricing_pb2_grpc.PricingOracleServicer):
             marginal_contribution=result.marginal_contribution,
             confidence=result.confidence,
             algorithm_version=result.algorithm_version,
+            audit_context=pricing_pb2.PricingAuditContext(
+                dataset_id=result.audit_context.dataset_id,
+                transformed_asset_hash=result.audit_context.transformed_asset_hash,
+                proof_receipt_hash=result.audit_context.proof_receipt_hash,
+                model_run_id=result.audit_context.model_run_id,
+                metrics_window_started_at=result.audit_context.metrics_window.started_at,
+                metrics_window_ended_at=result.audit_context.metrics_window.ended_at,
+            ),
         )
 
     async def DecidePrice(self, request, context):
@@ -57,6 +76,16 @@ class PricingOracleService(pricing_pb2_grpc.PricingOracleServicer):
                 marginal_contribution=shapley.marginal_contribution,
                 confidence=shapley.confidence,
                 algorithm_version=shapley.algorithm_version,
+                audit_context=PricingAuditContext(
+                    dataset_id=shapley.audit_context.dataset_id,
+                    transformed_asset_hash=shapley.audit_context.transformed_asset_hash,
+                    proof_receipt_hash=shapley.audit_context.proof_receipt_hash,
+                    model_run_id=shapley.audit_context.model_run_id,
+                    metrics_window=MetricsWindow(
+                        started_at=shapley.audit_context.metrics_window_started_at,
+                        ended_at=shapley.audit_context.metrics_window_ended_at,
+                    ),
+                ),
             ),
             signer=os.getenv("LSDC_PRICING_SIGNER", "pricing-oracle"),
         )
@@ -66,12 +95,21 @@ class PricingOracleService(pricing_pb2_grpc.PricingOracleServicer):
             original_price=decision.original_price,
             adjusted_price=decision.adjusted_price,
             approval_required=decision.approval_required,
+            pricing_mode=decision.pricing_mode,
             shapley_value=pricing_pb2.ShapleyResponse(
                 dataset_id=decision.shapley_value.dataset_id,
                 transformed_asset_hash=decision.shapley_value.transformed_asset_hash,
                 marginal_contribution=decision.shapley_value.marginal_contribution,
                 confidence=decision.shapley_value.confidence,
                 algorithm_version=decision.shapley_value.algorithm_version,
+                audit_context=pricing_pb2.PricingAuditContext(
+                    dataset_id=decision.shapley_value.audit_context.dataset_id,
+                    transformed_asset_hash=decision.shapley_value.audit_context.transformed_asset_hash,
+                    proof_receipt_hash=decision.shapley_value.audit_context.proof_receipt_hash,
+                    model_run_id=decision.shapley_value.audit_context.model_run_id,
+                    metrics_window_started_at=decision.shapley_value.audit_context.metrics_window.started_at,
+                    metrics_window_ended_at=decision.shapley_value.audit_context.metrics_window.ended_at,
+                ),
             ),
             signed_by=decision.signed_by,
             signature_hex=decision.signature_hex,

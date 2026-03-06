@@ -43,7 +43,10 @@ fn test_parse_and_lower_supported_odrl_subset() {
         lowered.transform_guard.required_ops,
         vec![CsvTransformOpKind::RedactColumns]
     );
-    assert_eq!(lowered.runtime_guard.delete_after_seconds, Some(30 * 24 * 60 * 60));
+    assert_eq!(
+        lowered.runtime_guard.delete_after_seconds,
+        Some(30 * 24 * 60 * 60)
+    );
     assert!(lowered.runtime_guard.approval_required);
 }
 
@@ -58,7 +61,10 @@ fn test_policy_hash_is_stable_for_equivalent_json_key_order() {
         "permission": [{"action": "read"}]
     });
 
-    assert_eq!(policy_hash_hex(&left).unwrap(), policy_hash_hex(&right).unwrap());
+    assert_eq!(
+        policy_hash_hex(&left).unwrap(),
+        policy_hash_hex(&right).unwrap()
+    );
 }
 
 #[test]

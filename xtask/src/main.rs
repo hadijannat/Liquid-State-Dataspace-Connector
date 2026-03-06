@@ -26,7 +26,7 @@ fn build_ebpf(release: bool) -> Result<()> {
     let ebpf_dir = workspace_root
         .join("crates")
         .join("liquid-data-plane")
-        .join("liquid-data-plane-ebpf");
+        .join("ebpf");
 
     if !ebpf_dir.exists() {
         bail!("eBPF crate not found at {}", ebpf_dir.display());

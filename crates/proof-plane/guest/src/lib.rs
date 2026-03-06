@@ -20,9 +20,7 @@ pub fn apply_manifest(input_csv: &[u8], manifest: &CsvTransformManifest) -> Resu
                 columns,
                 replacement,
             } => redact_columns(table, columns, replacement)?,
-            CsvTransformOp::HashColumns { columns, salt } => {
-                hash_columns(table, columns, salt)?
-            }
+            CsvTransformOp::HashColumns { columns, salt } => hash_columns(table, columns, salt)?,
             CsvTransformOp::RowFilter { column, equals } => row_filter(table, column, equals)?,
         };
     }
@@ -64,7 +62,9 @@ fn drop_columns(mut table: CsvTable, columns: &[String]) -> CsvTable {
         .headers
         .iter()
         .enumerate()
-        .filter_map(|(index, header)| (!columns.iter().any(|column| column == header)).then_some(index))
+        .filter_map(|(index, header)| {
+            (!columns.iter().any(|column| column == header)).then_some(index)
+        })
         .collect();
 
     table.headers = keep_indices
@@ -74,7 +74,12 @@ fn drop_columns(mut table: CsvTable, columns: &[String]) -> CsvTable {
     table.rows = table
         .rows
         .into_iter()
-        .map(|row| keep_indices.iter().map(|index| row[*index].clone()).collect())
+        .map(|row| {
+            keep_indices
+                .iter()
+                .map(|index| row[*index].clone())
+                .collect()
+        })
         .collect();
     table
 }
@@ -108,7 +113,9 @@ fn row_filter(mut table: CsvTable, column: &str, equals: &str) -> Result<CsvTabl
         )));
     };
 
-    table.rows.retain(|row| row.get(column_index).is_some_and(|value| value == equals));
+    table
+        .rows
+        .retain(|row| row.get(column_index).is_some_and(|value| value == equals));
     Ok(table)
 }
 

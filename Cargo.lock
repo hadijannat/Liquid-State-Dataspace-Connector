@@ -436,6 +436,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "hex",
  "liquid-data-plane",
  "lsdc-common",
  "proof-plane-host",

@@ -1,36 +1,43 @@
 # Liquid-State Dataspace Connector
 
-This repository is a Rust-first LSDC prototype for batch CSV lineage. It keeps DSP/ODRL at the public boundary, lowers policies into an internal `LiquidPolicyIr`, enforces transfer guards in an Aya/XDP data plane, produces chained provenance receipts for CSV transforms, emits prototype Nitro-style attestation and proof-of-forgetting evidence, and prices completed jobs over gRPC from a Python sidecar.
+This repository is the Phase 1 rebaseline of the Liquid-State Dataspace Connector. It keeps `DSP + ODRL` at the public boundary, uses batch CSV lineage as the executable proving ground, and evolves the system as a Rust-first control, proof, TEE, and pricing platform.
 
 ## What is implemented
 
-- Raw ODRL JSON-LD request and agreement payloads with stable `policy_hash` generation.
-- A reduced, explicit ODRL subset lowered into `LiquidPolicyIr`:
-  - actions: `read`, `transfer`, `anonymize`
-  - constraints: `count`, `spatial`, `purpose`, `validUntil`
-  - duties: `delete-after`, `transform-required`
-- Multi-agreement liquid data plane state keyed by DSP `agreement_id` and per-session port.
-- Batch CSV transform kernel for `drop_columns`, `redact_columns`, `hash_columns`, and `row_filter`.
-- Prototype proof receipts with prior-receipt chaining and host-side verification.
-- Prototype Nitro-style proof bundles containing provenance, attestation, proof-of-forgetting, and an audit hash.
-- gRPC pricing oracle with signed `PriceDecision` responses and a FastAPI `/health` endpoint.
-- An orchestration path for negotiate -> arm XDP -> run protected CSV job -> verify forgetting proof -> request price decision -> emit amendment/sanction proposals.
+- Raw ODRL JSON negotiation with stable `policy_hash` generation.
+- Reduced executable ODRL lowering into `LiquidPolicyIr` for `read`, `transfer`, `anonymize`, `count`, `purpose`, `validUntil`, `transform-required`, and `delete-after`.
+- Internal `ExecutionProfile` derivation after agreement finalization.
+- Multi-agreement Aya/XDP enforcement keyed by agreement id and session port.
+- Batch CSV transforms for `drop_columns`, `redact_columns`, `hash_columns`, and `row_filter`.
+- Development proof receipts with explicit backend metadata and prior-receipt chaining.
+- Nitro-oriented attestation and proof-of-forgetting evidence for `nitro-dev` and pinned-measurement `nitro-live` validation.
+- gRPC pricing oracle with signed, advisory-only `PriceDecision` responses plus audit context.
+- End-to-end orchestration for negotiate -> arm XDP -> run protected CSV job -> verify forgetting proof -> request advisory price decision -> emit sanctions when forgetting verification fails.
 
-## What is still prototype-only
+## Important limits
 
-- The proof plane uses a local proof envelope and receipt chain, not real RISC Zero cryptography yet.
-- The TEE layer produces deterministic Nitro-style attestation receipts locally; it is not connected to live Nitro hardware.
-- The XDP transport guard is real on Linux, but the ignored loopback integration test still requires a privileged Linux runner and a built eBPF object.
+- The default proof backend is still the development receipt engine. Real `RISC Zero` proving is the next proof milestone, not the default path today.
+- `spatial` is negotiated metadata only. It is not enforced as geofencing in XDP in this phase.
+- `nitro-live` currently validates pinned measurements and rejects debug-style PCRs, but this repo is not launching real enclaves in local host CI.
+- Linux is the only real XDP enforcement target. macOS uses simulation mode.
+- Pricing is advisory only and does not mutate contracts or billing automatically.
 
 ## Workspace layout
 
 - `crates/lsdc-common`: public DSP types, liquid policy IR, shared crypto/evidence helpers
 - `crates/control-plane`: negotiation, orchestration, gRPC pricing client, smoke example
-- `crates/liquid-data-plane`: userspace loader and XDP eBPF program
-- `crates/proof-plane`: CSV transform kernel and receipt chain implementation
+- `crates/liquid-data-plane/host`: userspace loader and agreement lifecycle management
+- `crates/liquid-data-plane/ebpf`: XDP program and eBPF maps
+- `crates/proof-plane/host`: proof-engine implementations and receipt verification
+- `crates/proof-plane/guest`: CSV transform kernel
 - `crates/tee-orchestrator`: protected job execution and forgetting-proof verification
 - `python/pricing-oracle`: gRPC pricing sidecar and health endpoint
 - `scripts/`: bootstrap and smoke scripts
+
+## Architecture and roadmap
+
+- [Architecture](docs/architecture.md)
+- [Roadmap](docs/roadmap.md)
 
 ## Getting started
 

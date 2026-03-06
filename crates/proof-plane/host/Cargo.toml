@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 lsdc-common = { path = "../../lsdc-common" }
-proof-plane-guest = { path = "../proof-plane-guest" }
+proof-plane-guest = { path = "../guest" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }

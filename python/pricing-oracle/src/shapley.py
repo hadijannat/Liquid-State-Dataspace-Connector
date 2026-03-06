@@ -17,12 +17,28 @@ DEFAULT_PRICING_SECRET = "lsdc-pricing-dev-secret"
 
 
 @dataclass
+class MetricsWindow:
+    started_at: str
+    ended_at: str
+
+
+@dataclass
+class PricingAuditContext:
+    dataset_id: str
+    transformed_asset_hash: str
+    proof_receipt_hash: str
+    model_run_id: str
+    metrics_window: MetricsWindow
+
+
+@dataclass
 class ShapleyResult:
     dataset_id: str
     transformed_asset_hash: str
     marginal_contribution: float
     confidence: float
     algorithm_version: str
+    audit_context: PricingAuditContext
 
 
 @dataclass
@@ -32,14 +48,14 @@ class PriceDecision:
     original_price: float
     adjusted_price: float
     approval_required: bool
+    pricing_mode: str
     shapley_value: ShapleyResult
     signed_by: str
     signature_hex: str
 
 
 def estimate_shapley_value(
-    dataset_id: str,
-    transformed_asset_hash: str,
+    audit_context: PricingAuditContext,
     loss_with: float,
     loss_without: float,
     accuracy_with: float,
@@ -57,11 +73,12 @@ def estimate_shapley_value(
         confidence = 0.3
 
     return ShapleyResult(
-        dataset_id=dataset_id,
-        transformed_asset_hash=transformed_asset_hash,
+        dataset_id=audit_context.dataset_id,
+        transformed_asset_hash=audit_context.transformed_asset_hash,
         marginal_contribution=round(marginal, 6),
         confidence=confidence,
         algorithm_version="tmc_shapley_v0",
+        audit_context=audit_context,
     )
 
 
@@ -79,6 +96,7 @@ def calculate_price_decision(
         original_price=current_price,
         adjusted_price=adjusted_price,
         approval_required=True,
+        pricing_mode="advisory",
         shapley_value=shapley_value,
         signed_by=signer,
         signature_hex="",
@@ -95,6 +113,7 @@ def sign_price_decision(decision: PriceDecision) -> str:
             "original_price": decision.original_price,
             "adjusted_price": decision.adjusted_price,
             "approval_required": decision.approval_required,
+            "pricing_mode": decision.pricing_mode,
             "shapley_value": asdict(decision.shapley_value),
             "signed_by": decision.signed_by,
         },
