@@ -3,6 +3,7 @@ use lsdc_common::error::Result;
 use lsdc_common::odrl::ast::PolicyId;
 
 /// Handles Dataspace Protocol contract negotiation.
+#[derive(Default)]
 pub struct NegotiationEngine;
 
 impl NegotiationEngine {

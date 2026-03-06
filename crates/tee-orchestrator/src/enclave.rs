@@ -7,6 +7,7 @@ use lsdc_common::traits::{EnclaveManager, EnclaveSession};
 ///
 /// # Sprint 0 Status
 /// All methods return errors. Sprint 1 will integrate with AWS Nitro Enclaves SDK.
+#[derive(Default)]
 pub struct NitroEnclaveManager;
 
 impl NitroEnclaveManager {

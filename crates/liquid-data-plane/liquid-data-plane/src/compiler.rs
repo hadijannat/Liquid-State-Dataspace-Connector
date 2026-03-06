@@ -1,7 +1,7 @@
 use crate::maps::{CompiledPolicy, MapEntry};
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::odrl::ast::{Constraint, PolicyAgreement};
-use std::hash::{DefaultHasher, Hash, Hasher};
+// FNV-1a constants for deterministic hashing (stable across Rust versions)
 
 /// Compile an ODRL PolicyAgreement into eBPF map entries.
 ///
@@ -74,10 +74,17 @@ fn compile_constraint(contract_id: u32, constraint: &Constraint) -> Result<MapEn
 }
 
 /// Derive a stable 32-bit contract ID from the policy's string ID.
+///
+/// Uses FNV-1a (not `DefaultHasher`) because `DefaultHasher` output is
+/// explicitly not guaranteed to be stable across Rust versions.
 fn policy_to_contract_id(policy: &PolicyAgreement) -> u32 {
-    let mut hasher = DefaultHasher::new();
-    policy.id.0.hash(&mut hasher);
-    hasher.finish() as u32
+    let bytes = policy.id.0.as_bytes();
+    let mut hash: u32 = 2_166_136_261; // FNV-1a offset basis
+    for &b in bytes {
+        hash ^= b as u32;
+        hash = hash.wrapping_mul(16_777_619); // FNV-1a prime
+    }
+    hash
 }
 
 #[cfg(test)]

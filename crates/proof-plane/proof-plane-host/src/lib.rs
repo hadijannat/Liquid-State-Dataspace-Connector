@@ -9,6 +9,7 @@ use lsdc_common::traits::{ProofEngine, TransformSpec};
 ///
 /// # Sprint 0 Status
 /// All methods are stubbed. Sprint 1 will integrate risc0-zkvm.
+#[derive(Default)]
 pub struct RiscZeroProofEngine;
 
 impl RiscZeroProofEngine {

@@ -5,7 +5,6 @@ Sprint 0: Simplified marginal contribution calculation.
 Sprint 1: Full TMC-Shapley with convergence detection.
 """
 
-import numpy as np
 from dataclasses import dataclass
 
 

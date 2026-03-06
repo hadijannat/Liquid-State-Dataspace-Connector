@@ -13,11 +13,17 @@ pub struct LiquidDataPlane {
     active: std::sync::Arc<tokio::sync::Mutex<Vec<EnforcementHandle>>>,
 }
 
-impl LiquidDataPlane {
-    pub fn new() -> Self {
+impl Default for LiquidDataPlane {
+    fn default() -> Self {
         Self {
             active: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
         }
+    }
+}
+
+impl LiquidDataPlane {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Compile and return the map entries without attaching.
@@ -96,12 +102,16 @@ impl LiquidDataPlane {
         // TODO: Attach XDP program to interface
         // TODO: Populate eBPF maps with compiled entries
         // TODO: Spawn expiry timer task
-        todo!("Linux eBPF enforcement — implement in Sprint 0 Week 2")
+        Err(lsdc_common::error::LsdcError::Enforcement(
+            "Linux eBPF enforcement not yet implemented (Sprint 0 Week 2)".into(),
+        ))
     }
 
     async fn revoke_linux(&self, _handle: &EnforcementHandle) -> Result<()> {
         // TODO: Detach XDP program from interface
         // TODO: Clean up eBPF maps
-        todo!("Linux eBPF revocation")
+        Err(lsdc_common::error::LsdcError::Enforcement(
+            "Linux eBPF revocation not yet implemented".into(),
+        ))
     }
 }

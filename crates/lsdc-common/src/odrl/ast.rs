@@ -5,9 +5,15 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PolicyId(pub String);
 
+impl Default for PolicyId {
+    fn default() -> Self {
+        Self(Uuid::new_v4().to_string())
+    }
+}
+
 impl PolicyId {
     pub fn new() -> Self {
-        Self(Uuid::new_v4().to_string())
+        Self::default()
     }
 }
 
