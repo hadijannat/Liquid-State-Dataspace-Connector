@@ -1,0 +1,8 @@
+[package]
+name = "proof-plane-guest"
+version = "0.1.0"
+edition = "2021"
+
+# This crate will depend on risc0-zkvm guest library when Sprint 1 begins.
+# [dependencies]
+# risc0-zkvm = { version = "3.0", default-features = false, features = ["guest"] }

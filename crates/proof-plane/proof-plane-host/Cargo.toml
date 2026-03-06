@@ -1,0 +1,10 @@
+[package]
+name = "proof-plane-host"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lsdc-common = { path = "../../lsdc-common" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
