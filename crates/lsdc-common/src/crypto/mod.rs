@@ -19,6 +19,17 @@ impl Sha256Hash {
         Self(output)
     }
 
+    pub fn from_hex(hex_value: &str) -> Result<Self, String> {
+        let bytes = hex::decode(hex_value).map_err(|err| err.to_string())?;
+        if bytes.len() != 32 {
+            return Err("sha256 hex must decode to 32 bytes".into());
+        }
+
+        let mut output = [0_u8; 32];
+        output.copy_from_slice(&bytes);
+        Ok(Self(output))
+    }
+
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }

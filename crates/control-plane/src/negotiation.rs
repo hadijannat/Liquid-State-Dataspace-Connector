@@ -1,6 +1,6 @@
 use lsdc_common::dsp::{ContractAgreement, ContractOffer, ContractRequest};
 use lsdc_common::error::{LsdcError, Result};
-use lsdc_common::execution::ExecutionProfile;
+use lsdc_common::execution::RequestedExecutionProfile;
 use lsdc_common::odrl::ast::PolicyId;
 use lsdc_common::odrl::parser::{lower_policy, policy_hash_hex};
 
@@ -9,7 +9,7 @@ pub struct NegotiationEngine;
 
 pub struct NegotiatedAgreement {
     pub agreement: ContractAgreement,
-    pub execution_profile: ExecutionProfile,
+    pub requested_profile: RequestedExecutionProfile,
 }
 
 impl NegotiationEngine {
@@ -57,7 +57,7 @@ impl NegotiationEngine {
         };
 
         Ok(NegotiatedAgreement {
-            execution_profile: ExecutionProfile::from_agreement(&agreement),
+            requested_profile: RequestedExecutionProfile::from_agreement(&agreement),
             agreement,
         })
     }

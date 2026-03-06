@@ -38,5 +38,5 @@ def test_evaluate_utility_service():
 
     assert response.dataset_id == "ds-1"
     assert response.transformed_asset_hash == "hash-1"
-    assert response.algorithm_version == "tmc_shapley_v0"
+    assert response.algorithm_version == "heuristic_marginal_v0"
     assert response.audit_context.model_run_id == "run-1"

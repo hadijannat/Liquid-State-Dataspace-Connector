@@ -1,7 +1,7 @@
 """
-Truncated Monte Carlo (TMC) Shapley Value estimation.
+Heuristic marginal utility estimation.
 
-Prototype phase: heuristic utility scoring with a signed pricing decision.
+Phase 2 keeps pricing advisory-only and reports a truthful algorithm label.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ def estimate_shapley_value(
         transformed_asset_hash=audit_context.transformed_asset_hash,
         marginal_contribution=round(marginal, 6),
         confidence=confidence,
-        algorithm_version="tmc_shapley_v0",
+        algorithm_version="heuristic_marginal_v0",
         audit_context=audit_context,
     )
 

@@ -29,7 +29,7 @@ def test_positive_contribution():
     )
     assert result.marginal_contribution > 0
     assert result.confidence == 0.9
-    assert result.algorithm_version == "tmc_shapley_v0"
+    assert result.algorithm_version == "heuristic_marginal_v0"
 
 
 def test_negative_contribution():

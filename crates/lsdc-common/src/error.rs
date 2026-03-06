@@ -8,6 +8,9 @@ pub enum LsdcError {
     #[error("Policy compilation error: {0}")]
     PolicyCompile(String),
 
+    #[error("Unsupported capability: {0}")]
+    Unsupported(String),
+
     #[error("Enforcement error: {0}")]
     Enforcement(String),
 

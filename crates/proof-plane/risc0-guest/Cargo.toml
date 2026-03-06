@@ -1,0 +1,16 @@
+[package]
+name = "proof-plane-risc0-guest"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[[bin]]
+name = "csv_transform"
+path = "src/main.rs"
+
+[dependencies]
+lsdc-common = { path = "../../lsdc-common" }
+proof-plane-guest = { path = "../guest" }
+risc0-zkvm = { version = "5.0.0-rc.1", default-features = false, features = ["std"] }
+serde_json = "1"

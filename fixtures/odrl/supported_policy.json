@@ -1,0 +1,31 @@
+{
+  "@context": "https://www.w3.org/ns/odrl.jsonld",
+  "validUntil": "2026-12-31T23:59:59Z",
+  "permission": [
+    {
+      "action": ["read", "transfer", "anonymize"],
+      "constraint": [
+        { "leftOperand": "count", "rightOperand": 100 },
+        { "leftOperand": "purpose", "rightOperand": ["analytics"] },
+        { "leftOperand": "spatial", "rightOperand": ["EU"] }
+      ],
+      "duty": [
+        {
+          "action": "delete",
+          "constraint": [
+            { "leftOperand": "delete-after", "rightOperand": "P7D" }
+          ]
+        },
+        {
+          "action": "anonymize",
+          "constraint": [
+            {
+              "leftOperand": "transform-required",
+              "rightOperand": "redact_columns"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

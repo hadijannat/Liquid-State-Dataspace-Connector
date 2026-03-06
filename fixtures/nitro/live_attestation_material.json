@@ -1,0 +1,18 @@
+{
+  "enclave_id": "nitro-live-test",
+  "expected_image_hash_hex": "cea23dd4b87e8b00d19fb9ccaaef93e97353c7353e2070f3baf05aeb3995dff4",
+  "measurements": {
+    "image_hash_hex": "cea23dd4b87e8b00d19fb9ccaaef93e97353c7353e2070f3baf05aeb3995dff4",
+    "pcrs": {
+      "0": "cea23dd4b87e8b00d19fb9ccaaef93e97353c7353e2070f3baf05aeb3995dff4",
+      "1": "80d70a315e7a350733d21464b267cbb7f242f691e3756aae84b33449dd2b6226",
+      "2": "6622c3490b6260e20c60c44b6628a3e44b808579955e690b1006e1421f2e0734"
+    },
+    "debug": false
+  },
+  "raw_attestation_document_utf8": "raw-cose-sign1",
+  "certificate_chain_pem": [
+    "-----BEGIN CERTIFICATE-----test"
+  ],
+  "timestamp": "2026-03-06T10:00:00Z"
+}

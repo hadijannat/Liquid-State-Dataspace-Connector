@@ -177,16 +177,9 @@ fn parse_pricing_mode(value: &str) -> PricingMode {
 }
 
 fn parse_sha256_hex(value: &str) -> Result<Sha256Hash> {
-    let bytes = hex::decode(value)
-        .map_err(|err| LsdcError::Pricing(format!("invalid proof receipt hash hex: {err}")))?;
-    if bytes.len() != 32 {
-        return Err(LsdcError::Pricing(
-            "proof receipt hash must decode to 32 bytes".into(),
-        ));
-    }
-    let mut output = [0_u8; 32];
-    output.copy_from_slice(&bytes);
-    Ok(Sha256Hash(output))
+    Sha256Hash::from_hex(value).map_err(|err| {
+        LsdcError::Pricing(format!("invalid proof receipt hash hex: {err}"))
+    })
 }
 
 fn parse_rfc3339_utc(value: &str) -> Result<chrono::DateTime<chrono::Utc>> {

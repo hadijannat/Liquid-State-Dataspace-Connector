@@ -34,7 +34,7 @@ impl PricingOracle for TestPricingService {
             transformed_asset_hash: audit_context.transformed_asset_hash.clone(),
             marginal_contribution: 0.14,
             confidence: 0.9,
-            algorithm_version: "tmc_shapley_v0".into(),
+            algorithm_version: "heuristic_marginal_v0".into(),
             audit_context: Some(audit_context),
         }))
     }
@@ -76,7 +76,7 @@ impl PricingOracleTrait for MockPricingOracle {
             transformed_asset_hash: audit_context.transformed_asset_hash.clone(),
             marginal_contribution: 0.2,
             confidence: 0.9,
-            algorithm_version: "tmc_shapley_v0".into(),
+            algorithm_version: "heuristic_marginal_v0".into(),
             audit_context: audit_context.clone(),
         })
     }
@@ -144,7 +144,7 @@ async fn test_grpc_pricing_oracle_evaluate_utility_contract() {
         .await
         .unwrap();
 
-    assert_eq!(value.algorithm_version, "tmc_shapley_v0");
+    assert_eq!(value.algorithm_version, "heuristic_marginal_v0");
     assert_eq!(value.transformed_asset_hash, "hash-1");
     assert_eq!(value.audit_context.model_run_id, "run-test");
     let _ = shutdown_tx.send(());
@@ -164,7 +164,7 @@ async fn test_grpc_pricing_oracle_decide_price_contract() {
                 transformed_asset_hash: "hash-1".into(),
                 marginal_contribution: 0.1,
                 confidence: 0.9,
-                algorithm_version: "tmc_shapley_v0".into(),
+                algorithm_version: "heuristic_marginal_v0".into(),
                 audit_context: audit_context("ds-1", "hash-1"),
             },
         )

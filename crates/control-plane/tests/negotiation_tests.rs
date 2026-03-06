@@ -1,28 +1,15 @@
 use control_plane::negotiation::NegotiationEngine;
 use lsdc_common::dsp::{ContractRequest, EvidenceRequirement};
-use lsdc_common::execution::{PricingMode, ProofBackend, TeeBackend, TransportBackend};
+use lsdc_common::execution::{
+    PricingMode, RequestedProofProfile, RequestedTeeProfile, RequestedTransportProfile,
+};
 
 fn policy() -> serde_json::Value {
-    serde_json::json!({
-        "@context": "https://www.w3.org/ns/odrl.jsonld",
-        "validUntil": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339(),
-        "permission": [{
-            "action": ["read", "transfer", "anonymize"],
-            "constraint": [
-                {"leftOperand": "count", "rightOperand": 100},
-                {"leftOperand": "purpose", "rightOperand": ["analytics"]},
-                {"leftOperand": "spatial", "rightOperand": ["EU"]}
-            ],
-            "duty": [
-                {"action": "delete", "constraint": [{"leftOperand": "delete-after", "rightOperand": "P1D"}]},
-                {"action": "anonymize", "constraint": [{"leftOperand": "transform-required", "rightOperand": "redact_columns"}]}
-            ]
-        }]
-    })
+    lsdc_common::fixtures::read_json("odrl/supported_policy.json").unwrap()
 }
 
 #[tokio::test]
-async fn test_finalize_profiled_derives_execution_profile() {
+async fn test_finalize_profiled_derives_requested_profile() {
     let engine = NegotiationEngine::new();
     let offer = engine
         .handle_request(ContractRequest {
@@ -44,19 +31,19 @@ async fn test_finalize_profiled_derives_execution_profile() {
     let profiled = engine.finalize_profiled(offer).await.unwrap();
 
     assert_eq!(
-        profiled.execution_profile.transport_backend,
-        TransportBackend::AyaXdp
+        profiled.requested_profile.transport_profile,
+        RequestedTransportProfile::GuardedTransfer
     );
     assert_eq!(
-        profiled.execution_profile.proof_backend,
-        ProofBackend::RiscZero
+        profiled.requested_profile.proof_profile,
+        RequestedProofProfile::ProvenanceReceipt
     );
     assert_eq!(
-        profiled.execution_profile.tee_backend,
-        TeeBackend::NitroLive
+        profiled.requested_profile.tee_profile,
+        RequestedTeeProfile::AttestedExecution
     );
     assert_eq!(
-        profiled.execution_profile.pricing_mode,
+        profiled.requested_profile.pricing_mode,
         PricingMode::Advisory
     );
 }
@@ -101,5 +88,5 @@ async fn test_finalize_profiled_is_deterministic_for_same_offer_shape() {
         .await
         .unwrap();
 
-    assert_eq!(first.execution_profile, second.execution_profile);
+    assert_eq!(first.requested_profile, second.requested_profile);
 }

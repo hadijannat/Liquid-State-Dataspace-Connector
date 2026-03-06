@@ -1,83 +1,73 @@
 # Liquid-State Dataspace Connector
 
-This repository is the Phase 1 rebaseline of the Liquid-State Dataspace Connector. It keeps `DSP + ODRL` at the public boundary, uses batch CSV lineage as the executable proving ground, and evolves the system as a Rust-first control, proof, TEE, and pricing platform.
+The Liquid-State Dataspace Connector (LSDC) is a Rust-first dataspace prototype that keeps `DSP + ODRL` on the external boundary and reinterprets the connector as a control, proof, TEE, and pricing platform instead of a persistent middleware proxy.
 
-## What is implemented
+This repository is intentionally split across three documentation layers:
 
-- Raw ODRL JSON negotiation with stable `policy_hash` generation.
-- Reduced executable ODRL lowering into `LiquidPolicyIr` for `read`, `transfer`, `anonymize`, `count`, `purpose`, `validUntil`, `transform-required`, and `delete-after`.
-- Internal `ExecutionProfile` derivation after agreement finalization.
-- Multi-agreement Aya/XDP enforcement keyed by agreement id and session port.
-- Batch CSV transforms for `drop_columns`, `redact_columns`, `hash_columns`, and `row_filter`.
-- Development proof receipts with explicit backend metadata and prior-receipt chaining.
-- Nitro-oriented attestation and proof-of-forgetting evidence for `nitro-dev` and pinned-measurement `nitro-live` validation.
-- gRPC pricing oracle with signed, advisory-only `PriceDecision` responses plus audit context.
-- End-to-end orchestration for negotiate -> arm XDP -> run protected CSV job -> verify forgetting proof -> request advisory price decision -> emit sanctions when forgetting verification fails.
+- Vision: [docs/vision.md](/Users/aeroshariati/Liquid-State-Dataspace-Connector/docs/vision.md)
+- Current state: [docs/current-state.md](/Users/aeroshariati/Liquid-State-Dataspace-Connector/docs/current-state.md)
+- Next milestone: [docs/next-milestone.md](/Users/aeroshariati/Liquid-State-Dataspace-Connector/docs/next-milestone.md)
 
-## Important limits
+## Implemented Today
 
-- The default proof backend is still the development receipt engine. Real `RISC Zero` proving is the next proof milestone, not the default path today.
-- `spatial` is negotiated metadata only. It is not enforced as geofencing in XDP in this phase.
-- `nitro-live` currently validates pinned measurements and rejects debug-style PCRs, but this repo is not launching real enclaves in local host CI.
-- Linux is the only real XDP enforcement target. macOS uses simulation mode.
-- Pricing is advisory only and does not mutate contracts or billing automatically.
+- DSP contract request and agreement flow with stable raw-ODRL policy hashing.
+- Lowering of the executable ODRL subset into `LiquidPolicyIr`.
+- Multi-agreement Aya/XDP enforcement for packet and byte caps on Linux, with simulation mode elsewhere.
+- Batch CSV transform lineage with the default `DevReceiptProofEngine`.
+- Feature-gated single-hop `RISC Zero` proof backend in `proof-plane-host`.
+- Nitro-oriented attestation and proof-of-forgetting flows for `nitro-dev` plus pinned-measurement validation for `nitro-live`.
+- Advisory-only pricing over gRPC with truthful heuristic algorithm metadata.
 
-## Workspace layout
+## Experimental vs Future
 
-- `crates/lsdc-common`: public DSP types, liquid policy IR, shared crypto/evidence helpers
+- Experimental:
+  - `RISC Zero` proving is feature-gated and off by default.
+  - `nitro-live` validates pinned measurements and raw attestation shape, but local CI does not launch real enclaves.
+- Future:
+  - recursive proof rollups
+  - live enclave lifecycle orchestration on Nitro-capable runners
+  - non-advisory pricing and contract/billing mutation
+  - richer ODRL enforcement beyond the currently executable subset
+
+## Workspace
+
+- `crates/lsdc-common`: shared DSP types, requested execution profile, liquid policy IR, crypto/evidence models, fixtures loader
 - `crates/control-plane`: negotiation, orchestration, gRPC pricing client, smoke example
 - `crates/liquid-data-plane/host`: userspace loader and agreement lifecycle management
 - `crates/liquid-data-plane/ebpf`: XDP program and eBPF maps
-- `crates/proof-plane/host`: proof-engine implementations and receipt verification
-- `crates/proof-plane/guest`: CSV transform kernel
+- `crates/proof-plane/guest`: shared batch CSV transform kernel
+- `crates/proof-plane/host`: dev receipt engine and feature-gated `RISC Zero` host backend
+- `crates/proof-plane/risc0-guest`: embedded guest package used only by the `RISC Zero` feature build
 - `crates/tee-orchestrator`: protected job execution and forgetting-proof verification
-- `python/pricing-oracle`: gRPC pricing sidecar and health endpoint
-- `scripts/`: bootstrap and smoke scripts
+- `python/pricing-oracle`: gRPC pricing sidecar and FastAPI health endpoint
+- `fixtures/`: shared ODRL, manifest, CSV, proof, and Nitro attestation samples
 
-## Architecture and roadmap
+## Getting Started
 
-- [Architecture](docs/architecture.md)
-- [Roadmap](docs/roadmap.md)
-
-## Getting started
-
-On Ubuntu or Debian:
+Ubuntu or Debian bootstrap:
 
 ```bash
 ./scripts/bootstrap-ubuntu.sh
 ```
 
-Manual Python setup:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e 'python/pricing-oracle[dev]'
-```
-
-## Verification
-
-Rust workspace:
+Rust and Python verification:
 
 ```bash
 cargo test --workspace
-```
-
-Python oracle:
-
-```bash
 .venv/bin/python -m pytest python/pricing-oracle/tests
 ```
 
-Smoke the Python gRPC server with the Rust client:
-
-```bash
-./scripts/smoke-pricing-oracle.sh
-```
-
-Linux XDP integration on a privileged Linux runner:
+Linux XDP integration:
 
 ```bash
 cargo xtask build-ebpf
 sudo cargo test -p liquid-data-plane --test linux_xdp_tests -- --ignored
 ```
+
+Feature-gated `RISC Zero` backend:
+
+```bash
+cargo test -p proof-plane-host --features risc0
+```
+
+The `RISC Zero` feature requires the external `cargo risczero` toolchain to be installed on the machine that runs it.

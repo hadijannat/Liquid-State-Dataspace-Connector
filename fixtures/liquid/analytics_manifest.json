@@ -1,0 +1,11 @@
+{
+  "dataset_id": "dataset-1",
+  "purpose": "analytics",
+  "ops": [
+    {
+      "kind": "redact_columns",
+      "columns": ["name"],
+      "replacement": "***"
+    }
+  ]
+}

@@ -26,10 +26,6 @@ pub struct NitroLiveAttestationMaterial {
 }
 
 impl NitroEnclaveManager {
-    pub fn new(proof_engine: Arc<dyn ProofEngine>) -> Self {
-        Self::new_dev(proof_engine)
-    }
-
     pub fn new_dev(proof_engine: Arc<dyn ProofEngine>) -> Self {
         Self {
             proof_engine,
@@ -181,60 +177,48 @@ fn is_zero_hex(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use serde::Deserialize;
 
-    fn measurements(image_hash: Sha256Hash, debug: bool) -> AttestationMeasurements {
-        AttestationMeasurements {
-            image_hash: image_hash.clone(),
-            pcrs: BTreeMap::from([
-                (
-                    0_u16,
-                    if debug {
-                        "0".repeat(64)
-                    } else {
-                        image_hash.to_hex()
-                    },
-                ),
-                (
-                    1_u16,
-                    if debug {
-                        "0".repeat(64)
-                    } else {
-                        Sha256Hash::digest_bytes(b"pcr1").to_hex()
-                    },
-                ),
-                (
-                    2_u16,
-                    if debug {
-                        "0".repeat(64)
-                    } else {
-                        Sha256Hash::digest_bytes(b"pcr2").to_hex()
-                    },
-                ),
-            ]),
-            debug,
-        }
+    #[derive(Deserialize)]
+    struct FixtureMeasurements {
+        image_hash_hex: String,
+        pcrs: std::collections::BTreeMap<u16, String>,
+        debug: bool,
     }
 
-    fn live_material(expected_image_hash: Sha256Hash, debug: bool) -> NitroLiveAttestationMaterial {
+    #[derive(Deserialize)]
+    struct FixtureMaterial {
+        enclave_id: String,
+        expected_image_hash_hex: String,
+        measurements: FixtureMeasurements,
+        raw_attestation_document_utf8: String,
+        certificate_chain_pem: Vec<String>,
+        timestamp: String,
+    }
+
+    fn load_live_material() -> NitroLiveAttestationMaterial {
+        let fixture: FixtureMaterial =
+            lsdc_common::fixtures::read_json("nitro/live_attestation_material.json").unwrap();
         NitroLiveAttestationMaterial {
-            enclave_id: "nitro-live-test".into(),
-            expected_image_hash: expected_image_hash.clone(),
-            measurements: measurements(expected_image_hash, debug),
-            raw_attestation_document: b"raw-cose-sign1".to_vec(),
-            certificate_chain_pem: vec!["-----BEGIN CERTIFICATE-----test".into()],
-            timestamp: chrono::Utc::now(),
+            enclave_id: fixture.enclave_id,
+            expected_image_hash: Sha256Hash::from_hex(&fixture.expected_image_hash_hex).unwrap(),
+            measurements: AttestationMeasurements {
+                image_hash: Sha256Hash::from_hex(&fixture.measurements.image_hash_hex).unwrap(),
+                pcrs: fixture.measurements.pcrs,
+                debug: fixture.measurements.debug,
+            },
+            raw_attestation_document: fixture.raw_attestation_document_utf8.into_bytes(),
+            certificate_chain_pem: fixture.certificate_chain_pem,
+            timestamp: chrono::DateTime::parse_from_rfc3339(&fixture.timestamp)
+                .unwrap()
+                .with_timezone(&chrono::Utc),
         }
     }
 
     #[test]
     fn test_live_attestation_rejects_wrong_measurement() {
-        let expected = Sha256Hash::digest_bytes(b"expected");
-        let wrong = Sha256Hash::digest_bytes(b"wrong");
-        let material = NitroLiveAttestationMaterial {
-            measurements: measurements(wrong, false),
-            ..live_material(expected.clone(), false)
-        };
+        let mut material = load_live_material();
+        material.measurements.image_hash = Sha256Hash::digest_bytes(b"wrong");
 
         let err = validate_live_attestation(&material).unwrap_err();
         assert!(err.to_string().contains("pinned EIF measurement"));
@@ -242,17 +226,20 @@ mod tests {
 
     #[test]
     fn test_live_attestation_rejects_debug_zero_pcrs() {
-        let expected = Sha256Hash::digest_bytes(b"expected");
-        let material = live_material(expected, true);
+        let mut material = load_live_material();
+        material.measurements.debug = true;
+        material.measurements.pcrs.insert(0, "0".repeat(64));
+        material.measurements.pcrs.insert(1, "0".repeat(64));
+        material.measurements.pcrs.insert(2, "0".repeat(64));
 
         let err = validate_live_attestation(&material).unwrap_err();
         assert!(err.to_string().contains("zero-PCR"));
     }
 
     #[test]
-    fn test_live_attestation_accepts_pinned_measurement() {
-        let expected = Sha256Hash::digest_bytes(b"expected");
-        let material = live_material(expected.clone(), false);
+    fn test_live_attestation_accepts_fixture_sample() {
+        let material = load_live_material();
+        let expected = material.expected_image_hash.clone();
 
         let attestation = validate_live_attestation(&material).unwrap();
         assert_eq!(attestation.platform, "aws-nitro-live");
