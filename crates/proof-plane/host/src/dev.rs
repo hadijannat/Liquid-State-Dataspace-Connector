@@ -5,7 +5,7 @@ use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::ProofBackend;
 use lsdc_common::liquid::{validate_transform_manifest, CsvTransformManifest};
 use lsdc_ports::{ProofEngine, ProofExecutionResult};
-use proof_plane_guest::apply_manifest;
+use proof_transform_kernel::apply_manifest;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_PROOF_SECRET: &str = "lsdc-proof-dev-secret";

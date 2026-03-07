@@ -10,7 +10,7 @@ use aya_ebpf::{
 use core::mem;
 
 #[map]
-static SESSION_AGREEMENT_MAP: HashMap<u16, u32> = HashMap::with_max_entries(1024, 0);
+static SELECTOR_AGREEMENT_MAP: HashMap<u32, u32> = HashMap::with_max_entries(1024, 0);
 
 #[map]
 static PACKET_LIMIT_MAP: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
@@ -33,11 +33,11 @@ pub fn lsdc_xdp(ctx: XdpContext) -> u32 {
 }
 
 fn try_lsdc_xdp(ctx: XdpContext) -> Result<u32, u32> {
-    let Some(dst_port) = parse_destination_port(&ctx)? else {
+    let Some(selector_key) = parse_selector_key(&ctx)? else {
         return Ok(xdp_action::XDP_PASS);
     };
 
-    let Some(agreement_id) = unsafe { SESSION_AGREEMENT_MAP.get(&dst_port) }.copied() else {
+    let Some(agreement_id) = unsafe { SELECTOR_AGREEMENT_MAP.get(&selector_key) }.copied() else {
         return Ok(xdp_action::XDP_PASS);
     };
 
@@ -71,7 +71,7 @@ fn try_lsdc_xdp(ctx: XdpContext) -> Result<u32, u32> {
     Ok(xdp_action::XDP_PASS)
 }
 
-fn parse_destination_port(ctx: &XdpContext) -> Result<Option<u16>, u32> {
+fn parse_selector_key(ctx: &XdpContext) -> Result<Option<u32>, u32> {
     let start = ctx.data();
     let first = unsafe { ptr_at::<u8>(ctx, 0)? };
     let version = unsafe { *first } >> 4;
@@ -90,8 +90,9 @@ fn parse_destination_port(ctx: &XdpContext) -> Result<Option<u16>, u32> {
 
     let port_ptr = unsafe { ptr_at::<u16>(ctx, ip_offset + ihl + 2)? };
     let dst_port = u16::from_be(unsafe { *port_ptr });
+    let selector_key = ((protocol as u32) << 16) | dst_port as u32;
     let _ = start;
-    Ok(Some(dst_port))
+    Ok(Some(selector_key))
 }
 
 #[inline(always)]

@@ -1,4 +1,4 @@
-use crate::dsp::{ContractAgreement, EvidenceRequirement};
+use crate::dsp::{ContractAgreement, EvidenceRequirement, TransportProtocol};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -29,6 +29,33 @@ pub enum TeeBackend {
 pub enum PricingMode {
     Disabled,
     Advisory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct TransportSelector {
+    pub protocol: TransportProtocol,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyClauseStatus {
+    Executable,
+    MetadataOnly,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyClauseClassification {
+    pub clause: String,
+    pub status: PolicyClauseStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyExecutionClassification {
+    pub clauses: Vec<PolicyClauseClassification>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -110,5 +137,252 @@ impl RequestedExecutionProfile {
                 PricingMode::Disabled
             },
         }
+    }
+}
+
+impl PolicyExecutionClassification {
+    pub fn classify_agreement(
+        agreement: &ContractAgreement,
+        transport_backend: TransportBackend,
+        proof_backend: ProofBackend,
+        tee_backend: TeeBackend,
+    ) -> Self {
+        let mut classification = Self::default();
+        let transport = &agreement.liquid_policy.transport_guard;
+        let transform = &agreement.liquid_policy.transform_guard;
+        let runtime = &agreement.liquid_policy.runtime_guard;
+
+        classification.push_when(
+            transport.allow_read,
+            "transport.allow_read",
+            PolicyClauseStatus::Executable,
+            Some("enforced through admission on the resolved transport selector"),
+        );
+        classification.push_when(
+            transport.allow_transfer,
+            "transport.allow_transfer",
+            PolicyClauseStatus::Executable,
+            Some("enforced through admission on the resolved transport selector"),
+        );
+        classification.push_when(
+            transport.packet_cap.is_some(),
+            "transport.packet_cap",
+            PolicyClauseStatus::Executable,
+            Some("compiled into transport counters"),
+        );
+        classification.push_when(
+            transport.byte_cap.is_some(),
+            "transport.byte_cap",
+            PolicyClauseStatus::Executable,
+            Some("compiled into transport counters"),
+        );
+        classification.push_when(
+            transport.valid_until.is_some(),
+            "transport.valid_until",
+            PolicyClauseStatus::Executable,
+            Some("drives enforcement expiry teardown"),
+        );
+        classification.push_when(
+            transport.allow_read || transport.allow_transfer,
+            "transport.protocol",
+            PolicyClauseStatus::Executable,
+            Some(match transport_backend {
+                TransportBackend::AyaXdp => "resolved into a protocol-aware XDP selector",
+                TransportBackend::Simulated => "resolved into a protocol-aware simulated selector",
+            }),
+        );
+        classification.push_when(
+            transport.allow_read || transport.allow_transfer,
+            "transport.session_port",
+            PolicyClauseStatus::Executable,
+            Some("explicit when negotiated, otherwise derived at transfer activation"),
+        );
+        classification.push_when(
+            !transport.allowed_regions.is_empty(),
+            "transport.allowed_regions",
+            PolicyClauseStatus::MetadataOnly,
+            Some("negotiated metadata only; current transport backends do not geofence traffic"),
+        );
+
+        classification.push_when(
+            transform.allow_anonymize,
+            "transform.allow_anonymize",
+            PolicyClauseStatus::Executable,
+            Some("bounded to deterministic CSV manifest execution"),
+        );
+        classification.push_when(
+            !transform.allowed_purposes.is_empty(),
+            "transform.allowed_purposes",
+            PolicyClauseStatus::Executable,
+            Some("validated before protected transform execution"),
+        );
+        classification.push_when(
+            !transform.required_ops.is_empty(),
+            "transform.required_ops",
+            PolicyClauseStatus::Executable,
+            Some("validated against the submitted transform manifest"),
+        );
+
+        classification.push_when(
+            runtime.delete_after_seconds.is_some(),
+            "runtime.delete_after_seconds",
+            if tee_backend == TeeBackend::None {
+                PolicyClauseStatus::Rejected
+            } else {
+                PolicyClauseStatus::Executable
+            },
+            Some(match tee_backend {
+                TeeBackend::None => "requested forgetting proof cannot run without a TEE backend",
+                TeeBackend::NitroDev => {
+                    "enforced via dev attestation and bounded proof-of-forgetting evidence"
+                }
+                TeeBackend::NitroLive => {
+                    "enforced via Nitro-oriented proof-of-forgetting evidence with pinned measurements"
+                }
+            }),
+        );
+
+        for requirement in &agreement.evidence_requirements {
+            let clause = match requirement {
+                EvidenceRequirement::ProvenanceReceipt => "runtime.evidence.provenance_receipt",
+                EvidenceRequirement::AttestationDocument => "runtime.evidence.attestation_document",
+                EvidenceRequirement::ProofOfForgetting => "runtime.evidence.proof_of_forgetting",
+                EvidenceRequirement::PriceApproval => "runtime.evidence.price_approval",
+            };
+            let (status, detail) = match requirement {
+                EvidenceRequirement::ProvenanceReceipt => {
+                    if proof_backend == ProofBackend::None {
+                        (
+                            PolicyClauseStatus::Rejected,
+                            "requested provenance evidence has no proof backend",
+                        )
+                    } else {
+                        (
+                            PolicyClauseStatus::Executable,
+                            "emitted by the configured proof backend",
+                        )
+                    }
+                }
+                EvidenceRequirement::AttestationDocument
+                | EvidenceRequirement::ProofOfForgetting => {
+                    if tee_backend == TeeBackend::None {
+                        (
+                            PolicyClauseStatus::Rejected,
+                            "requested attestation evidence has no TEE backend",
+                        )
+                    } else {
+                        (
+                            PolicyClauseStatus::Executable,
+                            "emitted by the configured TEE backend",
+                        )
+                    }
+                }
+                EvidenceRequirement::PriceApproval => (
+                    PolicyClauseStatus::MetadataOnly,
+                    "pricing remains advisory-only in this phase",
+                ),
+            };
+            classification.push(clause, status, Some(detail));
+        }
+
+        if runtime.approval_required {
+            classification.push(
+                "runtime.approval_required",
+                PolicyClauseStatus::MetadataOnly,
+                Some("approval signals are recorded but do not mutate contracts or billing"),
+            );
+        }
+
+        classification
+    }
+
+    pub fn for_runtime_capabilities(
+        transport_backend: TransportBackend,
+        proof_backend: ProofBackend,
+        tee_backend: TeeBackend,
+    ) -> Self {
+        let mut classification = Self::default();
+        classification.push(
+            "transport.selector",
+            PolicyClauseStatus::Executable,
+            Some(match transport_backend {
+                TransportBackend::AyaXdp => {
+                    "protocol and destination port selectors are enforced by Aya/XDP"
+                }
+                TransportBackend::Simulated => {
+                    "protocol and destination port selectors are enforced by the simulated agent"
+                }
+            }),
+        );
+        classification.push(
+            "transport.packet_cap",
+            PolicyClauseStatus::Executable,
+            Some("packet counters are supported by all current transport backends"),
+        );
+        classification.push(
+            "transport.byte_cap",
+            PolicyClauseStatus::Executable,
+            Some("byte counters are supported by all current transport backends"),
+        );
+        classification.push(
+            "transport.valid_until",
+            PolicyClauseStatus::Executable,
+            Some("agreement expiry dissolves the installed transport guard"),
+        );
+        classification.push(
+            "transport.allowed_regions",
+            PolicyClauseStatus::MetadataOnly,
+            Some("no current backend provides transport geofencing"),
+        );
+        classification.push(
+            "proof.recursive_rollups",
+            PolicyClauseStatus::MetadataOnly,
+            Some(match proof_backend {
+                ProofBackend::RiscZero => {
+                    "single-hop proving only; recursive rollups are not implemented"
+                }
+                ProofBackend::DevReceipt => {
+                    "receipt chains verify lineage, but recursive zk rollups are not implemented"
+                }
+                ProofBackend::None => "no proof backend is configured",
+            }),
+        );
+        classification.push(
+            "tee.live_enclave_orchestration",
+            PolicyClauseStatus::MetadataOnly,
+            Some(match tee_backend {
+                TeeBackend::NitroLive => {
+                    "Nitro live mode validates pinned attestation material only"
+                }
+                TeeBackend::NitroDev => "Nitro dev mode emits deterministic local attestation",
+                TeeBackend::None => "no TEE backend is configured",
+            }),
+        );
+        classification.push(
+            "pricing.autonomous_mutation",
+            PolicyClauseStatus::MetadataOnly,
+            Some("pricing decisions are advisory-only and do not mutate contracts or ledgers"),
+        );
+        classification
+    }
+
+    fn push_when(
+        &mut self,
+        condition: bool,
+        clause: &str,
+        status: PolicyClauseStatus,
+        detail: Option<&str>,
+    ) {
+        if condition {
+            self.push(clause, status, detail);
+        }
+    }
+
+    fn push(&mut self, clause: &str, status: PolicyClauseStatus, detail: Option<&str>) {
+        self.clauses.push(PolicyClauseClassification {
+            clause: clause.into(),
+            status,
+            detail: detail.map(str::to_owned),
+        });
     }
 }

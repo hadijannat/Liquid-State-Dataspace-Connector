@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use control_plane::negotiation::NegotiationEngine;
 use control_plane::orchestrator::{BatchLineageRequest, Orchestrator};
-use liquid_data_plane::loader::LiquidDataPlane;
+use liquid_agent_core::loader::LiquidDataPlane;
 use lsdc_common::crypto::{PriceDecision, PricingAuditContext, ShapleyValue};
 use lsdc_common::dsp::{ContractRequest, EvidenceRequirement};
 use lsdc_common::error::Result;

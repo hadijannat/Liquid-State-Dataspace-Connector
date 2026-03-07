@@ -3,14 +3,18 @@ use crate::maps::CompiledPolicy;
 use chrono::{DateTime, Utc};
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
-use lsdc_ports::{DataPlane, EnforcementHandle, EnforcementStatus};
+use lsdc_common::execution::{TransportBackend, TransportSelector};
+use lsdc_ports::{
+    DataPlane, EnforcementHandle, EnforcementRuntimeStatus, EnforcementStatus,
+    ResolvedTransportGuard,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[cfg(target_os = "linux")]
 use crate::maps::{
-    BYTE_COUNT_MAP, BYTE_LIMIT_MAP, PACKET_COUNT_MAP, PACKET_LIMIT_MAP, SESSION_AGREEMENT_MAP,
+    BYTE_COUNT_MAP, BYTE_LIMIT_MAP, PACKET_COUNT_MAP, PACKET_LIMIT_MAP, SELECTOR_AGREEMENT_MAP,
 };
 #[cfg(target_os = "linux")]
 use aya::{
@@ -62,7 +66,11 @@ struct TrackedEnforcement {
     interface: String,
     #[allow(dead_code)]
     enforcement_key: u32,
-    session_port: u16,
+    #[allow(dead_code)]
+    selector_key: u32,
+    transport_selector: TransportSelector,
+    #[allow(dead_code)]
+    resolved_transport: ResolvedTransportGuard,
     #[allow(dead_code)]
     max_packets: Option<u64>,
     #[allow(dead_code)]
@@ -129,6 +137,21 @@ impl LiquidDataPlane {
     fn uses_kernel_enforcement(&self) -> bool {
         matches!(self.mode, DataPlaneMode::Kernel)
     }
+
+    fn transport_backend(&self) -> TransportBackend {
+        match self.mode {
+            DataPlaneMode::Kernel => TransportBackend::AyaXdp,
+            DataPlaneMode::Simulated => TransportBackend::Simulated,
+        }
+    }
+
+    fn runtime_status(&self, rule_active: bool) -> EnforcementRuntimeStatus {
+        EnforcementRuntimeStatus {
+            transport_backend: self.transport_backend(),
+            rule_active,
+            kernel_program_attached: self.uses_kernel_enforcement(),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -144,8 +167,11 @@ impl DataPlane for LiquidDataPlane {
         let handle = EnforcementHandle {
             id: agreement.agreement_id.0.clone(),
             interface: iface.to_string(),
-            session_port: compiled.session_port,
+            session_port: compiled.session_port(),
             active: true,
+            transport_selector: Some(compiled.transport_selector.clone()),
+            resolved_transport: Some(compiled.resolved_transport()),
+            runtime: Some(self.runtime_status(true)),
         };
 
         {
@@ -167,12 +193,12 @@ impl DataPlane for LiquidDataPlane {
 
             if tracked.values().any(|entry| {
                 entry.interface == handle.interface
-                    && entry.session_port == compiled.session_port
+                    && entry.transport_selector == compiled.transport_selector
                     && entry.state == LifecycleState::Active
             }) {
                 return Err(LsdcError::Enforcement(format!(
-                    "session port `{}` is already active on interface `{}`",
-                    compiled.session_port, handle.interface
+                    "transport selector `{:?}` is already active on interface `{}`",
+                    compiled.transport_selector, handle.interface
                 )));
             }
 
@@ -227,7 +253,9 @@ impl DataPlane for LiquidDataPlane {
                 TrackedEnforcement {
                     interface: handle.interface.clone(),
                     enforcement_key: compiled.enforcement_key,
-                    session_port: compiled.session_port,
+                    selector_key: compiled.selector_key,
+                    transport_selector: compiled.transport_selector.clone(),
+                    resolved_transport: compiled.resolved_transport(),
                     max_packets: compiled.max_packets,
                     max_bytes: compiled.max_bytes,
                     expires_at: compiled.expires_at,
@@ -286,7 +314,7 @@ impl DataPlane for LiquidDataPlane {
                 Ok(EnforcementStatus::Active {
                     packets_processed,
                     bytes_processed,
-                    session_port: entry.session_port,
+                    session_port: entry.transport_selector.port,
                 })
             }
             LifecycleState::Expired => Ok(EnforcementStatus::Expired),
@@ -326,7 +354,7 @@ async fn deactivate_inner(
         #[cfg(target_os = "linux")]
         let enforcement_key = entry.enforcement_key;
         #[cfg(target_os = "linux")]
-        let session_port = entry.session_port;
+        let selector_key = entry.selector_key;
 
         #[cfg(target_os = "linux")]
         {
@@ -338,7 +366,7 @@ async fn deactivate_inner(
                         ))
                     })?;
                     if let Err(err) =
-                        remove_linux_maps(&mut attachment.ebpf, enforcement_key, session_port)
+                        remove_linux_maps(&mut attachment.ebpf, enforcement_key, selector_key)
                     {
                         entry.state = LifecycleState::Error(err.to_string());
                         return Err(err);
@@ -411,19 +439,19 @@ fn attach_linux(iface: &str) -> Result<LinuxAttachment> {
 #[cfg(target_os = "linux")]
 fn insert_linux_maps(ebpf: &mut Ebpf, compiled: &CompiledPolicy) -> Result<()> {
     {
-        let map = ebpf.map_mut(SESSION_AGREEMENT_MAP).ok_or_else(|| {
-            LsdcError::Enforcement(format!("missing map `{SESSION_AGREEMENT_MAP}`"))
+        let map = ebpf.map_mut(SELECTOR_AGREEMENT_MAP).ok_or_else(|| {
+            LsdcError::Enforcement(format!("missing map `{SELECTOR_AGREEMENT_MAP}`"))
         })?;
-        let mut session_map = BpfHashMap::<_, u16, u32>::try_from(map).map_err(|err| {
+        let mut session_map = BpfHashMap::<_, u32, u32>::try_from(map).map_err(|err| {
             LsdcError::Enforcement(format!(
-                "failed to open `{SESSION_AGREEMENT_MAP}` as hash map: {err}"
+                "failed to open `{SELECTOR_AGREEMENT_MAP}` as hash map: {err}"
             ))
         })?;
         session_map
-            .insert(compiled.session_port, compiled.enforcement_key, 0)
+            .insert(compiled.selector_key, compiled.enforcement_key, 0)
             .map_err(|err| {
                 LsdcError::Enforcement(format!(
-                    "failed to populate `{SESSION_AGREEMENT_MAP}`: {err}"
+                    "failed to populate `{SELECTOR_AGREEMENT_MAP}`: {err}"
                 ))
             })?;
     }
@@ -484,8 +512,8 @@ fn initialize_counter_map(ebpf: &mut Ebpf, map_name: &str, enforcement_key: u32)
 }
 
 #[cfg(target_os = "linux")]
-fn remove_linux_maps(ebpf: &mut Ebpf, enforcement_key: u32, session_port: u16) -> Result<()> {
-    remove_u16_u32_entry(ebpf, SESSION_AGREEMENT_MAP, session_port)?;
+fn remove_linux_maps(ebpf: &mut Ebpf, enforcement_key: u32, selector_key: u32) -> Result<()> {
+    remove_u32_u32_entry(ebpf, SELECTOR_AGREEMENT_MAP, selector_key)?;
     remove_u32_u64_entry(ebpf, PACKET_LIMIT_MAP, enforcement_key)?;
     remove_u32_u64_entry(ebpf, BYTE_LIMIT_MAP, enforcement_key)?;
     remove_u32_u64_entry(ebpf, PACKET_COUNT_MAP, enforcement_key)?;
@@ -494,11 +522,11 @@ fn remove_linux_maps(ebpf: &mut Ebpf, enforcement_key: u32, session_port: u16) -
 }
 
 #[cfg(target_os = "linux")]
-fn remove_u16_u32_entry(ebpf: &mut Ebpf, map_name: &str, key: u16) -> Result<()> {
+fn remove_u32_u32_entry(ebpf: &mut Ebpf, map_name: &str, key: u32) -> Result<()> {
     let map = ebpf
         .map_mut(map_name)
         .ok_or_else(|| LsdcError::Enforcement(format!("missing map `{map_name}`")))?;
-    let mut typed = BpfHashMap::<_, u16, u32>::try_from(map).map_err(|err| {
+    let mut typed = BpfHashMap::<_, u32, u32>::try_from(map).map_err(|err| {
         LsdcError::Enforcement(format!("failed to open `{map_name}` as hash map: {err}"))
     })?;
     let _ = typed.remove(&key);
@@ -640,6 +668,15 @@ mod tests {
     use lsdc_common::odrl::ast::PolicyId;
 
     fn make_agreement(id: &str, valid_until: Option<DateTime<Utc>>) -> ContractAgreement {
+        make_agreement_with_selector(id, TransportProtocol::Udp, None, valid_until)
+    }
+
+    fn make_agreement_with_selector(
+        id: &str,
+        protocol: TransportProtocol,
+        session_port: Option<u16>,
+        valid_until: Option<DateTime<Utc>>,
+    ) -> ContractAgreement {
         ContractAgreement {
             agreement_id: PolicyId(id.into()),
             asset_id: format!("asset-{id}"),
@@ -656,8 +693,8 @@ mod tests {
                     byte_cap: Some(1024),
                     allowed_regions: vec!["EU".into()],
                     valid_until,
-                    protocol: TransportProtocol::Udp,
-                    session_port: None,
+                    protocol,
+                    session_port,
                 },
                 transform_guard: TransformGuard {
                     allow_anonymize: true,
@@ -683,6 +720,9 @@ mod tests {
         assert_eq!(handle.id, agreement.agreement_id.0);
         assert_eq!(handle.interface, "lo");
         assert!(handle.session_port >= 20_000);
+        assert!(handle.transport_selector.is_some());
+        assert!(handle.resolved_transport.is_some());
+        assert!(handle.runtime.is_some());
     }
 
     #[tokio::test]
@@ -695,6 +735,32 @@ mod tests {
         let second_handle = plane.enforce(&second, "lo").await.unwrap();
 
         assert_ne!(first_handle.session_port, second_handle.session_port);
+    }
+
+    #[tokio::test]
+    async fn test_allows_same_port_for_different_protocol_selectors() {
+        let plane = LiquidDataPlane::new_simulated();
+        let udp = make_agreement_with_selector(
+            "agreement-udp",
+            TransportProtocol::Udp,
+            Some(31_337),
+            None,
+        );
+        let tcp = make_agreement_with_selector(
+            "agreement-tcp",
+            TransportProtocol::Tcp,
+            Some(31_337),
+            None,
+        );
+
+        let udp_handle = plane.enforce(&udp, "lo").await.unwrap();
+        let tcp_handle = plane.enforce(&tcp, "lo").await.unwrap();
+
+        assert_eq!(udp_handle.session_port, tcp_handle.session_port);
+        assert_ne!(
+            udp_handle.transport_selector.as_ref().unwrap().protocol,
+            tcp_handle.transport_selector.as_ref().unwrap().protocol
+        );
     }
 
     #[tokio::test]

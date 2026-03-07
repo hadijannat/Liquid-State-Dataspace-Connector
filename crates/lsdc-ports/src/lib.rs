@@ -3,10 +3,32 @@ use lsdc_common::crypto::{
     PriceDecision, PricingAuditContext, ProofBundle, ProvenanceReceipt, ShapleyValue,
 };
 use lsdc_common::dsp::ContractAgreement;
-use lsdc_common::execution::{ProofBackend, TeeBackend};
+use lsdc_common::execution::{ProofBackend, TeeBackend, TransportBackend, TransportSelector};
 use lsdc_common::liquid::CsvTransformManifest;
 use lsdc_common::Result;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnforcementIdentity {
+    pub agreement_id: String,
+    pub enforcement_key: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedTransportGuard {
+    pub selector: TransportSelector,
+    pub enforcement: EnforcementIdentity,
+    pub packet_cap: Option<u64>,
+    pub byte_cap: Option<u64>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnforcementRuntimeStatus {
+    pub transport_backend: TransportBackend,
+    pub rule_active: bool,
+    pub kernel_program_attached: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnforcementHandle {
@@ -14,6 +36,12 @@ pub struct EnforcementHandle {
     pub interface: String,
     pub session_port: u16,
     pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_selector: Option<TransportSelector>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_transport: Option<ResolvedTransportGuard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<EnforcementRuntimeStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

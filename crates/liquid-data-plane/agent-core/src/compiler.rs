@@ -1,7 +1,8 @@
-use crate::maps::CompiledPolicy;
+use crate::maps::{selector_key, CompiledPolicy};
 use chrono::Utc;
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
+use lsdc_common::execution::TransportSelector;
 use lsdc_common::odrl::ast::PolicyId;
 
 /// Compile a negotiated agreement into the executable transport guard.
@@ -22,16 +23,27 @@ pub fn compile_agreement(agreement: &ContractAgreement) -> Result<CompiledPolicy
         ));
     }
 
+    let session_port = transport
+        .session_port
+        .unwrap_or_else(|| agreement_id_to_session_port(&agreement.agreement_id));
+    let transport_selector = resolved_selector(agreement, session_port);
+
     Ok(CompiledPolicy {
         agreement_id: agreement.agreement_id.0.clone(),
         enforcement_key: agreement_id_to_enforcement_key(&agreement.agreement_id),
-        session_port: transport
-            .session_port
-            .unwrap_or_else(|| agreement_id_to_session_port(&agreement.agreement_id)),
+        selector_key: selector_key(&transport_selector),
+        transport_selector,
         max_packets: transport.packet_cap,
         max_bytes: transport.byte_cap,
         expires_at: transport.valid_until,
     })
+}
+
+fn resolved_selector(agreement: &ContractAgreement, port: u16) -> TransportSelector {
+    TransportSelector {
+        protocol: agreement.liquid_policy.transport_guard.protocol,
+        port,
+    }
 }
 
 fn agreement_id_to_enforcement_key(agreement_id: &PolicyId) -> u32 {
@@ -99,7 +111,8 @@ mod tests {
         assert_eq!(compiled.agreement_id, "agreement-1");
         assert_eq!(compiled.max_packets, Some(500));
         assert_eq!(compiled.max_bytes, Some(2048));
-        assert!(compiled.session_port >= 20_000);
+        assert!(compiled.transport_selector.port >= 20_000);
+        assert_eq!(compiled.transport_selector.protocol, TransportProtocol::Udp);
     }
 
     #[test]

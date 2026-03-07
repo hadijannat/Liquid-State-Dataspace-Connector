@@ -16,7 +16,7 @@ python -m pip install --upgrade pip >/dev/null
 python -m pip install -e "${ROOT_DIR}/python/pricing-oracle[dev]" >/dev/null
 
 pushd "${ROOT_DIR}/python/pricing-oracle" >/dev/null
-LSDC_PRICING_GRPC_PORT="${GRPC_PORT}" LSDC_PRICING_HTTP_PORT="${HTTP_PORT}" python -m src.server &
+LSDC_PRICING_GRPC_PORT="${GRPC_PORT}" LSDC_PRICING_HTTP_PORT="${HTTP_PORT}" python -m lsdc_pricing_oracle.server &
 SERVER_PID=$!
 popd >/dev/null
 

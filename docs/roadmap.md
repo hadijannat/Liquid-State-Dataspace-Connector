@@ -5,12 +5,13 @@
 - keep the default workspace truthful and green
 - keep the reference stack runnable across three nodes with shared fixtures
 - keep pricing advisory-only with explicit heuristic metadata
+- keep the platform track stable while documenting the long-horizon research track separately
 
 ## Next
 
-1. Stabilize the feature-gated `RISC Zero` single-hop HTTP path on a runner with the external toolchain installed.
-2. Harden `nitro-live` around real attestation material and control-plane startup configuration on Nitro-capable infrastructure.
-3. Add richer operational visibility around job state, enforcement lifecycle, and evidence inspection without changing the truthfulness boundary.
+1. Harden Pillar 1 transport truthfully: selector-aware guarded transfer, fail-closed transfer validation, and richer enforcement/runtime visibility.
+2. Stabilize the feature-gated `RISC Zero` single-hop HTTP path on a runner with the external toolchain installed.
+3. Harden `nitro-live` around real attestation material and control-plane startup configuration on Nitro-capable infrastructure.
 
 ## Later
 

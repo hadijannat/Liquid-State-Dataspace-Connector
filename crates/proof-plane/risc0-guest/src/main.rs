@@ -2,7 +2,7 @@
 
 use lsdc_common::crypto::{hash_json, Sha256Hash};
 use lsdc_common::proof::{CsvTransformProofInput, CsvTransformProofJournal};
-use proof_plane_guest::apply_manifest;
+use proof_transform_kernel::apply_manifest;
 use risc0_zkvm::guest::env;
 
 risc0_zkvm::guest::entry!(main);

@@ -1,5 +1,5 @@
 use chrono::Utc;
-use liquid_data_plane::compiler::compile_agreement;
+use liquid_agent_core::compiler::compile_agreement;
 use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement, TransportProtocol};
 use lsdc_common::liquid::{LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard};
 use lsdc_common::odrl::ast::PolicyId;

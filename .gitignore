@@ -5,8 +5,10 @@
 .DS_Store
 __pycache__/
 *.pyc
+.pytest_cache/
+.hypothesis/
 .venv/
 python/pricing-oracle/.venv/
 python/pricing-oracle/*.egg-info/
-python/pricing-oracle/src/_generated/
+python/pricing-oracle/lsdc_pricing_oracle/_generated/
 firebase-debug.log

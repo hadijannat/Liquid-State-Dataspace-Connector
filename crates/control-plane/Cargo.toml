@@ -23,7 +23,7 @@ tokio-stream = "0.1"
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 proof-plane-host = { path = "../proof-plane/host" }
-liquid-data-plane = { path = "../liquid-data-plane/host" }
+liquid-agent-core = { path = "../liquid-data-plane/agent-core" }
 
 [build-dependencies]
 tonic-build = "0.12"

@@ -10,7 +10,7 @@ risc0 = ["dep:bincode", "dep:risc0-zkvm"]
 [dependencies]
 lsdc-common = { path = "../../lsdc-common" }
 lsdc-ports = { path = "../../lsdc-ports" }
-proof-plane-guest = { path = "../guest" }
+proof-transform-kernel = { path = "../transform-kernel" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }

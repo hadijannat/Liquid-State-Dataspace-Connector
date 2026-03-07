@@ -82,7 +82,7 @@ fn verify_repo() -> Result<()> {
         "app-local liquid-agent proto",
     )?;
     require_not_exists(
-        &workspace_root.join("python/pricing-oracle/src/proto/pricing.proto"),
+        &workspace_root.join("python/pricing-oracle/lsdc_pricing_oracle/proto/pricing.proto"),
         "python-local pricing proto",
     )?;
 
@@ -118,12 +118,12 @@ fn verify_repo() -> Result<()> {
         split_dependency_sections(&control_plane_toml);
     require_not_contains(
         control_plane_dependencies,
-        "liquid-data-plane",
+        "liquid-agent-core",
         "control-plane runtime dependencies",
     )?;
     require_contains(
         control_plane_dev_dependencies,
-        "liquid-data-plane",
+        "liquid-agent-core",
         "control-plane dev-dependencies",
     )?;
 

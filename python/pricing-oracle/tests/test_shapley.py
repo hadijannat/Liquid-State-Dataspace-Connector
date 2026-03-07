@@ -1,4 +1,4 @@
-from src.shapley import (
+from lsdc_pricing_oracle.shapley import (
     MetricsWindow,
     PricingAuditContext,
     calculate_price_decision,

@@ -23,7 +23,7 @@ trap cleanup EXIT INT TERM
 
 (
   cd python/pricing-oracle
-  "$ROOT_DIR/.venv/bin/python" -m src.server
+  "$ROOT_DIR/.venv/bin/python" -m lsdc_pricing_oracle.server
 ) &
 PIDS+=("$!")
 

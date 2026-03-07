@@ -1,9 +1,7 @@
-mod config;
-
 use clap::Parser;
-use config::{LiquidAgentArgs, LiquidAgentConfig, LiquidAgentMode};
+use liquid_agent_core::loader::LiquidDataPlane;
 use liquid_agent_grpc::server::{serve, LiquidAgentService};
-use liquid_data_plane::loader::LiquidDataPlane;
+use lsdc_config::{LiquidAgentArgs, LiquidAgentConfig, LiquidAgentMode};
 use lsdc_ports::DataPlane;
 use std::sync::Arc;
 use tokio::net::TcpListener;

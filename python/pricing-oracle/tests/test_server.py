@@ -2,7 +2,7 @@ import asyncio
 
 from fastapi.testclient import TestClient
 
-from src.server import PricingOracleService, app, pricing_pb2
+from lsdc_pricing_oracle.server import PricingOracleService, app, pricing_pb2
 
 
 client = TestClient(app)

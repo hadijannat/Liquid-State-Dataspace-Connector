@@ -3,9 +3,9 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use control_plane_api::config::ControlPlaneApiConfig;
 use control_plane_api::{router, ApiState, ApiStateInit, BackendSummary};
+use liquid_agent_core::loader::LiquidDataPlane;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use liquid_agent_grpc::server::{serve as serve_agent, LiquidAgentService};
-use liquid_data_plane::loader::LiquidDataPlane;
 use lsdc_common::crypto::{PriceDecision, PricingAuditContext, ShapleyValue};
 use lsdc_common::dsp::{ContractOffer, ContractRequest, EvidenceRequirement, TransferRequest};
 use lsdc_common::execution::{PricingMode, ProofBackend, TeeBackend, TransportBackend};
@@ -64,6 +64,7 @@ async fn test_contract_finalize_transfer_and_settlement_surface() {
     let app = build_test_app(start_simulated_agent().await).await;
     let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
     let finalized = finalize_offer(&app, &offer).await;
+    assert!(finalized.policy_execution.is_some());
 
     let settlement = get_json::<SettlementDecision, _>(
         &app,
@@ -79,6 +80,7 @@ async fn test_contract_finalize_transfer_and_settlement_surface() {
     assert_eq!(settlement.agreement_id, finalized.agreement.agreement_id.0);
     assert!(settlement.latest_job_id.is_none());
     assert!(!settlement.settlement_allowed);
+    assert!(settlement.policy_execution.is_some());
 
     let transfer = get_json::<TransferStartResponse, _>(
         &app,
@@ -95,6 +97,9 @@ async fn test_contract_finalize_transfer_and_settlement_surface() {
     .await;
     assert_eq!(transfer.transfer_start.session_port, 31_337);
     assert!(transfer.enforcement_handle.active);
+    assert!(transfer.policy_execution.is_some());
+    assert!(transfer.resolved_transport.is_some());
+    assert!(transfer.enforcement_runtime.is_some());
 
     let completion = get_json::<lsdc_common::dsp::TransferCompletion, _>(
         &app,
@@ -220,6 +225,36 @@ async fn test_health_reports_configured_and_actual_backends() {
     assert_eq!(health["actual_backends"]["transport_backend"], "simulated");
     assert_eq!(health["actual_backends"]["proof_backend"], "dev_receipt");
     assert_eq!(health["actual_backends"]["tee_backend"], "nitro_dev");
+    assert_eq!(
+        health["policy_truthfulness"]["clauses"][3]["clause"],
+        "transport.valid_until"
+    );
+}
+
+#[tokio::test]
+async fn test_transfer_start_rejects_mismatched_data_address_scheme() {
+    let app = build_test_app(start_simulated_agent().await).await;
+    let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
+    let finalized = finalize_offer(&app, &offer).await;
+
+    let response: serde_json::Value = get_json(
+        &app,
+        Method::POST,
+        "/dsp/transfers/start",
+        Some(TransferRequest {
+            agreement_id: finalized.agreement.agreement_id.clone(),
+            data_address: "tcp://127.0.0.1:31337".into(),
+            protocol: lsdc_common::dsp::TransportProtocol::Udp,
+            session_port: Some(31_337),
+        }),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+
+    assert!(response["error"]
+        .as_str()
+        .unwrap()
+        .contains("does not match requested protocol"));
 }
 
 #[tokio::test]

@@ -886,7 +886,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "hex",
- "liquid-data-plane",
+ "liquid-agent-core",
  "lsdc-common",
  "lsdc-ports",
  "proof-plane-host",
@@ -908,28 +908,63 @@ dependencies = [
 name = "control-plane-api"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "axum",
  "chrono",
  "clap",
- "control-plane",
+ "control-plane-http",
+ "control-plane-store",
+ "liquid-agent-core",
  "liquid-agent-grpc",
- "liquid-data-plane",
  "lsdc-common",
+ "lsdc-config",
  "lsdc-ports",
  "lsdc-service-types",
  "proof-plane-host",
- "rusqlite",
  "serde",
  "serde_json",
  "tee-orchestrator",
  "tokio",
- "toml",
  "tower 0.5.3",
  "tracing",
  "tracing-subscriber 0.3.22",
  "uuid",
+]
+
+[[package]]
+name = "control-plane-http"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "control-plane",
+ "control-plane-store",
+ "liquid-agent-grpc",
+ "lsdc-common",
+ "lsdc-config",
+ "lsdc-ports",
+ "lsdc-service-types",
+ "proof-plane-host",
+ "serde",
+ "serde_json",
+ "tee-orchestrator",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "control-plane-store"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "lsdc-common",
+ "lsdc-ports",
+ "lsdc-service-types",
+ "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2333,16 +2368,35 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "clap",
+ "liquid-agent-core",
  "liquid-agent-grpc",
- "liquid-data-plane",
  "lsdc-common",
+ "lsdc-config",
  "lsdc-ports",
  "serde",
  "serde_json",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber 0.3.22",
+]
+
+[[package]]
+name = "liquid-agent-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aya",
+ "aya-log",
+ "chrono",
+ "lsdc-common",
+ "lsdc-ports",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2360,25 +2414,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-build",
-]
-
-[[package]]
-name = "liquid-data-plane"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "aya",
- "aya-log",
- "chrono",
- "lsdc-common",
- "lsdc-ports",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -2427,6 +2462,16 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "uuid",
+]
+
+[[package]]
+name = "lsdc-config"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "lsdc-common",
+ "serde",
+ "toml",
 ]
 
 [[package]]
@@ -3014,14 +3059,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proof-plane-guest"
-version = "0.1.0"
-dependencies = [
- "csv",
- "lsdc-common",
-]
-
-[[package]]
 name = "proof-plane-host"
 version = "0.1.0"
 dependencies = [
@@ -3030,13 +3067,21 @@ dependencies = [
  "chrono",
  "lsdc-common",
  "lsdc-ports",
- "proof-plane-guest",
+ "proof-transform-kernel",
  "risc0-build",
  "risc0-zkvm",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "proof-transform-kernel"
+version = "0.1.0"
+dependencies = [
+ "csv",
+ "lsdc-common",
 ]
 
 [[package]]

@@ -1,8 +1,8 @@
 #![cfg(target_os = "linux")]
 
+use liquid_agent_core::loader::LiquidDataPlane;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use liquid_agent_grpc::server::{serve, LiquidAgentService};
-use liquid_data_plane::loader::LiquidDataPlane;
 use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement, TransportProtocol};
 use lsdc_common::execution::TransportBackend;
 use lsdc_common::liquid::{LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard};

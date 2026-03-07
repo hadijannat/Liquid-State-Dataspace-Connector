@@ -1,21 +1,34 @@
 use chrono::{DateTime, Utc};
 use lsdc_common::crypto::{PriceDecision, ProofBundle, ProvenanceReceipt, SanctionProposal};
 use lsdc_common::dsp::{ContractAgreement, ContractOffer, TransferStart};
-use lsdc_common::execution::{ActualExecutionProfile, RequestedExecutionProfile};
+use lsdc_common::execution::{
+    ActualExecutionProfile, PolicyExecutionClassification, RequestedExecutionProfile,
+};
 use lsdc_common::liquid::CsvTransformManifest;
-use lsdc_ports::{EnforcementHandle, EnforcementStatus, TrainingMetrics};
+use lsdc_ports::{
+    EnforcementHandle, EnforcementRuntimeStatus, EnforcementStatus, ResolvedTransportGuard,
+    TrainingMetrics,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalizeContractResponse {
     pub agreement: ContractAgreement,
     pub requested_profile: RequestedExecutionProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_execution: Option<PolicyExecutionClassification>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferStartResponse {
     pub transfer_start: TransferStart,
     pub enforcement_handle: EnforcementHandle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_execution: Option<PolicyExecutionClassification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_transport: Option<ResolvedTransportGuard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enforcement_runtime: Option<EnforcementRuntimeStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +63,12 @@ pub struct LineageJobResult {
     pub actual_execution_profile: ActualExecutionProfile,
     pub enforcement_handle: EnforcementHandle,
     pub enforcement_status: EnforcementStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_execution: Option<PolicyExecutionClassification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_transport: Option<ResolvedTransportGuard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enforcement_runtime: Option<EnforcementRuntimeStatus>,
     pub transformed_csv_utf8: String,
     pub proof_bundle: ProofBundle,
     pub price_decision: PriceDecision,
@@ -88,6 +107,12 @@ pub struct SettlementDecision {
     pub latest_job_id: Option<String>,
     pub settlement_allowed: bool,
     pub actual_execution_profile: Option<ActualExecutionProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_execution: Option<PolicyExecutionClassification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_transport: Option<ResolvedTransportGuard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enforcement_runtime: Option<EnforcementRuntimeStatus>,
     pub price_decision: Option<PriceDecision>,
     pub sanction_proposal: Option<SanctionProposal>,
     pub proof_bundle: Option<ProofBundle>,

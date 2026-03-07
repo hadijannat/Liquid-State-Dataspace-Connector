@@ -4,7 +4,7 @@ Use the current documentation layers instead of treating this file as a full des
 
 - Vision: [vision.md](vision.md)
 - Current state: [current-state.md](current-state.md)
-- Next milestone: [next-milestone.md](next-milestone.md)
-- Reference stack: [phase3-reference-stack.md](phase3-reference-stack.md)
+- Roadmap: [roadmap.md](roadmap.md)
+- Research track: [research/README.md](research/README.md)
 
 This repo intentionally separates visionary architecture from implemented behavior so runtime claims remain truthful.

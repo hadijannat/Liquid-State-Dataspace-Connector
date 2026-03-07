@@ -1,0 +1,10 @@
+[package]
+name = "lsdc-config"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lsdc-common = { path = "../lsdc-common" }
+serde = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }

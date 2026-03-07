@@ -1,5 +1,5 @@
 [package]
-name = "proof-plane-guest"
+name = "proof-transform-kernel"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +7,7 @@ edition = "2021"
 path = "src/lib.rs"
 
 [[bin]]
-name = "proof-plane-guest"
+name = "proof-transform-kernel"
 path = "src/main.rs"
 
 [dependencies]

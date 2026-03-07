@@ -5,7 +5,7 @@ use control_plane::pricing::proto::{
     PriceDecisionRequest, PriceDecisionResponse, ShapleyResponse, UtilityRequest,
 };
 use control_plane::pricing::GrpcPricingOracle;
-use liquid_data_plane::loader::LiquidDataPlane;
+use liquid_agent_core::loader::LiquidDataPlane;
 use lsdc_common::crypto::{MetricsWindow, PriceDecision, PricingAuditContext, ShapleyValue};
 use lsdc_common::error::Result;
 use lsdc_common::execution::PricingMode;

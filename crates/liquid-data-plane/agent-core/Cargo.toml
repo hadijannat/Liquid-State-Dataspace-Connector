@@ -1,5 +1,5 @@
 [package]
-name = "liquid-data-plane"
+name = "liquid-agent-core"
 version.workspace = true
 edition.workspace = true
 
