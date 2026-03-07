@@ -9,8 +9,10 @@ risc0 = ["proof-plane-host/risc0"]
 
 [dependencies]
 control-plane = { path = "../../crates/control-plane" }
-liquid-agent = { path = "../liquid-agent" }
+liquid-agent-grpc = { path = "../../crates/liquid-agent-grpc" }
 lsdc-common = { path = "../../crates/lsdc-common" }
+lsdc-ports = { path = "../../crates/lsdc-ports" }
+lsdc-service-types = { path = "../../crates/lsdc-service-types" }
 proof-plane-host = { path = "../../crates/proof-plane/host" }
 tee-orchestrator = { path = "../../crates/tee-orchestrator" }
 tokio = { workspace = true }

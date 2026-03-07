@@ -1,0 +1,10 @@
+[package]
+name = "lsdc-ports"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lsdc-common = { path = "../lsdc-common" }
+serde = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }

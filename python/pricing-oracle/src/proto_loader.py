@@ -6,8 +6,9 @@ import sys
 
 
 def load_pricing_proto():
-    proto_dir = Path(__file__).resolve().parent / "proto"
-    generated_dir = proto_dir / "_generated"
+    workspace_root = Path(__file__).resolve().parents[3]
+    proto_dir = workspace_root / "proto" / "pricing" / "v1"
+    generated_dir = Path(__file__).resolve().parent / "_generated"
     generated_dir.mkdir(exist_ok=True)
 
     proto_file = proto_dir / "pricing.proto"

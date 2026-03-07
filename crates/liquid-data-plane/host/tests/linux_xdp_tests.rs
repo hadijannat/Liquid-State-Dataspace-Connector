@@ -5,7 +5,7 @@ use liquid_data_plane::loader::LiquidDataPlane;
 use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement, TransportProtocol};
 use lsdc_common::liquid::{LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard};
 use lsdc_common::odrl::ast::PolicyId;
-use lsdc_common::traits::{DataPlane, EnforcementStatus};
+use lsdc_ports::{DataPlane, EnforcementStatus};
 use std::net::UdpSocket;
 use std::process::Command;
 use std::time::Duration;

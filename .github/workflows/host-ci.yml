@@ -20,6 +20,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e 'python/pricing-oracle[dev]'
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --exclude liquid-data-plane-ebpf -- -D warnings
+      - name: Verify repo shape
+        run: cargo xtask verify-repo
       - name: Run Rust tests
         run: cargo test --workspace
       - name: Run Python tests

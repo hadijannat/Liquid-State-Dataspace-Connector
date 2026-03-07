@@ -1,11 +1,11 @@
-use liquid_agent::client::LiquidAgentGrpcClient;
-use liquid_agent::server::{serve, LiquidAgentService};
+use liquid_agent_grpc::client::LiquidAgentGrpcClient;
+use liquid_agent_grpc::server::{serve, LiquidAgentService};
 use liquid_data_plane::loader::LiquidDataPlane;
 use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement, TransportProtocol};
 use lsdc_common::execution::TransportBackend;
 use lsdc_common::liquid::{LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard};
 use lsdc_common::odrl::ast::PolicyId;
-use lsdc_common::traits::{DataPlane, EnforcementStatus};
+use lsdc_ports::{DataPlane, EnforcementStatus};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -14,13 +14,20 @@ async fn test_simulated_agent_round_trip() {
     let address = listener.local_addr().unwrap();
     let plane = Arc::new(LiquidDataPlane::new_simulated());
     tokio::spawn(async move {
-        serve(listener, LiquidAgentService::from_plane(plane))
-            .await
-            .unwrap();
+        serve(
+            listener,
+            LiquidAgentService::new(plane, TransportBackend::Simulated),
+        )
+        .await
+        .unwrap();
     });
 
-    let client =
-        LiquidAgentGrpcClient::new(format!("http://{address}"), TransportBackend::Simulated);
+    let client = LiquidAgentGrpcClient::new(format!("http://{address}"));
+    assert_eq!(
+        client.transport_backend().await.unwrap(),
+        TransportBackend::Simulated
+    );
+
     let agreement = sample_agreement("agent-round-trip", Some(31_337));
     let handle = client.enforce(&agreement, "lo").await.unwrap();
     let status = client.status(&handle).await.unwrap();

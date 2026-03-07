@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 lsdc-common = { path = "../lsdc-common" }
-liquid-data-plane = { path = "../liquid-data-plane/host" }
+lsdc-ports = { path = "../lsdc-ports" }
 tee-orchestrator = { path = "../tee-orchestrator" }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -23,6 +23,7 @@ tokio-stream = "0.1"
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 proof-plane-host = { path = "../proof-plane/host" }
+liquid-data-plane = { path = "../liquid-data-plane/host" }
 
 [build-dependencies]
 tonic-build = "0.12"

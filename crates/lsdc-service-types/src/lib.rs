@@ -1,9 +1,9 @@
-use crate::crypto::{PriceDecision, ProofBundle, ProvenanceReceipt, SanctionProposal};
-use crate::dsp::{ContractAgreement, ContractOffer, TransferStart};
-use crate::execution::{ActualExecutionProfile, RequestedExecutionProfile};
-use crate::liquid::CsvTransformManifest;
-use crate::traits::{EnforcementHandle, EnforcementStatus, TrainingMetrics};
 use chrono::{DateTime, Utc};
+use lsdc_common::crypto::{PriceDecision, ProofBundle, ProvenanceReceipt, SanctionProposal};
+use lsdc_common::dsp::{ContractAgreement, ContractOffer, TransferStart};
+use lsdc_common::execution::{ActualExecutionProfile, RequestedExecutionProfile};
+use lsdc_common::liquid::CsvTransformManifest;
+use lsdc_ports::{EnforcementHandle, EnforcementStatus, TrainingMetrics};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,7 +77,7 @@ pub struct EvidenceVerificationRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceVerificationResult {
-    pub proof_backend: crate::execution::ProofBackend,
+    pub proof_backend: lsdc_common::execution::ProofBackend,
     pub checked_receipt_count: usize,
     pub valid: bool,
 }

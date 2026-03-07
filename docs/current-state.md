@@ -9,14 +9,16 @@ Negotiation now derives a `RequestedExecutionProfile`, which describes requested
 - TEE intent: attested execution required
 - pricing mode: advisory
 
-Actual runtime backends are chosen by the instantiated components and the evidence they emit at execution time. The repo no longer treats negotiation as proof that `RISC Zero` or `nitro-live` are being used.
+Actual runtime backends are chosen by the instantiated components and the evidence they emit at execution time. The repo no longer treats negotiation as proof that `RISC Zero` or `nitro-live` are being used, and `control-plane-api` now validates configured transport/proof/TEE intent against instantiated runtime components before startup succeeds.
 
 ## Implemented Behavior
 
 - Reference stack:
   - `apps/control-plane-api` exposes DSP-style contract and transfer endpoints plus `lsdc` lineage, evidence, and settlement endpoints
+  - `apps/control-plane-api` reports configured versus resolved actual backends from `/health`
   - `apps/control-plane-api` persists agreements, transfer sessions, lineage jobs, proof bundles, pricing decisions, and sanction proposals in SQLite
-  - `apps/liquid-agent` exposes loopback gRPC for agreement activation, revocation, and status
+  - `apps/liquid-agent` is a binary composition root over the shared `liquid-agent-grpc` contract crate
+  - the pricing oracle and the Rust gRPC client both compile from `proto/pricing/v1/pricing.proto`
 - ODRL subset:
   - actions: `read`, `transfer`, `anonymize`
   - constraints: `count`, `purpose`, `validUntil`
@@ -55,6 +57,7 @@ The repo now keeps reusable workload artifacts in `fixtures/`:
 
 ## Verification
 
+- Repo hygiene: `cargo xtask verify-repo`
 - Default workspace: `cargo test --workspace`
 - Python oracle: `.venv/bin/python -m pytest python/pricing-oracle/tests`
 - Local reference stack: `./scripts/run-phase3-demo.sh`

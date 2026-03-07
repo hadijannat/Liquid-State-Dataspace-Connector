@@ -3,7 +3,7 @@ use crate::maps::CompiledPolicy;
 use chrono::{DateTime, Utc};
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
-use lsdc_common::traits::{DataPlane, EnforcementHandle, EnforcementStatus};
+use lsdc_ports::{DataPlane, EnforcementHandle, EnforcementStatus};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;

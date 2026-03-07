@@ -9,7 +9,7 @@ use liquid_data_plane::loader::LiquidDataPlane;
 use lsdc_common::crypto::{MetricsWindow, PriceDecision, PricingAuditContext, ShapleyValue};
 use lsdc_common::error::Result;
 use lsdc_common::execution::PricingMode;
-use lsdc_common::traits::{PricingOracle as PricingOracleTrait, TrainingMetrics};
+use lsdc_ports::{PricingOracle as PricingOracleTrait, TrainingMetrics};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;

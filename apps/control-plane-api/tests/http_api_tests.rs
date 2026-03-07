@@ -1,19 +1,20 @@
 use async_trait::async_trait;
 use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
-use control_plane_api::{router, ApiState};
-use liquid_agent::client::LiquidAgentGrpcClient;
-use liquid_agent::server::{serve as serve_agent, LiquidAgentService};
+use control_plane_api::config::ControlPlaneApiConfig;
+use control_plane_api::{router, ApiState, ApiStateInit, BackendSummary};
+use liquid_agent_grpc::client::LiquidAgentGrpcClient;
+use liquid_agent_grpc::server::{serve as serve_agent, LiquidAgentService};
 use liquid_data_plane::loader::LiquidDataPlane;
 use lsdc_common::crypto::{PriceDecision, PricingAuditContext, ShapleyValue};
 use lsdc_common::dsp::{ContractOffer, ContractRequest, EvidenceRequirement, TransferRequest};
-use lsdc_common::execution::PricingMode;
+use lsdc_common::execution::{PricingMode, ProofBackend, TeeBackend, TransportBackend};
 use lsdc_common::liquid::{CsvTransformManifest, CsvTransformOp};
-use lsdc_common::service::{
+use lsdc_ports::{PricingOracle, TrainingMetrics};
+use lsdc_service_types::{
     EvidenceVerificationRequest, FinalizeContractResponse, LineageJobAccepted, LineageJobRecord,
     LineageJobRequest, LineageJobState, SettlementDecision, TransferStartResponse,
 };
-use lsdc_common::traits::{PricingOracle, TrainingMetrics};
 use proof_plane_host::DevReceiptProofEngine;
 use std::sync::Arc;
 use tee_orchestrator::enclave::NitroEnclaveManager;
@@ -148,7 +149,7 @@ async fn test_phase3_three_party_demo_flow() {
     assert_eq!(second_record.state, LineageJobState::Succeeded);
     assert!(second_result.settlement_allowed);
 
-    let verification = get_json::<lsdc_common::service::EvidenceVerificationResult, _>(
+    let verification = get_json::<lsdc_service_types::EvidenceVerificationResult, _>(
         &tier_c,
         Method::POST,
         "/lsdc/evidence/verify-chain",
@@ -193,26 +194,108 @@ async fn test_phase3_three_party_demo_flow() {
     assert!(settlement_c.proof_bundle.is_some());
 }
 
+#[tokio::test]
+async fn test_health_reports_configured_and_actual_backends() {
+    let app = build_test_app(start_simulated_agent().await).await;
+    let health: serde_json::Value = get_json(
+        &app,
+        Method::GET,
+        "/health",
+        None::<serde_json::Value>,
+        StatusCode::OK,
+    )
+    .await;
+
+    assert_eq!(health["status"], "ok");
+    assert_eq!(health["node_name"], "test-node");
+    assert_eq!(
+        health["configured_backends"]["transport_backend"],
+        "simulated"
+    );
+    assert_eq!(
+        health["configured_backends"]["proof_backend"],
+        "dev_receipt"
+    );
+    assert_eq!(health["configured_backends"]["tee_backend"], "nitro_dev");
+    assert_eq!(health["actual_backends"]["transport_backend"], "simulated");
+    assert_eq!(health["actual_backends"]["proof_backend"], "dev_receipt");
+    assert_eq!(health["actual_backends"]["tee_backend"], "nitro_dev");
+}
+
+#[tokio::test]
+async fn test_state_from_config_rejects_transport_backend_mismatch() {
+    let agent_endpoint = start_simulated_agent().await;
+    let config = ControlPlaneApiConfig {
+        node_name: "mismatch-node".into(),
+        listen_addr: "127.0.0.1:0".into(),
+        database_path: ":memory:".into(),
+        liquid_agent_endpoint: agent_endpoint,
+        transport_backend: TransportBackend::AyaXdp,
+        proof_backend: ProofBackend::DevReceipt,
+        tee_backend: TeeBackend::NitroDev,
+        pricing_endpoint: "http://127.0.0.1:50051".into(),
+        default_interface: "lo".into(),
+        nitro_live_attestation_path: None,
+    };
+
+    let err = match control_plane_api::state_from_config(&config).await {
+        Ok(_) => panic!("expected transport backend mismatch to fail startup"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("configured transport backend"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_state_from_config_rejects_missing_nitro_live_material() {
+    let agent_endpoint = start_simulated_agent().await;
+    let config = ControlPlaneApiConfig {
+        node_name: "nitro-live-node".into(),
+        listen_addr: "127.0.0.1:0".into(),
+        database_path: ":memory:".into(),
+        liquid_agent_endpoint: agent_endpoint,
+        transport_backend: TransportBackend::Simulated,
+        proof_backend: ProofBackend::DevReceipt,
+        tee_backend: TeeBackend::NitroLive,
+        pricing_endpoint: "http://127.0.0.1:50051".into(),
+        default_interface: "lo".into(),
+        nitro_live_attestation_path: None,
+    };
+
+    let err = match control_plane_api::state_from_config(&config).await {
+        Ok(_) => panic!("expected missing nitro_live_attestation_path to fail startup"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("nitro_live_attestation_path"),
+        "unexpected error: {err}"
+    );
+}
+
 async fn build_test_app(agent_endpoint: String) -> axum::Router {
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
     let proof_engine = Arc::new(DevReceiptProofEngine::new());
     let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()));
     let pricing_oracle = Arc::new(MockPricingOracle);
-    let liquid_agent = Arc::new(LiquidAgentGrpcClient::new(
-        agent_endpoint,
-        lsdc_common::execution::TransportBackend::Simulated,
-    ));
+    let liquid_agent = Arc::new(LiquidAgentGrpcClient::new(agent_endpoint));
 
-    router(ApiState::new(
+    router(ApiState::new(ApiStateInit {
         store,
+        node_name: "test-node".into(),
         liquid_agent,
         proof_engine,
         enclave_manager,
         pricing_oracle,
-        "lo",
-        lsdc_common::execution::TransportBackend::Simulated,
-        lsdc_common::execution::TeeBackend::NitroDev,
-    ))
+        default_interface: "lo".into(),
+        configured_backends: BackendSummary {
+            transport_backend: TransportBackend::Simulated,
+            proof_backend: ProofBackend::DevReceipt,
+            tee_backend: TeeBackend::NitroDev,
+        },
+        actual_transport_backend: TransportBackend::Simulated,
+    }))
 }
 
 async fn start_simulated_agent() -> String {
@@ -220,9 +303,12 @@ async fn start_simulated_agent() -> String {
     let address = listener.local_addr().unwrap();
     let plane = Arc::new(LiquidDataPlane::new_simulated());
     tokio::spawn(async move {
-        serve_agent(listener, LiquidAgentService::from_plane(plane))
-            .await
-            .unwrap();
+        serve_agent(
+            listener,
+            LiquidAgentService::new(plane, TransportBackend::Simulated),
+        )
+        .await
+        .unwrap();
     });
     format!("http://{address}")
 }

@@ -888,6 +888,7 @@ dependencies = [
  "hex",
  "liquid-data-plane",
  "lsdc-common",
+ "lsdc-ports",
  "proof-plane-host",
  "prost",
  "protoc-bin-vendored",
@@ -913,9 +914,11 @@ dependencies = [
  "chrono",
  "clap",
  "control-plane",
- "liquid-agent",
+ "liquid-agent-grpc",
  "liquid-data-plane",
  "lsdc-common",
+ "lsdc-ports",
+ "lsdc-service-types",
  "proof-plane-host",
  "rusqlite",
  "serde",
@@ -2328,22 +2331,35 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 name = "liquid-agent"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "chrono",
  "clap",
+ "liquid-agent-grpc",
  "liquid-data-plane",
  "lsdc-common",
+ "lsdc-ports",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber 0.3.22",
+]
+
+[[package]]
+name = "liquid-agent-grpc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "lsdc-common",
+ "lsdc-ports",
  "prost",
  "protoc-bin-vendored",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
- "toml",
  "tonic",
  "tonic-build",
- "tracing",
- "tracing-subscriber 0.3.22",
 ]
 
 [[package]]
@@ -2356,6 +2372,7 @@ dependencies = [
  "aya-log",
  "chrono",
  "lsdc-common",
+ "lsdc-ports",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2402,7 +2419,6 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 name = "lsdc-common"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "chrono",
  "hex",
  "hmac",
@@ -2411,6 +2427,26 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "uuid",
+]
+
+[[package]]
+name = "lsdc-ports"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "lsdc-common",
+ "serde",
+]
+
+[[package]]
+name = "lsdc-service-types"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "lsdc-common",
+ "lsdc-ports",
+ "serde",
 ]
 
 [[package]]
@@ -2993,6 +3029,7 @@ dependencies = [
  "bincode",
  "chrono",
  "lsdc-common",
+ "lsdc-ports",
  "proof-plane-guest",
  "risc0-build",
  "risc0-zkvm",
@@ -4371,6 +4408,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "lsdc-common",
+ "lsdc-ports",
  "serde",
  "serde_json",
  "tokio",

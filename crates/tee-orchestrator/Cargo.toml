@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 lsdc-common = { path = "../lsdc-common" }
+lsdc-ports = { path = "../lsdc-ports" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }

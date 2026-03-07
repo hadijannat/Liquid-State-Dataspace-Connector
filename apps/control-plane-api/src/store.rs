@@ -1,10 +1,10 @@
 use lsdc_common::dsp::{ContractAgreement, TransferRequest};
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::RequestedExecutionProfile;
-use lsdc_common::service::{
+use lsdc_ports::EnforcementHandle;
+use lsdc_service_types::{
     LineageJobRecord, LineageJobResult, LineageJobState, SettlementDecision, TransferStartResponse,
 };
-use lsdc_common::traits::EnforcementHandle;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 use std::path::Path;

@@ -19,6 +19,7 @@ This repository is intentionally split across three documentation layers:
 - Feature-gated single-hop `RISC Zero` proof backend in `proof-plane-host`.
 - Nitro-oriented attestation and proof-of-forgetting flows for `nitro-dev` plus pinned-measurement validation for `nitro-live`.
 - Advisory-only pricing over gRPC with truthful heuristic algorithm metadata.
+- Startup validation that checks configured transport, proof, and TEE backends against the instantiated runtime components before the API begins serving.
 
 ## Experimental vs Future
 
@@ -34,16 +35,20 @@ This repository is intentionally split across three documentation layers:
 ## Workspace
 
 - `apps/control-plane-api`: DSP-style HTTP API, SQLite persistence, async lineage jobs, settlement view
-- `apps/liquid-agent`: privileged or simulated transport daemon with loopback gRPC API
+- `apps/liquid-agent`: privileged or simulated transport daemon; binary composition root only
 - `crates/lsdc-common`: shared DSP types, requested execution profile, liquid policy IR, crypto/evidence models, fixtures loader
+- `crates/lsdc-ports`: runtime ports and shared execution-side request/response types
+- `crates/lsdc-service-types`: HTTP/API DTOs for lineage, evidence, settlement, and transfer surfaces
+- `crates/liquid-agent-grpc`: shared liquid-agent gRPC contract plus client/server glue
 - `crates/control-plane`: negotiation, orchestration, gRPC pricing client, smoke example
 - `crates/liquid-data-plane/host`: userspace loader and agreement lifecycle management
 - `crates/liquid-data-plane/ebpf`: XDP program and eBPF maps
 - `crates/proof-plane/guest`: shared batch CSV transform kernel
 - `crates/proof-plane/host`: dev receipt engine and feature-gated `RISC Zero` host backend
-- `crates/proof-plane/risc0-guest`: embedded guest package used only by the `RISC Zero` feature build
+- `crates/proof-plane/risc0-guest`: embedded guest package used only by the `RISC Zero` feature build; it is not a root workspace member
 - `crates/tee-orchestrator`: protected job execution and forgetting-proof verification
-- `python/pricing-oracle`: gRPC pricing sidecar and FastAPI health endpoint
+- `proto/pricing/v1/pricing.proto`: shared pricing gRPC contract for Rust and Python
+- `python/pricing-oracle`: gRPC pricing sidecar and FastAPI health endpoint generated from the shared repo-level proto
 - `fixtures/`: shared ODRL, manifest, CSV, proof, and Nitro attestation samples
 
 ## Getting Started
@@ -57,6 +62,7 @@ Ubuntu or Debian bootstrap:
 Rust and Python verification:
 
 ```bash
+cargo xtask verify-repo
 cargo test --workspace
 .venv/bin/python -m pytest python/pricing-oracle/tests
 ```

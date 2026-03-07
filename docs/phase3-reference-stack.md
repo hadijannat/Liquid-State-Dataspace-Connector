@@ -48,8 +48,11 @@ LSDC runtime endpoints:
 - `GET /lsdc/lineage/jobs/{job_id}`
 - `POST /lsdc/evidence/verify-chain`
 - `GET /lsdc/agreements/{agreement_id}/settlement`
+- `GET /health`
 
 `/lsdc/lineage/jobs` accepts a full agreement, CSV input as UTF-8, a transform manifest, training metrics, and an optional prior receipt. The service persists the agreement locally, runs lineage asynchronously, and returns a `job_id` for polling.
+
+`/health` returns additive structured JSON with node name, configured backends, resolved actual backends, and enabled feature flags.
 
 ## Demo Flow
 

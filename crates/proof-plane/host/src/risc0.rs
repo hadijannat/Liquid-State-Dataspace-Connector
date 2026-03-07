@@ -5,7 +5,7 @@ use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::ProofBackend;
 use lsdc_common::liquid::{validate_transform_manifest, CsvTransformManifest};
 use lsdc_common::proof::{CsvTransformProofInput, CsvTransformProofJournal};
-use lsdc_common::traits::{ProofEngine, ProofExecutionResult};
+use lsdc_ports::{ProofEngine, ProofExecutionResult};
 use risc0_zkvm::{default_prover, ExecutorEnv, Receipt};
 
 mod methods {

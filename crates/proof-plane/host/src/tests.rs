@@ -7,7 +7,7 @@ use lsdc_common::error::LsdcError;
 use lsdc_common::liquid::CsvTransformManifest;
 use lsdc_common::odrl::ast::PolicyId;
 use lsdc_common::odrl::parser::lower_policy;
-use lsdc_common::traits::ProofEngine;
+use lsdc_ports::ProofEngine;
 
 fn agreement() -> ContractAgreement {
     let odrl_policy: serde_json::Value =

@@ -9,15 +9,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = ControlPlaneApiArgs::parse();
     let config = control_plane_api::config::ControlPlaneApiConfig::from_path(&args.config)?;
-    let state = state_from_config(&config)?;
+    let state = state_from_config(&config).await?;
     let listener = TcpListener::bind(&config.listen_addr).await?;
+    let actual = state.actual_backends_summary();
+    let configured = state.configured_backends_summary();
 
     tracing::info!(
         node = %config.node_name,
         listen_addr = %config.listen_addr,
-        transport_backend = ?config.transport_backend,
-        proof_backend = ?config.proof_backend,
-        tee_backend = ?config.tee_backend,
+        configured_transport_backend = ?configured.transport_backend,
+        configured_proof_backend = ?configured.proof_backend,
+        configured_tee_backend = ?configured.tee_backend,
+        actual_transport_backend = ?actual.transport_backend,
+        actual_proof_backend = ?actual.proof_backend,
+        actual_tee_backend = ?actual.tee_backend,
         "starting control-plane-api"
     );
 

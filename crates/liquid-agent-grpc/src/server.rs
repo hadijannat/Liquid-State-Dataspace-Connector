@@ -1,13 +1,14 @@
-use crate::config::{LiquidAgentConfig, LiquidAgentMode};
 use crate::proto::liquid_agent_server::{LiquidAgent, LiquidAgentServer};
 use crate::proto::{
     ActivateAgreementRequest, ActivateAgreementResponse, GetEnforcementStatusRequest,
-    GetEnforcementStatusResponse, RevokeEnforcementRequest, RevokeEnforcementResponse,
+    GetEnforcementStatusResponse, GetRuntimeInfoRequest, GetRuntimeInfoResponse,
+    RevokeEnforcementRequest, RevokeEnforcementResponse,
 };
-use liquid_data_plane::loader::LiquidDataPlane;
 use lsdc_common::dsp::ContractAgreement;
-use lsdc_common::error::{LsdcError, Result};
-use lsdc_common::traits::{DataPlane, EnforcementHandle};
+use lsdc_common::error::LsdcError;
+use lsdc_common::execution::TransportBackend;
+use lsdc_common::Result;
+use lsdc_ports::{DataPlane, EnforcementHandle};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -16,33 +17,15 @@ use tonic::{Request, Response, Status};
 #[derive(Clone)]
 pub struct LiquidAgentService {
     plane: Arc<dyn DataPlane>,
+    transport_backend: TransportBackend,
 }
 
 impl LiquidAgentService {
-    pub fn from_config(config: &LiquidAgentConfig) -> Self {
-        let plane: Arc<dyn DataPlane> = match config.mode {
-            LiquidAgentMode::Kernel => {
-                #[cfg(target_os = "linux")]
-                {
-                    Arc::new(LiquidDataPlane::new())
-                }
-
-                #[cfg(not(target_os = "linux"))]
-                {
-                    tracing::warn!(
-                        "kernel mode requested on non-Linux host; falling back to simulated enforcement"
-                    );
-                    Arc::new(LiquidDataPlane::new_simulated())
-                }
-            }
-            LiquidAgentMode::Simulated => Arc::new(LiquidDataPlane::new_simulated()),
-        };
-
-        Self { plane }
-    }
-
-    pub fn from_plane(plane: Arc<dyn DataPlane>) -> Self {
-        Self { plane }
+    pub fn new(plane: Arc<dyn DataPlane>, transport_backend: TransportBackend) -> Self {
+        Self {
+            plane,
+            transport_backend,
+        }
     }
 }
 
@@ -87,6 +70,19 @@ impl LiquidAgent for LiquidAgentService {
         let status = self.plane.status(&handle).await.map_err(lsdc_status)?;
         Ok(Response::new(GetEnforcementStatusResponse {
             status_json: serde_json::to_string(&status).map_err(serde_status)?,
+        }))
+    }
+
+    async fn get_runtime_info(
+        &self,
+        _request: Request<GetRuntimeInfoRequest>,
+    ) -> std::result::Result<Response<GetRuntimeInfoResponse>, Status> {
+        Ok(Response::new(GetRuntimeInfoResponse {
+            transport_backend: match self.transport_backend {
+                TransportBackend::AyaXdp => "aya_xdp",
+                TransportBackend::Simulated => "simulated",
+            }
+            .into(),
         }))
     }
 }

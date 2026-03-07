@@ -4,7 +4,7 @@ use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::ProofBackend;
 use lsdc_common::liquid::{validate_transform_manifest, CsvTransformManifest};
-use lsdc_common::traits::{ProofEngine, ProofExecutionResult};
+use lsdc_ports::{ProofEngine, ProofExecutionResult};
 use proof_plane_guest::apply_manifest;
 use serde::{Deserialize, Serialize};
 

@@ -8,5 +8,5 @@ __pycache__/
 .venv/
 python/pricing-oracle/.venv/
 python/pricing-oracle/*.egg-info/
-python/pricing-oracle/src/proto/_generated/
+python/pricing-oracle/src/_generated/
 firebase-debug.log

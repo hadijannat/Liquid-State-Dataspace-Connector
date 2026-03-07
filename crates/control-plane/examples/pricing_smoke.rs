@@ -1,6 +1,6 @@
 use control_plane::pricing::GrpcPricingOracle;
 use lsdc_common::crypto::{MetricsWindow, PricingAuditContext};
-use lsdc_common::traits::{PricingOracle, TrainingMetrics};
+use lsdc_ports::{PricingOracle, TrainingMetrics};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

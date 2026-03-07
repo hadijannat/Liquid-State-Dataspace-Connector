@@ -1,13 +1,13 @@
 #![cfg(target_os = "linux")]
 
-use liquid_agent::client::LiquidAgentGrpcClient;
-use liquid_agent::server::{serve, LiquidAgentService};
+use liquid_agent_grpc::client::LiquidAgentGrpcClient;
+use liquid_agent_grpc::server::{serve, LiquidAgentService};
 use liquid_data_plane::loader::LiquidDataPlane;
 use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement, TransportProtocol};
 use lsdc_common::execution::TransportBackend;
 use lsdc_common::liquid::{LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard};
 use lsdc_common::odrl::ast::PolicyId;
-use lsdc_common::traits::{DataPlane, EnforcementStatus};
+use lsdc_ports::{DataPlane, EnforcementStatus};
 use std::net::UdpSocket;
 use std::process::Command;
 use std::sync::Arc;
@@ -22,12 +22,15 @@ async fn test_loopback_packet_cap_enforcement_and_detach_via_grpc() {
     let address = listener.local_addr().unwrap();
     let plane = Arc::new(LiquidDataPlane::new());
     tokio::spawn(async move {
-        serve(listener, LiquidAgentService::from_plane(plane))
-            .await
-            .unwrap();
+        serve(
+            listener,
+            LiquidAgentService::new(plane, TransportBackend::AyaXdp),
+        )
+        .await
+        .unwrap();
     });
 
-    let client = LiquidAgentGrpcClient::new(format!("http://{address}"), TransportBackend::AyaXdp);
+    let client = LiquidAgentGrpcClient::new(format!("http://{address}"));
     let agreement = sample_agreement("linux-agent-grpc", Some(31_337));
     let handle = client.enforce(&agreement, "lo").await.unwrap();
 

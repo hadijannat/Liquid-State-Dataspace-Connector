@@ -4,7 +4,7 @@ use lsdc_common::crypto::{
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::liquid::CsvTransformManifest;
-use lsdc_common::traits::{
+use lsdc_ports::{
     DataPlane, EnclaveJobRequest, EnclaveManager, EnforcementHandle, PricingOracle, TrainingMetrics,
 };
 use std::sync::Arc;

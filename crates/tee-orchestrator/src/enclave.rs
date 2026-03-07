@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use lsdc_common::crypto::{AttestationDocument, AttestationMeasurements, ProofBundle, Sha256Hash};
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::TeeBackend;
-use lsdc_common::traits::{EnclaveJobRequest, EnclaveJobResult, EnclaveManager, ProofEngine};
+use lsdc_ports::{EnclaveJobRequest, EnclaveJobResult, EnclaveManager, ProofEngine};
 use std::sync::Arc;
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -37,12 +37,13 @@ impl NitroEnclaveManager {
     pub fn new_live(
         proof_engine: Arc<dyn ProofEngine>,
         live_attestation: NitroLiveAttestationMaterial,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        validate_live_attestation(&live_attestation)?;
+        Ok(Self {
             proof_engine,
             mode: TeeBackend::NitroLive,
             live_attestation: Some(live_attestation),
-        }
+        })
     }
 }
 

@@ -1,0 +1,10 @@
+[package]
+name = "lsdc-service-types"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lsdc-common = { path = "../lsdc-common" }
+lsdc-ports = { path = "../lsdc-ports" }
+serde = { workspace = true }
+chrono = { workspace = true }

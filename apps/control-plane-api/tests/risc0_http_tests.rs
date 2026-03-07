@@ -3,18 +3,18 @@
 use async_trait::async_trait;
 use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
-use control_plane_api::{router, ApiState};
-use liquid_agent::client::LiquidAgentGrpcClient;
-use liquid_agent::server::{serve as serve_agent, LiquidAgentService};
+use control_plane_api::{router, ApiState, ApiStateInit, BackendSummary};
+use liquid_agent_grpc::client::LiquidAgentGrpcClient;
+use liquid_agent_grpc::server::{serve as serve_agent, LiquidAgentService};
 use liquid_data_plane::loader::LiquidDataPlane;
 use lsdc_common::crypto::{PriceDecision, PricingAuditContext, ShapleyValue};
 use lsdc_common::dsp::{ContractRequest, EvidenceRequirement};
 use lsdc_common::execution::{PricingMode, TeeBackend, TransportBackend};
-use lsdc_common::service::{
+use lsdc_ports::{PricingOracle, TrainingMetrics};
+use lsdc_service_types::{
     FinalizeContractResponse, LineageJobAccepted, LineageJobRecord, LineageJobRequest,
     LineageJobState,
 };
-use lsdc_common::traits::{PricingOracle, TrainingMetrics};
 use proof_plane_host::Risc0ProofEngine;
 use std::sync::Arc;
 use tee_orchestrator::enclave::NitroEnclaveManager;
@@ -65,19 +65,21 @@ async fn test_single_hop_risc0_lineage_via_http_api() {
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
     let proof_engine = Arc::new(Risc0ProofEngine::new());
     let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()));
-    let app = router(ApiState::new(
+    let app = router(ApiState::new(ApiStateInit {
         store,
-        Arc::new(LiquidAgentGrpcClient::new(
-            agent_endpoint,
-            TransportBackend::Simulated,
-        )),
+        node_name: "test-risc0-node".into(),
+        liquid_agent: Arc::new(LiquidAgentGrpcClient::new(agent_endpoint)),
         proof_engine,
         enclave_manager,
-        Arc::new(MockPricingOracle),
-        "lo",
-        TransportBackend::Simulated,
-        TeeBackend::NitroDev,
-    ));
+        pricing_oracle: Arc::new(MockPricingOracle),
+        default_interface: "lo".into(),
+        configured_backends: BackendSummary {
+            transport_backend: TransportBackend::Simulated,
+            proof_backend: lsdc_common::execution::ProofBackend::RiscZero,
+            tee_backend: TeeBackend::NitroDev,
+        },
+        actual_transport_backend: TransportBackend::Simulated,
+    }));
 
     let offer = post_json(
         &app,
@@ -142,9 +144,12 @@ async fn start_simulated_agent() -> String {
     let address = listener.local_addr().unwrap();
     let plane = Arc::new(LiquidDataPlane::new_simulated());
     tokio::spawn(async move {
-        serve_agent(listener, LiquidAgentService::from_plane(plane))
-            .await
-            .unwrap();
+        serve_agent(
+            listener,
+            LiquidAgentService::new(plane, TransportBackend::Simulated),
+        )
+        .await
+        .unwrap();
     });
     format!("http://{address}")
 }

@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use control_plane::negotiation::NegotiationEngine;
 use control_plane::orchestrator::{BatchLineageRequest, Orchestrator};
 use control_plane::pricing::GrpcPricingOracle;
-use liquid_agent::client::LiquidAgentGrpcClient;
+use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use lsdc_common::dsp::{
     ContractOffer, ContractRequest, TransferCompletion, TransferRequest, TransferStart,
 };
@@ -19,42 +19,67 @@ use lsdc_common::execution::{
     ActualExecutionProfile, PricingMode, ProofBackend, RequestedExecutionProfile, TeeBackend,
     TransportBackend,
 };
-use lsdc_common::service::{
+use lsdc_ports::{DataPlane, EnclaveManager, PricingOracle, ProofEngine};
+use lsdc_service_types::{
     EvidenceVerificationRequest, EvidenceVerificationResult, FinalizeContractResponse,
     LineageJobAccepted, LineageJobRecord, LineageJobRequest, LineageJobResult, LineageJobState,
     SettlementDecision, TransferStartResponse,
 };
-use lsdc_common::traits::{DataPlane, EnclaveManager, PricingOracle, ProofEngine};
 use proof_plane_host::DevReceiptProofEngine;
 #[cfg(feature = "risc0")]
 use proof_plane_host::Risc0ProofEngine;
+use serde::Serialize;
 use std::sync::Arc;
 use store::Store;
 use tee_orchestrator::enclave::{NitroEnclaveManager, NitroLiveAttestationMaterial};
 
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct BackendSummary {
+    pub transport_backend: TransportBackend,
+    pub proof_backend: ProofBackend,
+    pub tee_backend: TeeBackend,
+}
+
+pub struct ApiStateInit {
+    pub store: Store,
+    pub node_name: String,
+    pub liquid_agent: Arc<LiquidAgentGrpcClient>,
+    pub proof_engine: Arc<dyn ProofEngine>,
+    pub enclave_manager: Arc<dyn EnclaveManager>,
+    pub pricing_oracle: Arc<dyn PricingOracle>,
+    pub default_interface: String,
+    pub configured_backends: BackendSummary,
+    pub actual_transport_backend: TransportBackend,
+}
+
 #[derive(Clone)]
 pub struct ApiState {
     store: Store,
+    node_name: String,
     negotiation: Arc<NegotiationEngine>,
     orchestrator: Arc<Orchestrator>,
     proof_engine: Arc<dyn ProofEngine>,
     liquid_agent: Arc<LiquidAgentGrpcClient>,
     default_interface: String,
-    transport_backend: TransportBackend,
-    tee_backend: TeeBackend,
+    configured_backends: BackendSummary,
+    actual_transport_backend: TransportBackend,
+    actual_tee_backend: TeeBackend,
 }
 
 impl ApiState {
-    pub fn new(
-        store: Store,
-        liquid_agent: Arc<LiquidAgentGrpcClient>,
-        proof_engine: Arc<dyn ProofEngine>,
-        enclave_manager: Arc<dyn EnclaveManager>,
-        pricing_oracle: Arc<dyn PricingOracle>,
-        default_interface: impl Into<String>,
-        transport_backend: TransportBackend,
-        tee_backend: TeeBackend,
-    ) -> Self {
+    pub fn new(init: ApiStateInit) -> Self {
+        let ApiStateInit {
+            store,
+            node_name,
+            liquid_agent,
+            proof_engine,
+            enclave_manager,
+            pricing_oracle,
+            default_interface,
+            configured_backends,
+            actual_transport_backend,
+        } = init;
+        let actual_tee_backend = enclave_manager.tee_backend();
         let data_plane: Arc<dyn DataPlane> = liquid_agent.clone();
         let orchestrator = Arc::new(Orchestrator::with_full_stack(
             data_plane,
@@ -64,23 +89,53 @@ impl ApiState {
 
         Self {
             store,
+            node_name,
             negotiation: Arc::new(NegotiationEngine::new()),
             orchestrator,
             proof_engine,
             liquid_agent,
-            default_interface: default_interface.into(),
-            transport_backend,
-            tee_backend,
+            default_interface,
+            configured_backends,
+            actual_transport_backend,
+            actual_tee_backend,
         }
     }
 
     fn actual_execution_profile(&self, pricing_mode: PricingMode) -> ActualExecutionProfile {
         ActualExecutionProfile {
-            transport_backend: self.transport_backend,
+            transport_backend: self.actual_transport_backend,
             proof_backend: self.proof_engine.proof_backend(),
-            tee_backend: self.tee_backend,
+            tee_backend: self.actual_tee_backend,
             pricing_mode,
         }
+    }
+
+    fn actual_backends(&self) -> BackendSummary {
+        BackendSummary {
+            transport_backend: self.actual_transport_backend,
+            proof_backend: self.proof_engine.proof_backend(),
+            tee_backend: self.actual_tee_backend,
+        }
+    }
+
+    fn health_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "status": "ok",
+            "node_name": &self.node_name,
+            "configured_backends": self.configured_backends,
+            "actual_backends": self.actual_backends(),
+            "enabled_features": {
+                "risc0": cfg!(feature = "risc0")
+            }
+        })
+    }
+
+    pub fn actual_backends_summary(&self) -> BackendSummary {
+        self.actual_backends()
+    }
+
+    pub fn configured_backends_summary(&self) -> BackendSummary {
+        self.configured_backends
     }
 }
 
@@ -104,27 +159,49 @@ pub fn router(state: ApiState) -> Router {
         .with_state(state)
 }
 
-pub fn state_from_config(config: &config::ControlPlaneApiConfig) -> AnyhowResult<ApiState> {
-    let store = Store::new(&config.database_path)?;
+pub async fn state_from_config(config: &config::ControlPlaneApiConfig) -> AnyhowResult<ApiState> {
     let liquid_agent = Arc::new(LiquidAgentGrpcClient::new(
         config.liquid_agent_endpoint.clone(),
-        config.transport_backend,
     ));
+    let actual_transport_backend = liquid_agent.transport_backend().await?;
+    let configured_backends = BackendSummary {
+        transport_backend: config.transport_backend,
+        proof_backend: config.proof_backend,
+        tee_backend: config.tee_backend,
+    };
+    validate_backend_intent(
+        "transport",
+        configured_backends.transport_backend,
+        actual_transport_backend,
+    )?;
+
     let proof_engine = build_proof_engine(config.proof_backend)?;
+    validate_backend_intent(
+        "proof",
+        configured_backends.proof_backend,
+        proof_engine.proof_backend(),
+    )?;
     let enclave_manager = build_enclave_manager(config.tee_backend, proof_engine.clone(), config)?;
+    validate_backend_intent(
+        "tee",
+        configured_backends.tee_backend,
+        enclave_manager.tee_backend(),
+    )?;
     let pricing_oracle: Arc<dyn PricingOracle> =
         Arc::new(GrpcPricingOracle::new(config.pricing_endpoint.clone()));
+    let store = Store::new(&config.database_path)?;
 
-    Ok(ApiState::new(
+    Ok(ApiState::new(ApiStateInit {
         store,
+        node_name: config.node_name.clone(),
         liquid_agent,
         proof_engine,
         enclave_manager,
         pricing_oracle,
-        config.default_interface.clone(),
-        config.transport_backend,
-        config.tee_backend,
-    ))
+        default_interface: config.default_interface.clone(),
+        configured_backends,
+        actual_transport_backend,
+    }))
 }
 
 pub async fn serve(listener: tokio::net::TcpListener, state: ApiState) -> AnyhowResult<()> {
@@ -133,8 +210,8 @@ pub async fn serve(listener: tokio::net::TcpListener, state: ApiState) -> Anyhow
         .map_err(|err| anyhow!("control-plane-api server failed: {err}"))
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ok" }))
+async fn health(State(state): State<ApiState>) -> Json<serde_json::Value> {
+    Json(state.health_payload())
 }
 
 async fn contract_request(
@@ -442,10 +519,23 @@ fn build_enclave_manager(
             Ok(Arc::new(NitroEnclaveManager::new_live(
                 proof_engine,
                 load_live_attestation_material(path)?,
-            )))
+            )?))
         }
         TeeBackend::None => Err(anyhow!("tee backend `none` is not valid for Phase 3")),
     }
+}
+
+fn validate_backend_intent<T>(label: &str, configured: T, actual: T) -> AnyhowResult<()>
+where
+    T: PartialEq + std::fmt::Debug,
+{
+    if configured == actual {
+        return Ok(());
+    }
+
+    Err(anyhow!(
+        "configured {label} backend {configured:?} does not match instantiated backend {actual:?}"
+    ))
 }
 
 fn load_live_attestation_material(path: &str) -> AnyhowResult<NitroLiveAttestationMaterial> {

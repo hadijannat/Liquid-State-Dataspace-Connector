@@ -3,7 +3,7 @@ use lsdc_common::crypto::{
 };
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::PricingMode;
-use lsdc_common::traits::{PricingOracle, TrainingMetrics};
+use lsdc_ports::{PricingOracle, TrainingMetrics};
 use tonic::transport::Channel;
 
 pub mod proto {

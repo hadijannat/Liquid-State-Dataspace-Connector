@@ -1,30 +1,26 @@
 use crate::proto::liquid_agent_client::LiquidAgentClient as ProtoLiquidAgentClient;
 use crate::proto::{
-    ActivateAgreementRequest, GetEnforcementStatusRequest, RevokeEnforcementRequest,
+    ActivateAgreementRequest, GetEnforcementStatusRequest, GetRuntimeInfoRequest,
+    RevokeEnforcementRequest,
 };
 use async_trait::async_trait;
 use lsdc_common::dsp::ContractAgreement;
-use lsdc_common::error::{LsdcError, Result};
+use lsdc_common::error::LsdcError;
 use lsdc_common::execution::TransportBackend;
-use lsdc_common::traits::{DataPlane, EnforcementHandle, EnforcementStatus};
+use lsdc_common::Result;
+use lsdc_ports::{DataPlane, EnforcementHandle, EnforcementStatus};
 use tonic::transport::Channel;
 
 #[derive(Clone)]
 pub struct LiquidAgentGrpcClient {
     endpoint: String,
-    transport_backend: TransportBackend,
 }
 
 impl LiquidAgentGrpcClient {
-    pub fn new(endpoint: impl Into<String>, transport_backend: TransportBackend) -> Self {
+    pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
-            transport_backend,
         }
-    }
-
-    pub fn transport_backend(&self) -> TransportBackend {
-        self.transport_backend
     }
 
     async fn client(&self) -> Result<ProtoLiquidAgentClient<Channel>> {
@@ -33,6 +29,16 @@ impl LiquidAgentGrpcClient {
             .map_err(|err| {
                 LsdcError::Enforcement(format!("failed to connect to liquid agent: {err}"))
             })
+    }
+
+    pub async fn transport_backend(&self) -> Result<TransportBackend> {
+        let mut client = self.client().await?;
+        let response = client
+            .get_runtime_info(GetRuntimeInfoRequest {})
+            .await
+            .map_err(agent_transport_error)?
+            .into_inner();
+        parse_transport_backend(&response.transport_backend)
     }
 }
 
@@ -83,4 +89,14 @@ impl DataPlane for LiquidAgentGrpcClient {
 
 fn agent_transport_error(err: tonic::Status) -> LsdcError {
     LsdcError::Enforcement(format!("liquid agent request failed: {err}"))
+}
+
+fn parse_transport_backend(value: &str) -> Result<TransportBackend> {
+    match value {
+        "simulated" => Ok(TransportBackend::Simulated),
+        "aya_xdp" => Ok(TransportBackend::AyaXdp),
+        other => Err(LsdcError::Enforcement(format!(
+            "liquid agent reported unknown transport backend `{other}`"
+        ))),
+    }
 }

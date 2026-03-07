@@ -7,7 +7,7 @@ use lsdc_common::dsp::{ContractRequest, EvidenceRequirement};
 use lsdc_common::error::Result;
 use lsdc_common::execution::PricingMode;
 use lsdc_common::liquid::{CsvTransformManifest, CsvTransformOp};
-use lsdc_common::traits::{DataPlane, PricingOracle, ProofEngine, TrainingMetrics};
+use lsdc_ports::{DataPlane, PricingOracle, ProofEngine, TrainingMetrics};
 use proof_plane_host::DevReceiptProofEngine;
 use std::sync::Arc;
 use tee_orchestrator::enclave::NitroEnclaveManager;
@@ -83,7 +83,7 @@ async fn test_full_negotiation_and_enforcement() {
     let status = data_plane.status(&handle).await.unwrap();
     assert!(matches!(
         status,
-        lsdc_common::traits::EnforcementStatus::Active { .. }
+        lsdc_ports::EnforcementStatus::Active { .. }
     ));
 }
 
