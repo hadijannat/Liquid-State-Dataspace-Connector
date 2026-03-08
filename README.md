@@ -87,7 +87,11 @@ sudo cargo test -p liquid-agent --test linux_agent_tests -- --ignored
 Feature-gated `RISC Zero` control-plane path:
 
 ```bash
+curl -L https://risczero.com/install | bash
+export PATH="$HOME/.risc0/bin:$PATH"
+rzup install cargo-risczero 5.0.0-rc.1
+rzup install rust 1.91.1
 cargo test -p control-plane-api --features risc0 --test risc0_http_tests
 ```
 
-The `RISC Zero` feature requires the external `cargo risczero` toolchain to be installed on the machine that runs it.
+The `RISC Zero` feature requires both the `cargo-risczero` CLI and the RISC Zero Rust guest toolchain to be installed on the machine that runs it.

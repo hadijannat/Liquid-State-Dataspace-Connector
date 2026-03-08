@@ -5,14 +5,26 @@ on:
   schedule:
     - cron: "0 3 * * *"
 
+env:
+  RISC0_CARGO_RISCZERO_VERSION: 5.0.0-rc.1
+  RISC0_RUST_TOOLCHAIN_VERSION: 1.91.1
+
 jobs:
   proof-nightly:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      - name: Install cargo-risczero
-        run: cargo install cargo-risczero --version 5.0.0-rc.1 --locked
+      - name: Install rzup
+        run: |
+          curl -L https://risczero.com/install | bash
+          echo "$HOME/.risc0/bin" >> "$GITHUB_PATH"
+      - name: Install RISC Zero toolchain
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rzup install cargo-risczero "$RISC0_CARGO_RISCZERO_VERSION"
+          rzup install rust "$RISC0_RUST_TOOLCHAIN_VERSION"
       - name: Run feature-gated proof-plane tests
         run: cargo test -p proof-plane-host --features risc0
       - name: Run feature-gated control API lineage test

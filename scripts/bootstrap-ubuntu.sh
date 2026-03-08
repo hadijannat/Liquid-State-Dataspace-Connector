@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RISC0_CARGO_RISCZERO_VERSION="5.0.0-rc.1"
+RISC0_RUST_TOOLCHAIN_VERSION="1.91.1"
 
 if ! command -v rustup >/dev/null 2>&1; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -31,7 +33,10 @@ python -m pip install --upgrade pip
 python -m pip install -e "$ROOT_DIR/python/pricing-oracle[dev]"
 
 if [[ "${LSDC_INSTALL_RISC0:-0}" == "1" ]]; then
-  cargo install cargo-risczero --version 5.0.0-rc.1 --locked
+  curl -L https://risczero.com/install | bash
+  export PATH="$HOME/.risc0/bin:$PATH"
+  rzup install cargo-risczero "$RISC0_CARGO_RISCZERO_VERSION"
+  rzup install rust "$RISC0_RUST_TOOLCHAIN_VERSION"
 fi
 
 echo "Bootstrap complete."
