@@ -26,7 +26,7 @@ pub struct ControlPlaneApiConfig {
 }
 
 impl ControlPlaneApiConfig {
-    pub fn from_path(path: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_path(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         read_toml(path)
     }
 }
@@ -51,7 +51,7 @@ pub enum LiquidAgentMode {
 }
 
 impl LiquidAgentConfig {
-    pub fn from_path(path: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_path(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         read_toml(path)
     }
 
