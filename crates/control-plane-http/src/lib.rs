@@ -232,7 +232,10 @@ async fn reconcile_stale_jobs(state: &ApiState) {
         return;
     }
 
-    tracing::info!(count = jobs.len(), "reconciling stale lineage jobs at startup");
+    tracing::info!(
+        count = jobs.len(),
+        "reconciling stale lineage jobs at startup"
+    );
     for record in jobs {
         let job_id = record.job_id.clone();
         let request = record.request.clone();
@@ -403,12 +406,11 @@ async fn verify_evidence_chain(
     State(state): State<ApiState>,
     Json(request): Json<EvidenceVerificationRequest>,
 ) -> ApiResult<Json<EvidenceVerificationResult>> {
-    let valid = if request.receipts.is_empty() {
-        false
-    } else if request
-        .receipts
-        .iter()
-        .any(|receipt| receipt.proof_backend != state.proof_engine.proof_backend())
+    let valid = if request.receipts.is_empty()
+        || request
+            .receipts
+            .iter()
+            .any(|receipt| receipt.proof_backend != state.proof_engine.proof_backend())
     {
         false
     } else {

@@ -334,8 +334,16 @@ impl Store {
             .map_err(sqlite_error)?;
 
         rows.map(|r| {
-            let (job_id, agreement_id, state, request_json, result_json, error_text, created_at, updated_at) =
-                r.map_err(sqlite_error)?;
+            let (
+                job_id,
+                agreement_id,
+                state,
+                request_json,
+                result_json,
+                error_text,
+                created_at,
+                updated_at,
+            ) = r.map_err(sqlite_error)?;
             Ok(LineageJobRecord {
                 job_id,
                 agreement_id,
