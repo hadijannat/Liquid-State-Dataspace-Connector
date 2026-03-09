@@ -460,6 +460,21 @@ async fn wait_for_job(app: &axum::Router, job_id: &str) -> LineageJobRecord {
     panic!("lineage job {job_id} did not complete in time");
 }
 
+#[tokio::test]
+async fn test_empty_receipt_chain_is_invalid() {
+    let app = build_test_app(start_simulated_agent().await).await;
+    let result: lsdc_service_types::EvidenceVerificationResult = get_json(
+        &app,
+        Method::POST,
+        "/lsdc/evidence/verify-chain",
+        Some(EvidenceVerificationRequest { receipts: vec![] }),
+        StatusCode::OK,
+    )
+    .await;
+    assert!(!result.valid, "empty receipt list must not be valid");
+    assert_eq!(result.checked_receipt_count, 0);
+}
+
 async fn get_json<T, B>(
     app: &axum::Router,
     method: Method,

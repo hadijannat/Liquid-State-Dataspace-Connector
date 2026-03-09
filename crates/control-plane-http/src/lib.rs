@@ -379,7 +379,7 @@ async fn verify_evidence_chain(
     Json(request): Json<EvidenceVerificationRequest>,
 ) -> ApiResult<Json<EvidenceVerificationResult>> {
     let valid = if request.receipts.is_empty() {
-        true
+        false
     } else if request
         .receipts
         .iter()
