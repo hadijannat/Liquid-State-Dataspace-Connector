@@ -86,6 +86,58 @@ fn test_lower_rejects_unsupported_action() {
 }
 
 #[test]
+fn test_multi_constraint_delete_duty_is_rejected() {
+    let policy = serde_json::json!({
+        "permission": [{
+            "action": "transfer",
+            "duty": [{
+                "action": "delete",
+                "constraint": [
+                    {"leftOperand": "delete-after", "rightOperand": "P7D"},
+                    {"leftOperand": "delete-after", "rightOperand": "P30D"}
+                ]
+            }]
+        }]
+    });
+    let err = lsdc_common::odrl::parser::lower_policy(
+        &policy,
+        &[lsdc_common::dsp::EvidenceRequirement::ProvenanceReceipt],
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("delete duty must have exactly one constraint, got 2"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_multi_constraint_anonymize_duty_is_rejected() {
+    let policy = serde_json::json!({
+        "permission": [{
+            "action": "anonymize",
+            "duty": [{
+                "action": "anonymize",
+                "constraint": [
+                    {"leftOperand": "transform-required", "rightOperand": "redact_columns"},
+                    {"leftOperand": "transform-required", "rightOperand": "hash_columns"}
+                ]
+            }]
+        }]
+    });
+    let err = lsdc_common::odrl::parser::lower_policy(
+        &policy,
+        &[lsdc_common::dsp::EvidenceRequirement::ProvenanceReceipt],
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("anonymize duty must have exactly one constraint, got 2"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn test_lower_rejects_prohibitions() {
     let policy = json!({
         "permission": [{"action": "read"}],

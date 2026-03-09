@@ -101,15 +101,21 @@ pub fn lower_policy(
                 let action = parse_action_value(duty.get("action"))?;
                 match action.as_str() {
                     "delete" => {
-                        let constraint = duty
+                        let constraints = duty
                             .get("constraint")
                             .and_then(Value::as_array)
-                            .and_then(|items| items.first())
                             .ok_or_else(|| {
                                 LsdcError::PolicyCompile(
                                     "delete duty must contain a constraint".into(),
                                 )
                             })?;
+                        if constraints.len() != 1 {
+                            return Err(LsdcError::PolicyCompile(format!(
+                                "delete duty must have exactly one constraint, got {}",
+                                constraints.len()
+                            )));
+                        }
+                        let constraint = &constraints[0];
                         let operand = required_string(constraint, "leftOperand")?;
                         if operand != "delete-after" {
                             return Err(LsdcError::PolicyCompile(format!(
@@ -123,15 +129,21 @@ pub fn lower_policy(
                     }
                     "anonymize" => {
                         allow_anonymize = true;
-                        let constraint = duty
+                        let constraints = duty
                             .get("constraint")
                             .and_then(Value::as_array)
-                            .and_then(|items| items.first())
                             .ok_or_else(|| {
                                 LsdcError::PolicyCompile(
                                     "anonymize duty must contain a constraint".into(),
                                 )
                             })?;
+                        if constraints.len() != 1 {
+                            return Err(LsdcError::PolicyCompile(format!(
+                                "anonymize duty must have exactly one constraint, got {}",
+                                constraints.len()
+                            )));
+                        }
+                        let constraint = &constraints[0];
                         let operand = required_string(constraint, "leftOperand")?;
                         if operand != "transform-required" {
                             return Err(LsdcError::PolicyCompile(format!(

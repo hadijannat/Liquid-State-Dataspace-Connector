@@ -18,9 +18,10 @@ impl ApiError {
     }
 
     pub fn internal(err: impl ToString) -> Self {
+        tracing::error!(error = %err.to_string(), "internal server error");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: err.to_string(),
+            message: "internal server error".to_string(),
         }
     }
 

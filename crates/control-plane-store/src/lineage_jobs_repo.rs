@@ -171,6 +171,68 @@ impl Store {
 
         Ok(records)
     }
+
+    /// Atomically claims all stale jobs last updated before `cutoff` so each
+    /// one is only requeued once across concurrent startup attempts.
+    pub fn claim_stale_jobs(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        claimed_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<RestartableLineageJob>> {
+        let cutoff = cutoff.to_rfc3339();
+        let claimed_at_text = claimed_at.to_rfc3339();
+        let mut connection = self.lock()?;
+        let tx = connection.transaction().map_err(sqlite_error)?;
+
+        let rows = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT job_id, request_json, updated_at
+                     FROM lineage_jobs
+                     WHERE state IN ('pending', 'running') AND updated_at < ?1
+                     ORDER BY created_at ASC",
+                )
+                .map_err(sqlite_error)?;
+
+            let rows = statement
+                .query_map(params![&cutoff], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(sqlite_error)?;
+
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(sqlite_error)?
+        };
+
+        let mut claimed_jobs = Vec::new();
+        for (job_id, request_json, updated_at) in rows {
+            let updated = tx
+                .execute(
+                    "UPDATE lineage_jobs
+                     SET state = 'running', updated_at = ?2
+                     WHERE job_id = ?1
+                       AND updated_at = ?3
+                       AND state IN ('pending', 'running')",
+                    params![&job_id, &claimed_at_text, &updated_at],
+                )
+                .map_err(sqlite_error)?;
+            if updated != 1 {
+                continue;
+            }
+
+            claimed_jobs.push(RestartableLineageJob {
+                job_id,
+                request: from_json(&request_json)?,
+            });
+        }
+
+        tx.commit().map_err(sqlite_error)?;
+        Ok(claimed_jobs)
+    }
 }
 
 fn job_state_value(state: &LineageJobState) -> &'static str {

@@ -168,6 +168,46 @@ fn test_list_restartable_jobs_returns_only_pending_and_running_in_order() {
     let _ = std::fs::remove_file(db_path);
 }
 
+#[test]
+fn test_claim_stale_jobs_claims_each_job_once() {
+    let db_path = temp_db_path("claim-stale");
+    let store = Store::new(db_path.to_str().unwrap()).unwrap();
+    let agreement = sample_agreement();
+    let stale_at = Utc::now() - Duration::minutes(5);
+    let cutoff = stale_at + Duration::minutes(1);
+    let claimed_at = cutoff + Duration::seconds(1);
+    let job_id = "job-stale-1";
+
+    store
+        .insert_job(&LineageJobRecord {
+            job_id: job_id.into(),
+            agreement_id: agreement.agreement_id.0.clone(),
+            state: LineageJobState::Pending,
+            request: sample_request(agreement.clone()),
+            result: None,
+            error: None,
+            created_at: stale_at - Duration::minutes(1),
+            updated_at: stale_at,
+        })
+        .unwrap();
+
+    let claimed = store.claim_stale_jobs(cutoff, claimed_at).unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].job_id, job_id);
+    assert_eq!(claimed[0].request.iface.as_deref(), Some("lo0"));
+
+    let claimed_again = store
+        .claim_stale_jobs(cutoff, claimed_at + Duration::seconds(1))
+        .unwrap();
+    assert!(claimed_again.is_empty());
+
+    let persisted = store.get_job(job_id).unwrap().unwrap();
+    assert_eq!(persisted.state, LineageJobState::Running);
+    assert_eq!(persisted.updated_at, claimed_at);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
 fn temp_db_path(label: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(

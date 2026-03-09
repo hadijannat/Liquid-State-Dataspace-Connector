@@ -5,6 +5,8 @@ FastAPI health endpoint plus a gRPC pricing oracle service.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import logging
 import os
 
 import grpc
@@ -21,6 +23,59 @@ from .shapley import (
 )
 
 pricing_pb2, pricing_pb2_grpc = load_pricing_proto()
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_host(host: str) -> str:
+    host = host.strip()
+    if host.startswith("[") and "]" in host:
+        return host[1 : host.index("]")]
+    if host.count(":") == 1:
+        candidate, port = host.rsplit(":", 1)
+        if port.isdigit():
+            return candidate
+    return host
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = _normalize_host(host)
+    if normalized in _LOOPBACK_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _format_bind_target(host: str, port: int) -> str:
+    normalized = _normalize_host(host)
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return f"{normalized}:{port}"
+    if address.version == 6:
+        return f"[{normalized}]:{port}"
+    return f"{normalized}:{port}"
+
+
+def _check_insecure_host_warning(host: str) -> None:
+    """Log a warning if the gRPC host is not a loopback address.
+
+    The gRPC server uses add_insecure_port() (no TLS, no auth).
+    Binding to a non-loopback address in this mode is a misconfiguration
+    that risks exposing pricing decisions without any transport security.
+    """
+    if not _is_loopback_host(host):
+        logger.warning(
+            "LSDC_PRICING_GRPC_HOST=%s is not a loopback address. "
+            "The gRPC server has no TLS or authentication. "
+            "For production, restrict to loopback or configure mTLS.",
+            host,
+        )
+
 
 app = FastAPI(title="LSDC Pricing Oracle", version="0.2.0")
 
@@ -119,7 +174,11 @@ class PricingOracleService(pricing_pb2_grpc.PricingOracleServicer):
 async def serve_grpc(host: str = "127.0.0.1", port: int = 50051):
     server = grpc.aio.server()
     pricing_pb2_grpc.add_PricingOracleServicer_to_server(PricingOracleService(), server)
-    server.add_insecure_port(f"{host}:{port}")
+    _check_insecure_host_warning(host)
+    bind_target = _format_bind_target(host, port)
+    if server.add_insecure_port(bind_target) == 0:
+        logger.error("failed to bind insecure gRPC server on %s", bind_target)
+        raise RuntimeError(f"failed to bind insecure gRPC server on {bind_target}")
     await server.start()
     await server.wait_for_termination()
 
