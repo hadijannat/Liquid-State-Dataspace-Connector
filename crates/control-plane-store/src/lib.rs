@@ -11,6 +11,8 @@ use lsdc_common::error::{LsdcError, Result};
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+pub use lineage_jobs_repo::RestartableLineageJob;
+
 #[derive(Clone)]
 pub struct Store {
     connection: Arc<Mutex<Connection>>,

@@ -65,22 +65,31 @@ impl ExecutionPipeline {
         &self,
         request: BatchLineageRequest,
     ) -> Result<BatchLineageResult> {
-        let handle = self
-            .activate_agreement(&request.agreement, &request.iface)
-            .await?;
+        let BatchLineageRequest {
+            agreement,
+            iface,
+            input_csv,
+            manifest,
+            current_price,
+            metrics,
+            prior_receipt,
+        } = request;
+        let handle = self.activate_agreement(&agreement, &iface).await?;
         let result = async {
+            let agreement_id = agreement.agreement_id.0.clone();
+            let dataset_id = manifest.dataset_id.clone();
             let job_result = self
                 .enclave_manager
                 .run_csv_job(EnclaveJobRequest {
-                    agreement: request.agreement.clone(),
-                    input_csv: request.input_csv.clone(),
-                    manifest: request.manifest.clone(),
-                    prior_receipt: request.prior_receipt.clone(),
+                    agreement: agreement.clone(),
+                    input_csv,
+                    manifest,
+                    prior_receipt,
                 })
                 .await?;
 
             let audit_context = PricingAuditContext {
-                dataset_id: request.manifest.dataset_id.clone(),
+                dataset_id,
                 transformed_asset_hash: Sha256Hash::digest_bytes(&job_result.output_csv).to_hex(),
                 proof_receipt_hash: Some(
                     job_result
@@ -89,24 +98,24 @@ impl ExecutionPipeline {
                         .receipt_hash
                         .clone(),
                 ),
-                model_run_id: request.metrics.model_run_id.clone(),
+                model_run_id: metrics.model_run_id.clone(),
                 metrics_window: MetricsWindow {
-                    started_at: request.metrics.metrics_window_started_at,
-                    ended_at: request.metrics.metrics_window_ended_at,
+                    started_at: metrics.metrics_window_started_at,
+                    ended_at: metrics.metrics_window_ended_at,
                 },
             };
 
             let price_decision = self
                 .pricing_service
                 .request_price_decision(
-                    &request.agreement.agreement_id.0,
-                    request.current_price,
+                    &agreement_id,
+                    current_price,
                     &audit_context,
-                    &request.metrics,
+                    &metrics,
                 )
                 .await?;
 
-            let breach = assess_evidence(&request.agreement, &job_result.proof_bundle)?;
+            let breach = assess_evidence(&agreement, &job_result.proof_bundle)?;
 
             Ok(BatchLineageResult {
                 enforcement_handle: handle.clone(),

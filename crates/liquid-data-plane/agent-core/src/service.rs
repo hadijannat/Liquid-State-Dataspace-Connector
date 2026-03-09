@@ -98,6 +98,8 @@ impl DataPlane for LiquidDataPlane {
         iface: &str,
     ) -> Result<EnforcementHandle> {
         let compiled = compile_agreement(agreement)?;
+        let transport_selector = compiled.transport_selector.clone();
+        let resolved_transport = compiled.resolved_transport();
         #[cfg(target_os = "linux")]
         let use_kernel_enforcement = self.uses_kernel_enforcement();
         let handle = EnforcementHandle {
@@ -105,8 +107,8 @@ impl DataPlane for LiquidDataPlane {
             interface: iface.to_string(),
             session_port: compiled.session_port(),
             active: true,
-            transport_selector: Some(compiled.transport_selector.clone()),
-            resolved_transport: Some(compiled.resolved_transport()),
+            transport_selector: Some(transport_selector.clone()),
+            resolved_transport: Some(resolved_transport.clone()),
             runtime: Some(self.runtime_status(true)),
         };
 
@@ -181,8 +183,8 @@ impl DataPlane for LiquidDataPlane {
                     interface: handle.interface.clone(),
                     enforcement_key: compiled.enforcement_key,
                     selector_key: compiled.selector_key,
-                    transport_selector: compiled.transport_selector.clone(),
-                    resolved_transport: compiled.resolved_transport(),
+                    transport_selector,
+                    resolved_transport,
                     max_packets: compiled.max_packets,
                     max_bytes: compiled.max_bytes,
                     expires_at: compiled.expires_at,

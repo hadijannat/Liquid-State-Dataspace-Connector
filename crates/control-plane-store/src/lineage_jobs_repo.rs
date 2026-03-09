@@ -2,8 +2,14 @@ use crate::evidence_repo::persist_job_evidence;
 use crate::ser::{from_json, parse_timestamp, to_json};
 use crate::{sqlite_error, Store};
 use lsdc_common::error::{LsdcError, Result};
-use lsdc_service_types::{LineageJobRecord, LineageJobResult, LineageJobState};
+use lsdc_service_types::{LineageJobRecord, LineageJobRequest, LineageJobResult, LineageJobState};
 use rusqlite::{params, OptionalExtension};
+
+#[derive(Debug, Clone)]
+pub struct RestartableLineageJob {
+    pub job_id: String,
+    pub request: LineageJobRequest,
+}
 
 impl Store {
     pub fn insert_job(&self, record: &LineageJobRecord) -> Result<()> {
@@ -138,11 +144,11 @@ impl Store {
         .transpose()
     }
 
-    pub fn list_restartable_jobs(&self) -> Result<Vec<LineageJobRecord>> {
+    pub fn list_restartable_jobs(&self) -> Result<Vec<RestartableLineageJob>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
-                "SELECT job_id, agreement_id, state, request_json, result_json, error_text, created_at, updated_at
+                "SELECT job_id, request_json
                  FROM lineage_jobs
                  WHERE state IN ('pending', 'running')
                  ORDER BY created_at ASC",
@@ -150,43 +156,16 @@ impl Store {
             .map_err(sqlite_error)?;
         let rows = statement
             .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                ))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(sqlite_error)?;
 
         let mut records = Vec::new();
         for row in rows {
-            let (
+            let (job_id, request_json) = row.map_err(sqlite_error)?;
+            records.push(RestartableLineageJob {
                 job_id,
-                agreement_id,
-                state,
-                request_json,
-                result_json,
-                error_text,
-                created_at,
-                updated_at,
-            ) = row.map_err(sqlite_error)?;
-            records.push(LineageJobRecord {
-                job_id,
-                agreement_id,
-                state: parse_job_state(&state)?,
                 request: from_json(&request_json)?,
-                result: result_json
-                    .as_deref()
-                    .map(from_json::<LineageJobResult>)
-                    .transpose()?,
-                error: error_text,
-                created_at: parse_timestamp(&created_at)?,
-                updated_at: parse_timestamp(&updated_at)?,
             });
         }
 

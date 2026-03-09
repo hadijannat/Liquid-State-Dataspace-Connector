@@ -1,5 +1,6 @@
 use crate::state::ApiState;
 use control_plane::orchestrator::BatchLineageRequest;
+use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::Result;
 use lsdc_ports::DataPlane;
 use lsdc_service_types::{LineageJobRequest, LineageJobResult, LineageJobState};
@@ -38,27 +39,34 @@ impl LineageJobRunner {
             return;
         }
 
-        let iface = request
-            .iface
-            .clone()
-            .unwrap_or_else(|| self.state.default_interface.clone());
+        let LineageJobRequest {
+            agreement,
+            iface,
+            input_csv_utf8,
+            manifest,
+            current_price,
+            metrics,
+            prior_receipt,
+        } = request;
+
+        let iface = iface.unwrap_or_else(|| self.state.default_interface.clone());
 
         let job = self
             .state
             .orchestrator
             .run_batch_csv_lineage(BatchLineageRequest {
-                agreement: request.agreement.clone(),
+                agreement: agreement.clone(),
                 iface,
-                input_csv: request.input_csv_utf8.clone().into_bytes(),
-                manifest: request.manifest.clone(),
-                current_price: request.current_price,
-                metrics: request.metrics.clone(),
-                prior_receipt: request.prior_receipt.clone(),
+                input_csv: input_csv_utf8.into_bytes(),
+                manifest,
+                current_price,
+                metrics,
+                prior_receipt,
             })
             .await;
 
         match job {
-            Ok(result) => self.persist_success(job_id, request, result).await,
+            Ok(result) => self.persist_success(job_id, agreement, result).await,
             Err(err) => {
                 if let Err(store_err) = self.state.store.set_job_error(&job_id, &err.to_string()) {
                     tracing::error!(
@@ -75,7 +83,7 @@ impl LineageJobRunner {
     async fn persist_success(
         &self,
         job_id: String,
-        request: LineageJobRequest,
+        agreement: ContractAgreement,
         result: control_plane::orchestrator::BatchLineageResult,
     ) {
         let handle = result.enforcement_handle;
@@ -105,13 +113,13 @@ impl LineageJobRunner {
         };
 
         let record = LineageJobResult {
-            agreement_id: request.agreement.agreement_id.0.clone(),
+            agreement_id: agreement.agreement_id.0.clone(),
             actual_execution_profile: self
                 .state
                 .actual_execution_profile(result.price_decision.pricing_mode),
             enforcement_handle: handle,
             enforcement_status,
-            policy_execution: Some(self.state.policy_execution_for(&request.agreement)),
+            policy_execution: Some(self.state.policy_execution_for(&agreement)),
             resolved_transport,
             enforcement_runtime,
             transformed_csv_utf8,
@@ -125,7 +133,7 @@ impl LineageJobRunner {
         if let Err(err) = self
             .state
             .store
-            .set_job_result(&job_id, &request.agreement.agreement_id.0, &record)
+            .set_job_result(&job_id, &agreement.agreement_id.0, &record)
         {
             tracing::error!(job_id, error = %err, "failed to store lineage result");
         }
