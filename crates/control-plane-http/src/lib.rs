@@ -695,10 +695,11 @@ impl ApiError {
         }
     }
 
-    fn internal(err: impl ToString) -> Self {
+    fn internal(err: impl std::fmt::Display) -> Self {
+        tracing::error!(error = %err, "internal server error");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: err.to_string(),
+            message: "internal server error".to_string(),
         }
     }
 

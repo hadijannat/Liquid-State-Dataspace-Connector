@@ -461,6 +461,32 @@ async fn wait_for_job(app: &axum::Router, job_id: &str) -> LineageJobRecord {
 }
 
 #[tokio::test]
+async fn test_internal_error_does_not_leak_raw_message() {
+    let app = build_test_app(start_simulated_agent().await).await;
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method(Method::GET)
+                .uri("/lsdc/lineage/jobs/does-not-exist-at-all")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let error_text = body["error"].as_str().unwrap();
+    assert!(
+        !error_text.to_lowercase().contains("sqlite"),
+        "error response must not expose internal DB details: {error_text}"
+    );
+}
+
+#[tokio::test]
 async fn test_empty_receipt_chain_is_invalid() {
     let app = build_test_app(start_simulated_agent().await).await;
     let result: lsdc_service_types::EvidenceVerificationResult = get_json(
