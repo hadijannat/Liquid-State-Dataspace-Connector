@@ -18,4 +18,11 @@ Advance the liquid data plane through truthful transport enforcement only:
 
 ## Current Repo Boundary
 
-Phase 4 implements selector-aware guarded transfer on Aya/XDP or simulation. Negotiated `spatial` clauses remain metadata-only until a real enforcement path exists.
+Phase 4 implements selector-aware guarded transfer on Aya/XDP or simulation. The current codebase now separates:
+
+- policy lowering into a backend-neutral transport plan
+- projection of that plan into XDP map state
+- runtime lifecycle tracking
+- Linux XDP and simulated realization backends
+
+Negotiated `spatial` clauses remain metadata-only until a real enforcement path exists.

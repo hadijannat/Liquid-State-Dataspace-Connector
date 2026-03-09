@@ -3,7 +3,7 @@ use lsdc_common::error::{LsdcError, Result};
 
 pub(crate) const DEFAULT_FORGETTING_SECRET: &str = "lsdc-forgetting-dev-secret";
 
-pub(crate) fn build_proof_of_forgetting(
+pub fn build_proof_of_forgetting(
     attestation: lsdc_common::crypto::AttestationDocument,
     destruction_timestamp: chrono::DateTime<chrono::Utc>,
     data_hash: &Sha256Hash,

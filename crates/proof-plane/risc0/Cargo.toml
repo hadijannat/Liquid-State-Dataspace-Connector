@@ -1,0 +1,14 @@
+[package]
+name = "proof-plane-risc0"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+risc0 = ["proof-plane-host/risc0"]
+
+[dependencies]
+proof-plane-host = { path = "../host", default-features = false }
+lsdc-common = { path = "../../lsdc-common" }
+lsdc-ports = { path = "../../lsdc-ports" }
+async-trait = { workspace = true }

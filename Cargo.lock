@@ -2457,6 +2457,9 @@ dependencies = [
  "chrono",
  "hex",
  "hmac",
+ "lsdc-contracts",
+ "lsdc-evidence",
+ "lsdc-policy",
  "serde",
  "serde_json",
  "sha2",
@@ -2475,12 +2478,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "lsdc-contracts"
+version = "0.1.0"
+dependencies = [
+ "lsdc-policy",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "lsdc-evidence"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "hmac",
+ "lsdc-policy",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "lsdc-policy"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "lsdc-ports"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
  "lsdc-common",
+ "lsdc-evidence",
  "serde",
 ]
 
@@ -3059,6 +3098,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "proof-plane-core"
+version = "0.1.0"
+dependencies = [
+ "lsdc-evidence",
+ "serde",
+]
+
+[[package]]
+name = "proof-plane-dev"
+version = "0.1.0"
+dependencies = [
+ "proof-plane-host",
+]
+
+[[package]]
 name = "proof-plane-host"
 version = "0.1.0"
 dependencies = [
@@ -3074,6 +3128,16 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "proof-plane-risc0"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "lsdc-common",
+ "lsdc-ports",
+ "proof-plane-host",
 ]
 
 [[package]]
@@ -4453,6 +4517,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "lsdc-common",
+ "lsdc-evidence",
  "lsdc-ports",
  "serde",
  "serde_json",
