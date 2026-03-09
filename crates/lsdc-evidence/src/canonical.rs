@@ -79,10 +79,7 @@ pub struct EvidenceEnvelope {
 }
 
 impl ReceiptEnvelopeV1 {
-    pub fn verified_claims(
-        &self,
-        agreement_id: impl Into<String>,
-    ) -> VerifiedClaims {
+    pub fn verified_claims(&self, agreement_id: impl Into<String>) -> VerifiedClaims {
         VerifiedClaims {
             agreement_id: agreement_id.into(),
             policy_hash: self.policy_hash.clone(),
@@ -150,12 +147,9 @@ impl EvidenceEnvelope {
         price_decision: Option<&PriceDecision>,
         sanction_proposal: Option<&SanctionProposal>,
     ) -> Self {
-        let pricing = price_decision
-            .map(|decision| PricingEvidenceV1::from_price_decision(
-                decision,
-                "advisory_pricing_policy",
-                "v1",
-            ));
+        let pricing = price_decision.map(|decision| {
+            PricingEvidenceV1::from_price_decision(decision, "advisory_pricing_policy", "v1")
+        });
         let anchor_source = pricing
             .as_ref()
             .map(|item| item.evidence_anchor_hash.clone())

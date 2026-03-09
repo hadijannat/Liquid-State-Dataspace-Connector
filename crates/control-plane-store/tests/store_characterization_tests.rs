@@ -1,8 +1,9 @@
 use chrono::{Duration, Utc};
 use control_plane_store::Store;
 use lsdc_common::crypto::{
-    AttestationDocument, AttestationMeasurements, MetricsWindow, PriceDecision, PricingAuditContext,
-    ProofBundle, ProofOfForgetting, ProvenanceReceipt, SanctionProposal, Sha256Hash, ShapleyValue,
+    AttestationDocument, AttestationMeasurements, MetricsWindow, PriceDecision,
+    PricingAuditContext, ProofBundle, ProofOfForgetting, ProvenanceReceipt, SanctionProposal,
+    Sha256Hash, ShapleyValue,
 };
 use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement};
 use lsdc_common::execution::{
@@ -98,9 +99,11 @@ fn test_set_job_result_dual_writes_legacy_and_canonical_evidence_tables() {
 
     assert_eq!(
         connection
-            .query_row("SELECT COUNT(*) FROM proof_bundles WHERE job_id = ?1", [job_id], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM proof_bundles WHERE job_id = ?1",
+                [job_id],
+                |row| { row.get::<_, i64>(0) }
+            )
             .unwrap(),
         1
     );
@@ -156,7 +159,10 @@ fn test_list_restartable_jobs_returns_only_pending_and_running_in_order() {
     }
 
     let restartable = store.list_restartable_jobs().unwrap();
-    let ordered_ids: Vec<_> = restartable.iter().map(|record| record.job_id.as_str()).collect();
+    let ordered_ids: Vec<_> = restartable
+        .iter()
+        .map(|record| record.job_id.as_str())
+        .collect();
     let ordered_ifaces: Vec<_> = restartable
         .iter()
         .map(|record| record.request.iface.as_deref())
@@ -356,7 +362,10 @@ fn sample_result(agreement: &ContractAgreement) -> LineageJobResult {
     }
 }
 
-fn sample_proof_bundle(agreement: &ContractAgreement, now: chrono::DateTime<chrono::Utc>) -> ProofBundle {
+fn sample_proof_bundle(
+    agreement: &ContractAgreement,
+    now: chrono::DateTime<chrono::Utc>,
+) -> ProofBundle {
     let attestation = sample_attestation(now);
     let provenance_receipt = ProvenanceReceipt {
         agreement_id: agreement.agreement_id.0.clone(),

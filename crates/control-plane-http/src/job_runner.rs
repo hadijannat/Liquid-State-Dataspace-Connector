@@ -130,10 +130,10 @@ impl LineageJobRunner {
             completed_at: chrono::Utc::now(),
         };
 
-        if let Err(err) = self
-            .state
-            .store
-            .set_job_result(&job_id, &agreement.agreement_id.0, &record)
+        if let Err(err) =
+            self.state
+                .store
+                .set_job_result(&job_id, &agreement.agreement_id.0, &record)
         {
             tracing::error!(job_id, error = %err, "failed to store lineage result");
         }

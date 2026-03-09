@@ -56,9 +56,13 @@ pub async fn state_from_config(config: &ControlPlaneApiConfig) -> AnyhowResult<A
     }))
 }
 
-fn build_proof_engine(proof_backend: lsdc_common::execution::ProofBackend) -> AnyhowResult<Arc<dyn ProofEngine>> {
+fn build_proof_engine(
+    proof_backend: lsdc_common::execution::ProofBackend,
+) -> AnyhowResult<Arc<dyn ProofEngine>> {
     match proof_backend {
-        lsdc_common::execution::ProofBackend::DevReceipt => Ok(Arc::new(DevReceiptProofEngine::new())),
+        lsdc_common::execution::ProofBackend::DevReceipt => {
+            Ok(Arc::new(DevReceiptProofEngine::new()))
+        }
         lsdc_common::execution::ProofBackend::RiscZero => {
             #[cfg(feature = "risc0")]
             {

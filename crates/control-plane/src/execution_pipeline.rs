@@ -107,12 +107,7 @@ impl ExecutionPipeline {
 
             let price_decision = self
                 .pricing_service
-                .request_price_decision(
-                    &agreement_id,
-                    current_price,
-                    &audit_context,
-                    &metrics,
-                )
+                .request_price_decision(&agreement_id, current_price, &audit_context, &metrics)
                 .await?;
 
             let breach = assess_evidence(&agreement, &job_result.proof_bundle)?;

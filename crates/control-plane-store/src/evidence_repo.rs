@@ -68,7 +68,10 @@ pub(crate) fn persist_job_evidence(
         agreement_id,
         "sanction_proposal",
         1,
-        result.sanction_proposal.as_ref().map(|proposal| proposal.evidence_hash.to_hex()),
+        result
+            .sanction_proposal
+            .as_ref()
+            .map(|proposal| proposal.evidence_hash.to_hex()),
         &canonical_sanction_json,
         now,
     )?;

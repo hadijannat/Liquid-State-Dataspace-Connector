@@ -85,21 +85,20 @@ fn resolve_transfer_request(
         ));
     }
 
-    let session_port = match (request.session_port, parsed.port) {
-        (Some(requested), Some(address)) if requested != address => {
-            return Err(format!(
-                "session_port `{requested}` does not match data_address port `{address}`"
-            ));
-        }
-        (Some(requested), _) => requested,
-        (None, Some(address)) => address,
-        (None, None) => {
-            return Err(
+    let session_port =
+        match (request.session_port, parsed.port) {
+            (Some(requested), Some(address)) if requested != address => {
+                return Err(format!(
+                    "session_port `{requested}` does not match data_address port `{address}`"
+                ));
+            }
+            (Some(requested), _) => requested,
+            (None, Some(address)) => address,
+            (None, None) => return Err(
                 "guarded transfer requires a destination port in `data_address` or `session_port`"
                     .into(),
-            )
-        }
-    };
+            ),
+        };
 
     Ok(ResolvedTransferRequest {
         protocol: request.protocol,

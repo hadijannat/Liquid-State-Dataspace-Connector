@@ -5,8 +5,8 @@ use control_plane_store::Store;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::execution::{
-    ActualExecutionProfile, PolicyExecutionClassification, PricingMode, ProofBackend,
-    TeeBackend, TransportBackend,
+    ActualExecutionProfile, PolicyExecutionClassification, PricingMode, ProofBackend, TeeBackend,
+    TransportBackend,
 };
 use lsdc_ports::{DataPlane, EnclaveManager, PricingOracle, ProofEngine};
 use serde::Serialize;
@@ -97,7 +97,10 @@ impl ApiState {
         }
     }
 
-    pub fn policy_execution_for(&self, agreement: &ContractAgreement) -> PolicyExecutionClassification {
+    pub fn policy_execution_for(
+        &self,
+        agreement: &ContractAgreement,
+    ) -> PolicyExecutionClassification {
         PolicyExecutionClassification::classify_agreement(
             agreement,
             self.actual_transport_backend,

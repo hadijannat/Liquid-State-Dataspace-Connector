@@ -199,9 +199,7 @@ impl PolicyExecutionClassification {
             PolicyClauseStatus::Executable,
             Some(match transport_backend {
                 TransportBackend::AyaXdp => "resolved into a protocol-aware XDP selector",
-                TransportBackend::Simulated => {
-                    "resolved into a protocol-aware simulated selector"
-                }
+                TransportBackend::Simulated => "resolved into a protocol-aware simulated selector",
             }),
         );
         classification.push_when(
@@ -309,9 +307,7 @@ impl PolicyExecutionClassification {
         classification.push(
             "pricing.autonomous_mutation",
             PolicyClauseStatus::MetadataOnly,
-            Some(
-                "pricing decisions are advisory-only and do not mutate contracts or ledgers",
-            ),
+            Some("pricing decisions are advisory-only and do not mutate contracts or ledgers"),
         );
 
         classification

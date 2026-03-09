@@ -63,12 +63,25 @@ pub enum Action {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Constraint {
-    Count { max: u64 },
-    Spatial { allowed_regions: Vec<GeoRegion> },
-    Temporal { not_after: DateTime<Utc> },
-    Purpose { allowed: Vec<String> },
-    RateLimit { max_per_second: u64 },
-    Custom { key: String, value: serde_json::Value },
+    Count {
+        max: u64,
+    },
+    Spatial {
+        allowed_regions: Vec<GeoRegion>,
+    },
+    Temporal {
+        not_after: DateTime<Utc>,
+    },
+    Purpose {
+        allowed: Vec<String>,
+    },
+    RateLimit {
+        max_per_second: u64,
+    },
+    Custom {
+        key: String,
+        value: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

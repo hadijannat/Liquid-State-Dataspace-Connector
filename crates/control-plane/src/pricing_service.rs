@@ -32,6 +32,7 @@ impl PricingService {
 pub fn require_pricing_oracle(
     pricing_oracle: Option<Arc<dyn PricingOracle>>,
 ) -> Result<Arc<dyn PricingOracle>> {
-    pricing_oracle
-        .ok_or_else(|| LsdcError::Pricing("no pricing oracle configured for this orchestrator".into()))
+    pricing_oracle.ok_or_else(|| {
+        LsdcError::Pricing("no pricing oracle configured for this orchestrator".into())
+    })
 }

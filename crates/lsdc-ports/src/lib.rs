@@ -1,7 +1,4 @@
 use async_trait::async_trait;
-use lsdc_evidence::{
-    AttestationDocument, ChainVerification, DevDeletionEvidence, ReceiptEnvelopeV1, VerifiedClaims,
-};
 use lsdc_common::crypto::{
     PriceDecision, PricingAuditContext, ProofBundle, ProvenanceReceipt, ShapleyValue,
 };
@@ -9,6 +6,9 @@ use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::execution::{ProofBackend, TeeBackend, TransportBackend, TransportSelector};
 use lsdc_common::liquid::CsvTransformManifest;
 use lsdc_common::Result;
+use lsdc_evidence::{
+    AttestationDocument, ChainVerification, DevDeletionEvidence, ReceiptEnvelopeV1, VerifiedClaims,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -128,7 +128,11 @@ pub struct TransformOutput {
 }
 
 pub trait TransformKernel: Send + Sync {
-    fn execute(&self, input_bytes: &[u8], manifest: &CsvTransformManifest) -> Result<TransformOutput>;
+    fn execute(
+        &self,
+        input_bytes: &[u8],
+        manifest: &CsvTransformManifest,
+    ) -> Result<TransformOutput>;
 }
 
 pub struct ProofContext<'a> {
@@ -211,7 +215,11 @@ pub struct DestroyEvidence {
 pub trait EnclaveSessionManager: Send + Sync {
     fn tee_backend(&self) -> TeeBackend;
     async fn open(&self, request: SessionRequest) -> Result<EnclaveSession>;
-    async fn run(&self, session: &EnclaveSession, workload: WorkloadRequest) -> Result<WorkloadResult>;
+    async fn run(
+        &self,
+        session: &EnclaveSession,
+        workload: WorkloadRequest,
+    ) -> Result<WorkloadResult>;
     async fn destroy(&self, session: EnclaveSession) -> Result<DestroyEvidence>;
 }
 

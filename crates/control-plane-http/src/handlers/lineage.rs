@@ -4,7 +4,9 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use lsdc_common::execution::RequestedExecutionProfile;
-use lsdc_service_types::{LineageJobAccepted, LineageJobRecord, LineageJobRequest, LineageJobState};
+use lsdc_service_types::{
+    LineageJobAccepted, LineageJobRecord, LineageJobRequest, LineageJobState,
+};
 
 pub async fn create_lineage_job(
     State(state): State<ApiState>,

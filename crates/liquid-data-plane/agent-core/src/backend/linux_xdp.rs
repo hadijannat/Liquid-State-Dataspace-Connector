@@ -3,12 +3,12 @@ use crate::projection::{
     SELECTOR_AGREEMENT_MAP,
 };
 use crate::runtime::LinuxAttachment;
-use lsdc_common::error::{LsdcError, Result};
 use aya::{
     maps::HashMap as BpfHashMap,
     programs::{xdp::XdpLinkId, Xdp, XdpFlags},
     Ebpf,
 };
+use lsdc_common::error::{LsdcError, Result};
 use std::convert::TryInto;
 use std::path::{Path, PathBuf};
 
@@ -117,7 +117,11 @@ fn initialize_counter_map(ebpf: &mut Ebpf, map_name: &str, enforcement_key: u32)
     Ok(())
 }
 
-pub(crate) fn remove_linux_maps(ebpf: &mut Ebpf, enforcement_key: u32, selector_key: u32) -> Result<()> {
+pub(crate) fn remove_linux_maps(
+    ebpf: &mut Ebpf,
+    enforcement_key: u32,
+    selector_key: u32,
+) -> Result<()> {
     remove_u32_u32_entry(ebpf, SELECTOR_AGREEMENT_MAP, selector_key)?;
     remove_u32_u64_entry(ebpf, PACKET_LIMIT_MAP, enforcement_key)?;
     remove_u32_u64_entry(ebpf, BYTE_LIMIT_MAP, enforcement_key)?;
@@ -148,7 +152,10 @@ fn remove_u32_u64_entry(ebpf: &mut Ebpf, map_name: &str, key: u32) -> Result<()>
     Ok(())
 }
 
-pub(crate) fn read_counters(attachment: &LinuxAttachment, enforcement_key: u32) -> Result<(u64, u64)> {
+pub(crate) fn read_counters(
+    attachment: &LinuxAttachment,
+    enforcement_key: u32,
+) -> Result<(u64, u64)> {
     Ok((
         read_counter(&attachment.ebpf, PACKET_COUNT_MAP, enforcement_key)?,
         read_counter(&attachment.ebpf, BYTE_COUNT_MAP, enforcement_key)?,
