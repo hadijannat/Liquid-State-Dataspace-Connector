@@ -1,0 +1,8 @@
+[package]
+name = "proof-plane-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lsdc-evidence = { path = "../../lsdc-evidence" }
+serde = { workspace = true }

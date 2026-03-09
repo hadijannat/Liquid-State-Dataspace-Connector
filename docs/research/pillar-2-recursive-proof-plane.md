@@ -9,6 +9,8 @@ Define a future recursive proof architecture for multi-hop provenance rollups wh
 - default proof path: dev receipts
 - optional proof path: single-hop `RISC Zero`
 - recursive rollups: not implemented
+- canonical receipt and chain-verification types now live in `proof-plane-core`
+- `proof-plane-risc0` is feature-gated; default workspace builds do not claim a live recursive prover
 
 ## Research Questions
 

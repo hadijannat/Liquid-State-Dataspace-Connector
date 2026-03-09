@@ -1,9 +1,10 @@
+use crate::attestation::verify_attestation;
 use lsdc_common::crypto::{sign_bytes, verify_signature, ProofOfForgetting, Sha256Hash};
 use lsdc_common::error::{LsdcError, Result};
 
 pub(crate) const DEFAULT_FORGETTING_SECRET: &str = "lsdc-forgetting-dev-secret";
 
-pub(crate) fn build_proof_of_forgetting(
+pub fn build_proof_of_forgetting(
     attestation: lsdc_common::crypto::AttestationDocument,
     destruction_timestamp: chrono::DateTime<chrono::Utc>,
     data_hash: &Sha256Hash,
@@ -27,8 +28,10 @@ pub fn verify_proof_of_forgetting(proof: &ProofOfForgetting) -> Result<bool> {
         proof.destruction_timestamp,
         &proof.data_hash,
     )?;
+    let attestation_valid = verify_attestation(&proof.attestation)?;
 
-    Ok(proof.proof_hash == Sha256Hash::digest_bytes(&payload)
+    Ok(attestation_valid
+        && proof.proof_hash == Sha256Hash::digest_bytes(&payload)
         && verify_signature(&forgetting_secret(), &payload, &proof.signature_hex))
 }
 
@@ -72,5 +75,24 @@ mod tests {
         .unwrap();
 
         assert!(verify_proof_of_forgetting(&proof).unwrap());
+    }
+
+    #[test]
+    fn test_rejects_forgetting_proof_with_invalid_attestation() {
+        let attestation = build_attestation_document(
+            "enclave-1",
+            &Sha256Hash::digest_bytes(b"binary"),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let mut proof = build_proof_of_forgetting(
+            attestation,
+            chrono::Utc::now(),
+            &Sha256Hash::digest_bytes(b"input"),
+        )
+        .unwrap();
+        proof.attestation.signature_hex = "tampered".into();
+
+        assert!(!verify_proof_of_forgetting(&proof).unwrap());
     }
 }

@@ -8,6 +8,7 @@ Keep the current pricing sidecar advisory-only while describing the future path 
 
 - current algorithm label: `heuristic_marginal_v0`
 - signed pricing responses
+- canonical pricing evidence is versioned as `PricingEvidenceV1`
 - no contract mutation
 - no ledger mutation
 

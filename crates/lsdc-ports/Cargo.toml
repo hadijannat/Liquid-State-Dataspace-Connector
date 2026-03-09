@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 lsdc-common = { path = "../lsdc-common" }
+lsdc-evidence = { path = "../lsdc-evidence" }
 serde = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
