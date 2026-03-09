@@ -3135,9 +3135,12 @@ name = "proof-plane-risc0"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "lsdc-common",
  "lsdc-ports",
  "proof-plane-host",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
