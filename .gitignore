@@ -12,3 +12,4 @@ python/pricing-oracle/.venv/
 python/pricing-oracle/*.egg-info/
 python/pricing-oracle/lsdc_pricing_oracle/_generated/
 firebase-debug.log
+.worktrees/
