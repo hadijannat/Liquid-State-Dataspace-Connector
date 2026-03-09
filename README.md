@@ -40,6 +40,7 @@ Implemented behavior belongs in [docs/current-state.md](docs/current-state.md). 
 - Apps: `apps/control-plane-api` and `apps/liquid-agent` are the binary entrypoints. Both binaries are config-driven and currently expose `--config <CONFIG>` as their runtime interface.
 - Core crates: `crates/lsdc-common`, `crates/lsdc-config`, `crates/lsdc-ports`, and `crates/lsdc-service-types` hold shared types, config loading, runtime ports, and HTTP DTOs.
 - Data plane, proof, and TEE crates: `crates/liquid-data-plane/*`, `crates/proof-plane/*`, and `crates/tee-orchestrator` contain the execution-heavy subsystems.
+- The embedded `crates/proof-plane/risc0-guest` package is used only by the feature-gated `RISC Zero` build and is not a root workspace member.
 - Python oracle: `python/pricing-oracle` is the advisory pricing sidecar generated from the repo-level pricing proto.
 - Fixtures: `fixtures/` contains the reusable ODRL policy, CSV input, transform manifest, proof outputs, and Nitro attestation samples used by tests and the reference flow.
 
