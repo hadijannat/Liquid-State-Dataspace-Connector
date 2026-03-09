@@ -5,6 +5,7 @@ FastAPI health endpoint plus a gRPC pricing oracle service.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 import grpc
@@ -21,6 +22,27 @@ from .shapley import (
 )
 
 pricing_pb2, pricing_pb2_grpc = load_pricing_proto()
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+logger = logging.getLogger(__name__)
+
+
+def _check_insecure_host_warning(host: str) -> None:
+    """Log a warning if the gRPC host is not a loopback address.
+
+    The gRPC server uses add_insecure_port() (no TLS, no auth).
+    Binding to a non-loopback address in this mode is a misconfiguration
+    that risks exposing pricing decisions without any transport security.
+    """
+    if host not in _LOOPBACK_HOSTS:
+        logger.warning(
+            "LSDC_PRICING_GRPC_HOST=%s is not a loopback address. "
+            "The gRPC server has no TLS or authentication. "
+            "For production, restrict to loopback or configure mTLS.",
+            host,
+        )
+
 
 app = FastAPI(title="LSDC Pricing Oracle", version="0.2.0")
 
@@ -119,6 +141,7 @@ class PricingOracleService(pricing_pb2_grpc.PricingOracleServicer):
 async def serve_grpc(host: str = "127.0.0.1", port: int = 50051):
     server = grpc.aio.server()
     pricing_pb2_grpc.add_PricingOracleServicer_to_server(PricingOracleService(), server)
+    _check_insecure_host_warning(host)
     server.add_insecure_port(f"{host}:{port}")
     await server.start()
     await server.wait_for_termination()
