@@ -105,7 +105,8 @@ fn test_multi_constraint_delete_duty_is_rejected() {
     )
     .unwrap_err();
     assert!(
-        err.to_string().contains("exactly one constraint"),
+        err.to_string()
+            .contains("delete duty must have exactly one constraint, got 2"),
         "unexpected error: {err}"
     );
 }
@@ -130,7 +131,8 @@ fn test_multi_constraint_anonymize_duty_is_rejected() {
     )
     .unwrap_err();
     assert!(
-        err.to_string().contains("exactly one constraint"),
+        err.to_string()
+            .contains("anonymize duty must have exactly one constraint, got 2"),
         "unexpected error: {err}"
     );
 }

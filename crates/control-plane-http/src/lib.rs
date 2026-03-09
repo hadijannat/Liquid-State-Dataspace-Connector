@@ -220,10 +220,14 @@ pub async fn state_from_config(config: &ControlPlaneApiConfig) -> AnyhowResult<A
 /// Requeues any lineage jobs left in `pending` or `running` state from a
 /// previous process run. Must be called once before accepting new requests.
 async fn reconcile_stale_jobs(state: &ApiState) {
-    let jobs = match state.store.get_stale_jobs() {
+    let reconcile_cutoff = chrono::Utc::now();
+    let jobs = match state
+        .store
+        .claim_stale_jobs(reconcile_cutoff, reconcile_cutoff)
+    {
         Ok(jobs) => jobs,
         Err(err) => {
-            tracing::error!(error = %err, "failed to query stale jobs at startup");
+            tracing::error!(error = %err, "failed to claim stale jobs at startup");
             return;
         }
     };
@@ -234,12 +238,12 @@ async fn reconcile_stale_jobs(state: &ApiState) {
 
     tracing::info!(
         count = jobs.len(),
-        "reconciling stale lineage jobs at startup"
+        "reconciling claimed stale lineage jobs at startup"
     );
     for record in jobs {
         let job_id = record.job_id.clone();
         let request = record.request.clone();
-        tracing::info!(job_id, "requeueing stale lineage job");
+        tracing::info!(job_id, "requeueing claimed stale lineage job");
         tokio::spawn(run_lineage_job(state.clone(), job_id, request));
     }
 }

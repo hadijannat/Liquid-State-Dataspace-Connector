@@ -2,14 +2,23 @@ use async_trait::async_trait;
 use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use control_plane_api::config::ControlPlaneApiConfig;
-use control_plane_api::{router, ApiState, ApiStateInit, BackendSummary};
+use control_plane_api::{router, serve, ApiState, ApiStateInit, BackendSummary};
 use liquid_agent_core::loader::LiquidDataPlane;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use liquid_agent_grpc::server::{serve as serve_agent, LiquidAgentService};
-use lsdc_common::crypto::{PriceDecision, PricingAuditContext, ShapleyValue};
-use lsdc_common::dsp::{ContractOffer, ContractRequest, EvidenceRequirement, TransferRequest};
+use lsdc_common::crypto::{
+    PriceDecision, PricingAuditContext, ProvenanceReceipt, Sha256Hash, ShapleyValue,
+};
+use lsdc_common::dsp::{
+    ContractAgreement, ContractOffer, ContractRequest, EvidenceRequirement, TransferRequest,
+    TransportProtocol,
+};
 use lsdc_common::execution::{PricingMode, ProofBackend, TeeBackend, TransportBackend};
-use lsdc_common::liquid::{CsvTransformManifest, CsvTransformOp};
+use lsdc_common::liquid::{
+    CsvTransformManifest, CsvTransformOp, LiquidPolicyIr, RuntimeGuard, TransformGuard,
+    TransportGuard,
+};
+use lsdc_common::odrl::ast::PolicyId;
 use lsdc_ports::{PricingOracle, TrainingMetrics};
 use lsdc_service_types::{
     EvidenceVerificationRequest, FinalizeContractResponse, LineageJobAccepted, LineageJobRecord,
@@ -311,12 +320,16 @@ async fn test_state_from_config_rejects_missing_nitro_live_material() {
 
 async fn build_test_app(agent_endpoint: String) -> axum::Router {
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
+    router(build_test_state(agent_endpoint, store))
+}
+
+fn build_test_state(agent_endpoint: String, store: control_plane_api::store::Store) -> ApiState {
     let proof_engine = Arc::new(DevReceiptProofEngine::new());
     let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()));
     let pricing_oracle = Arc::new(MockPricingOracle);
     let liquid_agent = Arc::new(LiquidAgentGrpcClient::new(agent_endpoint));
 
-    router(ApiState::new(ApiStateInit {
+    ApiState::new(ApiStateInit {
         store,
         node_name: "test-node".into(),
         liquid_agent,
@@ -330,7 +343,7 @@ async fn build_test_app(agent_endpoint: String) -> axum::Router {
             tee_backend: TeeBackend::NitroDev,
         },
         actual_transport_backend: TransportBackend::Simulated,
-    }))
+    })
 }
 
 async fn start_simulated_agent() -> String {
@@ -460,29 +473,125 @@ async fn wait_for_job(app: &axum::Router, job_id: &str) -> LineageJobRecord {
     panic!("lineage job {job_id} did not complete in time");
 }
 
+async fn wait_for_store_job(
+    store: &control_plane_api::store::Store,
+    job_id: &str,
+) -> LineageJobRecord {
+    for _ in 0..100 {
+        let record = store
+            .get_job(job_id)
+            .unwrap()
+            .expect("expected seeded lineage job");
+        match record.state {
+            LineageJobState::Pending | LineageJobState::Running => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            _ => return record,
+        }
+    }
+
+    panic!("lineage job {job_id} did not complete in time");
+}
+
+fn sample_lineage_job_request() -> LineageJobRequest {
+    let now = chrono::Utc::now();
+    LineageJobRequest {
+        agreement: ContractAgreement {
+            agreement_id: PolicyId("agreement-stale".into()),
+            asset_id: "asset-csv".into(),
+            provider_id: "did:web:provider".into(),
+            consumer_id: "did:web:consumer".into(),
+            odrl_policy: serde_json::json!({"permission": [{"action": "read"}]}),
+            policy_hash: "policy-hash".into(),
+            evidence_requirements: vec![],
+            liquid_policy: LiquidPolicyIr {
+                transport_guard: TransportGuard {
+                    allow_read: true,
+                    allow_transfer: true,
+                    packet_cap: None,
+                    byte_cap: None,
+                    allowed_regions: vec![],
+                    valid_until: None,
+                    protocol: TransportProtocol::Udp,
+                    session_port: Some(31_337),
+                },
+                transform_guard: TransformGuard {
+                    allow_anonymize: true,
+                    allowed_purposes: vec!["analytics".into()],
+                    required_ops: vec![],
+                },
+                runtime_guard: RuntimeGuard {
+                    delete_after_seconds: None,
+                    evidence_requirements: vec![],
+                    approval_required: false,
+                },
+            },
+        },
+        iface: Some("lo".into()),
+        input_csv_utf8: "id,value\n1,2\n".into(),
+        manifest: CsvTransformManifest {
+            dataset_id: "dataset-1".into(),
+            purpose: "analytics".into(),
+            ops: vec![],
+        },
+        current_price: 42.0,
+        metrics: TrainingMetrics {
+            loss_with_dataset: 0.1,
+            loss_without_dataset: 0.2,
+            accuracy_with_dataset: 0.9,
+            accuracy_without_dataset: 0.8,
+            model_run_id: "model-1".into(),
+            metrics_window_started_at: now,
+            metrics_window_ended_at: now,
+        },
+        prior_receipt: None,
+    }
+}
+
 #[tokio::test]
 async fn test_internal_error_does_not_leak_raw_message() {
     let app = build_test_app(start_simulated_agent().await).await;
+    let invalid_receipt = ProvenanceReceipt {
+        agreement_id: "agreement-invalid".into(),
+        input_hash: Sha256Hash::digest_bytes(b"input"),
+        output_hash: Sha256Hash::digest_bytes(b"output"),
+        policy_hash: Sha256Hash::digest_bytes(b"policy"),
+        transform_manifest_hash: Sha256Hash::digest_bytes(b"manifest"),
+        prior_receipt_hash: None,
+        receipt_hash: Sha256Hash::digest_bytes(b"receipt"),
+        proof_backend: ProofBackend::DevReceipt,
+        receipt_format_version: "lsdc.dev-receipt.v1".into(),
+        proof_method_id: "dev-hmac-manifest-v1".into(),
+        receipt_bytes: b"not-json".to_vec(),
+        timestamp: chrono::Utc::now(),
+    };
     let response = app
         .clone()
         .oneshot(
             axum::http::Request::builder()
-                .method(Method::GET)
-                .uri("/lsdc/lineage/jobs/does-not-exist-at-all")
-                .body(axum::body::Body::empty())
+                .method(Method::POST)
+                .uri("/lsdc/evidence/verify-chain")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&EvidenceVerificationRequest {
+                        receipts: vec![invalid_receipt],
+                    })
+                    .unwrap(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let error_text = body["error"].as_str().unwrap();
+    assert_eq!(error_text, "internal server error");
     assert!(
-        !error_text.to_lowercase().contains("sqlite"),
-        "error response must not expose internal DB details: {error_text}"
+        !error_text.to_lowercase().contains("json"),
+        "error response must not expose raw parse details: {error_text}"
     );
 }
 
@@ -499,6 +608,42 @@ async fn test_empty_receipt_chain_is_invalid() {
     .await;
     assert!(!result.valid, "empty receipt list must not be valid");
     assert_eq!(result.checked_receipt_count, 0);
+}
+
+#[tokio::test]
+async fn test_serve_reconciles_stale_jobs_on_startup() {
+    let agent_endpoint = start_simulated_agent().await;
+    let store = control_plane_api::store::Store::new(":memory:").unwrap();
+    let request = sample_lineage_job_request();
+    let stale_at = chrono::Utc::now() - chrono::Duration::minutes(5);
+    let job_id = "stale-job-startup".to_string();
+    store
+        .insert_job(&LineageJobRecord {
+            job_id: job_id.clone(),
+            agreement_id: request.agreement.agreement_id.0.clone(),
+            state: LineageJobState::Pending,
+            request,
+            result: None,
+            error: None,
+            created_at: stale_at - chrono::Duration::minutes(1),
+            updated_at: stale_at,
+        })
+        .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_store = store.clone();
+    let server = tokio::spawn(async move {
+        serve(listener, build_test_state(agent_endpoint, server_store))
+            .await
+            .unwrap();
+    });
+
+    let record = wait_for_store_job(&store, &job_id).await;
+    assert_eq!(record.state, LineageJobState::Succeeded);
+    assert!(record.result.is_some());
+
+    server.abort();
+    let _ = server.await;
 }
 
 async fn get_json<T, B>(
