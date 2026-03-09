@@ -217,7 +217,39 @@ pub async fn state_from_config(config: &ControlPlaneApiConfig) -> AnyhowResult<A
     }))
 }
 
+/// Requeues any lineage jobs left in `pending` or `running` state from a
+/// previous process run. Must be called once before accepting new requests.
+async fn reconcile_stale_jobs(state: &ApiState) {
+    let reconcile_cutoff = chrono::Utc::now();
+    let jobs = match state
+        .store
+        .claim_stale_jobs(reconcile_cutoff, reconcile_cutoff)
+    {
+        Ok(jobs) => jobs,
+        Err(err) => {
+            tracing::error!(error = %err, "failed to claim stale jobs at startup");
+            return;
+        }
+    };
+
+    if jobs.is_empty() {
+        return;
+    }
+
+    tracing::info!(
+        count = jobs.len(),
+        "reconciling claimed stale lineage jobs at startup"
+    );
+    for record in jobs {
+        let job_id = record.job_id.clone();
+        let request = record.request.clone();
+        tracing::info!(job_id, "requeueing claimed stale lineage job");
+        tokio::spawn(run_lineage_job(state.clone(), job_id, request));
+    }
+}
+
 pub async fn serve(listener: tokio::net::TcpListener, state: ApiState) -> AnyhowResult<()> {
+    reconcile_stale_jobs(&state).await;
     axum::serve(listener, router(state))
         .await
         .map_err(|err| anyhow!("control-plane-api server failed: {err}"))
@@ -378,12 +410,11 @@ async fn verify_evidence_chain(
     State(state): State<ApiState>,
     Json(request): Json<EvidenceVerificationRequest>,
 ) -> ApiResult<Json<EvidenceVerificationResult>> {
-    let valid = if request.receipts.is_empty() {
-        true
-    } else if request
-        .receipts
-        .iter()
-        .any(|receipt| receipt.proof_backend != state.proof_engine.proof_backend())
+    let valid = if request.receipts.is_empty()
+        || request
+            .receipts
+            .iter()
+            .any(|receipt| receipt.proof_backend != state.proof_engine.proof_backend())
     {
         false
     } else {
@@ -695,10 +726,11 @@ impl ApiError {
         }
     }
 
-    fn internal(err: impl ToString) -> Self {
+    fn internal(err: impl std::fmt::Display) -> Self {
+        tracing::error!(error = %err, "internal server error");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: err.to_string(),
+            message: "internal server error".to_string(),
         }
     }
 

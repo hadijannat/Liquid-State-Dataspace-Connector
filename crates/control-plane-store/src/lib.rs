@@ -304,6 +304,93 @@ impl Store {
         .transpose()
     }
 
+    /// Atomically claims all stale jobs last updated before `cutoff` so each
+    /// one is only requeued once across concurrent startup attempts.
+    pub fn claim_stale_jobs(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        claimed_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<LineageJobRecord>> {
+        let cutoff = cutoff.to_rfc3339();
+        let claimed_at_text = claimed_at.to_rfc3339();
+        let mut connection = self.lock()?;
+        let tx = connection.transaction().map_err(sqlite_error)?;
+
+        let rows = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT job_id, agreement_id, state, request_json, result_json, \
+                     error_text, created_at, updated_at
+                     FROM lineage_jobs
+                     WHERE state IN ('pending', 'running') AND updated_at < ?1
+                     ORDER BY created_at ASC",
+                )
+                .map_err(sqlite_error)?;
+
+            let rows = stmt
+                .query_map(params![&cutoff], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                })
+                .map_err(sqlite_error)?;
+
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(sqlite_error)?
+        };
+
+        let mut claimed_jobs = Vec::new();
+        for (
+            job_id,
+            agreement_id,
+            _state,
+            request_json,
+            result_json,
+            error_text,
+            created_at,
+            updated_at,
+        ) in rows
+        {
+            let updated = tx
+                .execute(
+                    "UPDATE lineage_jobs
+                     SET state = 'running', updated_at = ?2
+                     WHERE job_id = ?1
+                       AND updated_at = ?3
+                       AND state IN ('pending', 'running')",
+                    params![&job_id, &claimed_at_text, &updated_at],
+                )
+                .map_err(sqlite_error)?;
+            if updated != 1 {
+                continue;
+            }
+
+            claimed_jobs.push(LineageJobRecord {
+                job_id,
+                agreement_id,
+                state: LineageJobState::Running,
+                request: from_json(&request_json)?,
+                result: result_json
+                    .as_deref()
+                    .map(from_json::<LineageJobResult>)
+                    .transpose()?,
+                error: error_text,
+                created_at: parse_timestamp(&created_at)?,
+                updated_at: claimed_at,
+            });
+        }
+
+        tx.commit().map_err(sqlite_error)?;
+        Ok(claimed_jobs)
+    }
+
     pub fn get_settlement(&self, agreement_id: &str) -> Result<Option<SettlementDecision>> {
         if self.get_agreement(agreement_id)?.is_none() {
             return Ok(None);
@@ -410,6 +497,9 @@ impl Store {
 
                 CREATE INDEX IF NOT EXISTS idx_lineage_jobs_agreement_id
                 ON lineage_jobs (agreement_id, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_lineage_jobs_state_updated_created_at
+                ON lineage_jobs (state, updated_at, created_at);
                 ",
             )
             .map_err(sqlite_error)?;
@@ -464,4 +554,118 @@ fn parse_timestamp(value: &str) -> Result<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|timestamp| timestamp.with_timezone(&chrono::Utc))
         .map_err(|err| LsdcError::Database(format!("invalid stored timestamp: {err}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Store;
+    use chrono::{Duration, Utc};
+    use lsdc_common::dsp::{ContractAgreement, TransportProtocol};
+    use lsdc_common::liquid::{
+        CsvTransformManifest, LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard,
+    };
+    use lsdc_common::odrl::ast::PolicyId;
+    use lsdc_ports::TrainingMetrics;
+    use lsdc_service_types::{LineageJobRecord, LineageJobRequest, LineageJobState};
+    use serde_json::json;
+
+    fn sample_lineage_job_request() -> LineageJobRequest {
+        let now = Utc::now();
+        LineageJobRequest {
+            agreement: ContractAgreement {
+                agreement_id: PolicyId("agreement-stale".into()),
+                asset_id: "asset-csv".into(),
+                provider_id: "did:web:provider".into(),
+                consumer_id: "did:web:consumer".into(),
+                odrl_policy: json!({"permission": [{"action": "read"}]}),
+                policy_hash: "policy-hash".into(),
+                evidence_requirements: vec![],
+                liquid_policy: LiquidPolicyIr {
+                    transport_guard: TransportGuard {
+                        allow_read: true,
+                        allow_transfer: true,
+                        packet_cap: None,
+                        byte_cap: None,
+                        allowed_regions: vec![],
+                        valid_until: None,
+                        protocol: TransportProtocol::Udp,
+                        session_port: Some(31_337),
+                    },
+                    transform_guard: TransformGuard {
+                        allow_anonymize: true,
+                        allowed_purposes: vec!["analytics".into()],
+                        required_ops: vec![],
+                    },
+                    runtime_guard: RuntimeGuard {
+                        delete_after_seconds: None,
+                        evidence_requirements: vec![],
+                        approval_required: false,
+                    },
+                },
+            },
+            iface: Some("lo".into()),
+            input_csv_utf8: "id,value\n1,2\n".into(),
+            manifest: CsvTransformManifest {
+                dataset_id: "dataset-1".into(),
+                purpose: "analytics".into(),
+                ops: vec![],
+            },
+            current_price: 42.0,
+            metrics: TrainingMetrics {
+                loss_with_dataset: 0.1,
+                loss_without_dataset: 0.2,
+                accuracy_with_dataset: 0.9,
+                accuracy_without_dataset: 0.8,
+                model_run_id: "model-1".into(),
+                metrics_window_started_at: now,
+                metrics_window_ended_at: now,
+            },
+            prior_receipt: None,
+        }
+    }
+
+    fn sample_stale_record(
+        job_id: &str,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> LineageJobRecord {
+        let request = sample_lineage_job_request();
+        LineageJobRecord {
+            job_id: job_id.into(),
+            agreement_id: request.agreement.agreement_id.0.clone(),
+            state: LineageJobState::Pending,
+            request,
+            result: None,
+            error: None,
+            created_at: updated_at - Duration::minutes(1),
+            updated_at,
+        }
+    }
+
+    #[test]
+    fn test_claim_stale_jobs_claims_each_job_once() {
+        let store = Store::new(":memory:").unwrap();
+        let stale_at = Utc::now() - Duration::minutes(5);
+        let cutoff = stale_at + Duration::minutes(1);
+        let claimed_at = cutoff + Duration::seconds(1);
+        let job_id = "job-stale-1";
+
+        store
+            .insert_job(&sample_stale_record(job_id, stale_at))
+            .unwrap();
+
+        let claimed = store.claim_stale_jobs(cutoff, claimed_at).unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].job_id, job_id);
+        assert_eq!(claimed[0].state, LineageJobState::Running);
+        assert_eq!(claimed[0].updated_at, claimed_at);
+
+        let claimed_again = store
+            .claim_stale_jobs(cutoff, claimed_at + Duration::seconds(1))
+            .unwrap();
+        assert!(claimed_again.is_empty());
+
+        let persisted = store.get_job(job_id).unwrap().unwrap();
+        assert_eq!(persisted.state, LineageJobState::Running);
+        assert_eq!(persisted.updated_at, claimed_at);
+    }
 }
