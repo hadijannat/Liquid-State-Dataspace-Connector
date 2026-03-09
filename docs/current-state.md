@@ -77,6 +77,7 @@ That layering is implemented without changing the public HTTP routes, gRPC proto
   - pinned-measurement `nitro-live` validation with shared fixture coverage
   - current forgetting evidence is development evidence, not hardware-rooted deletion proof
   - `DevDeletionEvidence` is the truthful canonical label for the current secret-signed teardown path
+  - current settlement gating verifies that dev deletion evidence and its embedded dev attestation are both internally consistent
   - future attested teardown evidence is modeled separately and not implemented
 - Pricing plane:
   - gRPC transport

@@ -12,3 +12,8 @@ proof-plane-host = { path = "../host", default-features = false }
 lsdc-common = { path = "../../lsdc-common" }
 lsdc-ports = { path = "../../lsdc-ports" }
 async-trait = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
