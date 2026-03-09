@@ -1,6 +1,6 @@
 use crate::backend::simulated::ensure_interface_runtime;
 use crate::planner::compile_agreement;
-use crate::projection::CompiledPolicy;
+use crate::projection::{selector_key, CompiledPolicy};
 use crate::runtime::{DataPlaneMode, LifecycleState, State, TrackedEnforcement};
 use chrono::{DateTime, Utc};
 use lsdc_common::dsp::ContractAgreement;
@@ -20,6 +20,10 @@ use crate::runtime::InterfaceRuntime;
 use crate::runtime::LinuxAttachment;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
+
+const SESSION_PORT_START: u16 = 20_000;
+const SESSION_PORT_END_EXCLUSIVE: u16 = 60_000;
+const SESSION_PORT_RANGE_LEN: usize = (SESSION_PORT_END_EXCLUSIVE - SESSION_PORT_START) as usize;
 
 pub struct LiquidDataPlane {
     inner: Arc<Mutex<State>>,
@@ -101,20 +105,9 @@ impl DataPlane for LiquidDataPlane {
         agreement: &ContractAgreement,
         iface: &str,
     ) -> Result<EnforcementHandle> {
-        let compiled = compile_agreement(agreement)?;
-        let transport_selector = compiled.transport_selector.clone();
-        let resolved_transport = compiled.resolved_transport();
+        let mut compiled = compile_agreement(agreement)?;
         #[cfg(target_os = "linux")]
         let use_kernel_enforcement = self.uses_kernel_enforcement();
-        let handle = EnforcementHandle {
-            id: agreement.agreement_id.0.clone(),
-            interface: iface.to_string(),
-            session_port: compiled.session_port(),
-            active: true,
-            transport_selector: Some(transport_selector.clone()),
-            resolved_transport: Some(resolved_transport.clone()),
-            runtime: Some(self.runtime_status(true)),
-        };
 
         {
             let mut state = self.inner.lock().await;
@@ -122,6 +115,26 @@ impl DataPlane for LiquidDataPlane {
                 tracked,
                 interfaces,
             } = &mut *state;
+
+            compiled.transport_selector = resolve_transport_selector(
+                tracked,
+                iface,
+                agreement,
+                &compiled.transport_selector,
+            )?;
+            compiled.selector_key = selector_key(&compiled.transport_selector);
+
+            let transport_selector = compiled.transport_selector.clone();
+            let resolved_transport = compiled.resolved_transport();
+            let handle = EnforcementHandle {
+                id: agreement.agreement_id.0.clone(),
+                interface: iface.to_string(),
+                session_port: compiled.session_port(),
+                active: true,
+                transport_selector: Some(transport_selector.clone()),
+                resolved_transport: Some(resolved_transport.clone()),
+                runtime: Some(self.runtime_status(true)),
+            };
 
             if tracked
                 .get(&handle.id)
@@ -195,10 +208,10 @@ impl DataPlane for LiquidDataPlane {
                     state: LifecycleState::Active,
                 },
             );
-        }
 
-        self.spawn_expiry_task(handle.id.clone(), compiled.expires_at);
-        Ok(handle)
+            self.spawn_expiry_task(handle.id.clone(), compiled.expires_at);
+            return Ok(handle);
+        }
     }
 
     async fn revoke(&self, handle: &EnforcementHandle) -> Result<()> {
@@ -338,6 +351,50 @@ async fn deactivate_inner(
     Ok(())
 }
 
+fn resolve_transport_selector(
+    tracked: &std::collections::HashMap<String, TrackedEnforcement>,
+    interface: &str,
+    agreement: &ContractAgreement,
+    preferred: &lsdc_common::execution::TransportSelector,
+) -> Result<lsdc_common::execution::TransportSelector> {
+    if agreement
+        .liquid_policy
+        .transport_guard
+        .session_port
+        .is_some()
+    {
+        return Ok(preferred.clone());
+    }
+
+    let base_offset = preferred
+        .port
+        .checked_sub(SESSION_PORT_START)
+        .map(usize::from)
+        .filter(|offset| *offset < SESSION_PORT_RANGE_LEN)
+        .unwrap_or_default();
+
+    for step in 0..SESSION_PORT_RANGE_LEN {
+        let offset = (base_offset + step) % SESSION_PORT_RANGE_LEN;
+        let candidate = lsdc_common::execution::TransportSelector {
+            protocol: preferred.protocol,
+            port: SESSION_PORT_START + offset as u16,
+        };
+
+        let in_use = tracked.values().any(|entry| {
+            entry.interface == interface
+                && entry.transport_selector == candidate
+                && entry.state == LifecycleState::Active
+        });
+        if !in_use {
+            return Ok(candidate);
+        }
+    }
+
+    Err(LsdcError::Enforcement(format!(
+        "no free dynamic session ports remain in {SESSION_PORT_START}..{SESSION_PORT_END_EXCLUSIVE}"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,6 +402,7 @@ mod tests {
     use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement, TransportProtocol};
     use lsdc_common::liquid::{LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard};
     use lsdc_common::odrl::ast::PolicyId;
+    use std::collections::HashMap;
 
     fn make_agreement(id: &str, valid_until: Option<DateTime<Utc>>) -> ContractAgreement {
         make_agreement_with_selector(id, TransportProtocol::Udp, None, valid_until)
@@ -413,6 +471,19 @@ mod tests {
         let first_handle = plane.enforce(&first, "lo").await.unwrap();
         let second_handle = plane.enforce(&second, "lo").await.unwrap();
 
+        assert_ne!(first_handle.session_port, second_handle.session_port);
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_session_port_allocator_probes_hash_collisions() {
+        let plane = LiquidDataPlane::new_simulated();
+        let (first, second, preferred_port) = find_colliding_dynamic_agreements(&plane);
+
+        let first_handle = plane.enforce(&first, "lo").await.unwrap();
+        let second_handle = plane.enforce(&second, "lo").await.unwrap();
+
+        assert_eq!(first_handle.session_port, preferred_port);
+        assert_ne!(second_handle.session_port, preferred_port);
         assert_ne!(first_handle.session_port, second_handle.session_port);
     }
 
@@ -488,5 +559,21 @@ mod tests {
             plane.status(&second_handle).await.unwrap(),
             EnforcementStatus::Active { .. }
         ));
+    }
+
+    fn find_colliding_dynamic_agreements(
+        plane: &LiquidDataPlane,
+    ) -> (ContractAgreement, ContractAgreement, u16) {
+        let mut seen = HashMap::new();
+
+        for index in 0..10_000 {
+            let agreement = make_agreement(&format!("agreement-collision-{index}"), None);
+            let preferred_port = plane.compile(&agreement).unwrap().session_port();
+            if let Some(first) = seen.insert(preferred_port, agreement.clone()) {
+                return (first, agreement, preferred_port);
+            }
+        }
+
+        panic!("failed to find two agreements with the same preferred dynamic session port");
     }
 }

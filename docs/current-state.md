@@ -49,10 +49,12 @@ That layering is implemented without changing the public HTTP routes, gRPC proto
 ## Implemented Behavior
 
 - Reference stack:
-  - `apps/control-plane-api` exposes DSP-style contract and transfer endpoints plus `lsdc` lineage, evidence, and settlement endpoints
-  - `apps/control-plane-api` reports configured versus resolved actual backends from `/health`
-  - `apps/control-plane-api` exposes policy-truthfulness details on finalize, transfer, lineage, settlement, and health responses
-  - `apps/control-plane-api` persists agreements, transfer sessions, lineage jobs, proof bundles, pricing decisions, sanction proposals, and canonical evidence records in SQLite
+- `apps/control-plane-api` exposes DSP-style contract and transfer endpoints plus `lsdc` lineage, evidence, and settlement endpoints
+- `apps/control-plane-api` requires `Authorization: Bearer <LSDC_API_BEARER_TOKEN>` on every non-health route
+- `apps/control-plane-api` reports configured versus resolved actual backends from `/health`
+- `apps/control-plane-api` exposes policy-truthfulness details on finalize, transfer, lineage, settlement, and health responses
+- `apps/control-plane-api` verifies evidence chains by checking canonical receipt linkage first, then verifying each receipt against the backend declared inside the receipt
+- `apps/control-plane-api` persists agreements, transfer sessions, lineage jobs, proof bundles, pricing decisions, sanction proposals, and canonical evidence records in SQLite
   - `apps/liquid-agent` is a binary composition root over the shared `liquid-agent-grpc` contract crate
   - the pricing oracle and the Rust gRPC client both compile from `proto/pricing/v1/pricing.proto`
 - ODRL subset:
@@ -63,6 +65,7 @@ That layering is implemented without changing the public HTTP routes, gRPC proto
 - Liquid data plane:
   - parameterized Aya/XDP enforcement for packet and byte caps
   - multi-agreement lifecycle keyed by agreement identity and protocol-aware transport selector
+  - collision-aware dynamic session-port allocation that keeps the hash-derived port as the preferred choice and probes within `20_000..60_000` before failing
   - explicit resolved transport guards surfaced through enforcement handles and API responses
   - Linux enforcement plus simulation mode on non-Linux hosts
 - Proof plane:
@@ -84,6 +87,7 @@ That layering is implemented without changing the public HTTP routes, gRPC proto
   - signed, advisory-only decisions
   - truthful algorithm label: `heuristic_marginal_v0`
   - canonical `PricingEvidenceV1` records algorithm id/version, decision policy id/version, advisory status, and evidence anchor hash
+  - insecure loopback-only gRPC is supported only in explicit development mode with `LSDC_ALLOW_DEV_DEFAULTS=1`
 - Cross-node validation:
   - HTTP integration tests cover request/finalize, transfer start/complete, async lineage jobs, evidence verification, and settlement responses
   - the default demo path is a three-party A -> B -> C CSV flow backed by simulated liquid agents, `nitro-dev`, and `DevReceiptProofEngine`
@@ -108,3 +112,9 @@ The repo now keeps reusable workload artifacts in `fixtures/`:
 - `RISC Zero`: `cargo test -p proof-plane-risc0 --features risc0` or `cargo test -p control-plane-api --features risc0 --test risc0_http_tests`
 
 For the current delivery sequence, use [roadmap.md](roadmap.md).
+
+## Runtime Secrets And Dev Mode
+
+- `LSDC_API_BEARER_TOKEN` is required at startup for the control-plane API.
+- `LSDC_PROOF_SECRET`, `LSDC_FORGETTING_SECRET`, and `LSDC_PRICING_SECRET` are required unless `LSDC_ALLOW_DEV_DEFAULTS=1`.
+- The reference demo exports explicit development values for those variables instead of relying on silent fallbacks.

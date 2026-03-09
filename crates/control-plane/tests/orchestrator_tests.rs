@@ -10,7 +10,15 @@ use lsdc_common::liquid::{CsvTransformManifest, CsvTransformOp};
 use lsdc_ports::{DataPlane, PricingOracle, ProofEngine, TrainingMetrics};
 use proof_plane_host::DevReceiptProofEngine;
 use std::sync::Arc;
+use std::sync::Once;
 use tee_orchestrator::enclave::NitroEnclaveManager;
+
+fn ensure_test_env() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        std::env::set_var("LSDC_ALLOW_DEV_DEFAULTS", "1");
+    });
+}
 
 struct MockPricingOracle;
 
@@ -89,6 +97,7 @@ async fn test_full_negotiation_and_enforcement() {
 
 #[tokio::test]
 async fn test_two_hop_batch_lineage_flow() {
+    ensure_test_env();
     let negotiation = NegotiationEngine::new();
     let offer = negotiation
         .handle_request(ContractRequest {
@@ -129,8 +138,8 @@ async fn test_two_hop_batch_lineage_flow() {
         .await
         .unwrap();
 
-    let proof_engine = Arc::new(DevReceiptProofEngine::new());
-    let enclave = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()));
+    let proof_engine = Arc::new(DevReceiptProofEngine::new().unwrap());
+    let enclave = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()).unwrap());
     let data_plane = Arc::new(LiquidDataPlane::new_simulated());
     let orch = Orchestrator::with_full_stack(data_plane, enclave, Arc::new(MockPricingOracle));
 

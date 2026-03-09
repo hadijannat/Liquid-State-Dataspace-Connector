@@ -19,15 +19,28 @@ use lsdc_common::liquid::{
     TransportGuard,
 };
 use lsdc_common::odrl::ast::PolicyId;
-use lsdc_ports::{PricingOracle, TrainingMetrics};
+use lsdc_ports::{DataPlane, PricingOracle, TrainingMetrics};
 use lsdc_service_types::{
     EvidenceVerificationRequest, FinalizeContractResponse, LineageJobAccepted, LineageJobRecord,
     LineageJobRequest, LineageJobState, SettlementDecision, TransferStartResponse,
 };
 use proof_plane_host::DevReceiptProofEngine;
 use std::sync::Arc;
+use std::sync::Once;
 use tee_orchestrator::enclave::NitroEnclaveManager;
 use tower::ServiceExt;
+
+const TEST_API_TOKEN: &str = "test-api-token";
+
+fn ensure_test_env() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        std::env::set_var("LSDC_ALLOW_DEV_DEFAULTS", "1");
+        std::env::set_var("LSDC_API_BEARER_TOKEN", TEST_API_TOKEN);
+        std::env::set_var("LSDC_PROOF_SECRET", "test-proof-secret");
+        std::env::set_var("LSDC_FORGETTING_SECRET", "test-forgetting-secret");
+    });
+}
 
 struct MockPricingOracle;
 
@@ -70,6 +83,7 @@ impl PricingOracle for MockPricingOracle {
 
 #[tokio::test]
 async fn test_contract_finalize_transfer_and_settlement_surface() {
+    ensure_test_env();
     let app = build_test_app(start_simulated_agent().await).await;
     let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
     let finalized = finalize_offer(&app, &offer).await;
@@ -126,6 +140,7 @@ async fn test_contract_finalize_transfer_and_settlement_surface() {
 
 #[tokio::test]
 async fn test_phase3_three_party_demo_flow() {
+    ensure_test_env();
     let tier_a = build_test_app(start_simulated_agent().await).await;
     let tier_b = build_test_app(start_simulated_agent().await).await;
     let tier_c = build_test_app(start_simulated_agent().await).await;
@@ -178,6 +193,10 @@ async fn test_phase3_three_party_demo_flow() {
     .await;
     assert!(verification.valid);
     assert_eq!(verification.checked_receipt_count, 2);
+    assert_eq!(
+        verification.verified_backends,
+        vec![ProofBackend::DevReceipt]
+    );
 
     let settlement_b = get_json::<SettlementDecision, _>(
         &tier_b,
@@ -210,6 +229,7 @@ async fn test_phase3_three_party_demo_flow() {
 
 #[tokio::test]
 async fn test_health_reports_configured_and_actual_backends() {
+    ensure_test_env();
     let app = build_test_app(start_simulated_agent().await).await;
     let health: serde_json::Value = get_json(
         &app,
@@ -241,7 +261,53 @@ async fn test_health_reports_configured_and_actual_backends() {
 }
 
 #[tokio::test]
+async fn test_non_health_routes_require_bearer_auth() {
+    ensure_test_env();
+    let app = build_test_app(start_simulated_agent().await).await;
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/dsp/contracts/request")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&ContractRequest {
+                        consumer_id: "did:web:consumer".into(),
+                        provider_id: "did:web:provider".into(),
+                        offer_id: uuid::Uuid::new_v4().to_string(),
+                        asset_id: "asset-csv".into(),
+                        odrl_policy: lsdc_common::fixtures::read_json("odrl/supported_policy.json")
+                            .unwrap(),
+                        policy_hash: String::new(),
+                        evidence_requirements: vec![EvidenceRequirement::ProvenanceReceipt],
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let health = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(health.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn test_transfer_start_rejects_mismatched_data_address_scheme() {
+    ensure_test_env();
     let app = build_test_app(start_simulated_agent().await).await;
     let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
     let finalized = finalize_offer(&app, &offer).await;
@@ -268,6 +334,7 @@ async fn test_transfer_start_rejects_mismatched_data_address_scheme() {
 
 #[tokio::test]
 async fn test_state_from_config_rejects_transport_backend_mismatch() {
+    ensure_test_env();
     let agent_endpoint = start_simulated_agent().await;
     let config = ControlPlaneApiConfig {
         node_name: "mismatch-node".into(),
@@ -294,6 +361,7 @@ async fn test_state_from_config_rejects_transport_backend_mismatch() {
 
 #[tokio::test]
 async fn test_state_from_config_rejects_missing_nitro_live_material() {
+    ensure_test_env();
     let agent_endpoint = start_simulated_agent().await;
     let config = ControlPlaneApiConfig {
         node_name: "nitro-live-node".into(),
@@ -318,14 +386,61 @@ async fn test_state_from_config_rejects_missing_nitro_live_material() {
     );
 }
 
+#[tokio::test]
+async fn test_successful_lineage_job_revokes_enforcement() {
+    ensure_test_env();
+    let agent_endpoint = start_simulated_agent().await;
+    let app = build_test_app(agent_endpoint.clone()).await;
+    let liquid_agent = LiquidAgentGrpcClient::new(agent_endpoint);
+    let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
+    let finalized = finalize_offer(&app, &offer).await;
+
+    let accepted = start_lineage_job(&app, &finalized.agreement, None).await;
+    let record = wait_for_job(&app, &accepted.job_id).await;
+    let result = record.result.expect("expected lineage result");
+
+    assert!(matches!(
+        liquid_agent
+            .status(&result.enforcement_handle)
+            .await
+            .unwrap(),
+        lsdc_ports::EnforcementStatus::Revoked
+    ));
+}
+
+#[tokio::test]
+async fn test_failed_lineage_job_releases_enforcement_for_retry() {
+    ensure_test_env();
+    let app = build_test_app(start_simulated_agent().await).await;
+    let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
+    let finalized = finalize_offer(&app, &offer).await;
+    let mut invalid_manifest: CsvTransformManifest =
+        lsdc_common::fixtures::read_json("liquid/analytics_manifest.json").unwrap();
+    invalid_manifest.ops.push(CsvTransformOp::RedactColumns {
+        columns: vec!["missing-column".into()],
+        replacement: "***".into(),
+    });
+
+    let failed_job =
+        start_lineage_job_with_manifest(&app, &finalized.agreement, invalid_manifest).await;
+    let failed_record = wait_for_job(&app, &failed_job.job_id).await;
+    assert_eq!(failed_record.state, LineageJobState::Failed);
+
+    let retry_job = start_lineage_job(&app, &finalized.agreement, None).await;
+    let retry_record = wait_for_job(&app, &retry_job.job_id).await;
+    assert_eq!(retry_record.state, LineageJobState::Succeeded);
+}
+
 async fn build_test_app(agent_endpoint: String) -> axum::Router {
+    ensure_test_env();
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
     router(build_test_state(agent_endpoint, store))
 }
 
 fn build_test_state(agent_endpoint: String, store: control_plane_api::store::Store) -> ApiState {
-    let proof_engine = Arc::new(DevReceiptProofEngine::new());
-    let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()));
+    ensure_test_env();
+    let proof_engine = Arc::new(DevReceiptProofEngine::new().unwrap());
+    let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()).unwrap());
     let pricing_oracle = Arc::new(MockPricingOracle);
     let liquid_agent = Arc::new(LiquidAgentGrpcClient::new(agent_endpoint));
 
@@ -333,10 +448,12 @@ fn build_test_state(agent_endpoint: String, store: control_plane_api::store::Sto
         store,
         node_name: "test-node".into(),
         liquid_agent,
+        dev_receipt_verifier: proof_engine.clone(),
         proof_engine,
         enclave_manager,
         pricing_oracle,
         default_interface: "lo".into(),
+        api_bearer_token: TEST_API_TOKEN.into(),
         configured_backends: BackendSummary {
             transport_backend: TransportBackend::Simulated,
             proof_backend: ProofBackend::DevReceipt,
@@ -400,22 +517,6 @@ async fn start_lineage_job(
     agreement: &lsdc_common::dsp::ContractAgreement,
     prior_receipt: Option<lsdc_common::crypto::ProvenanceReceipt>,
 ) -> LineageJobAccepted {
-    start_lineage_job_with_input(
-        app,
-        agreement,
-        prior_receipt,
-        String::from_utf8(lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap())
-            .unwrap(),
-    )
-    .await
-}
-
-async fn start_lineage_job_with_input(
-    app: &axum::Router,
-    agreement: &lsdc_common::dsp::ContractAgreement,
-    prior_receipt: Option<lsdc_common::crypto::ProvenanceReceipt>,
-    input_csv_utf8: String,
-) -> LineageJobAccepted {
     let mut manifest: CsvTransformManifest =
         lsdc_common::fixtures::read_json("liquid/analytics_manifest.json").unwrap();
     if prior_receipt.is_some() {
@@ -426,6 +527,40 @@ async fn start_lineage_job_with_input(
         });
     }
 
+    start_lineage_job_with_manifest_and_input(
+        app,
+        agreement,
+        prior_receipt,
+        String::from_utf8(lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap())
+            .unwrap(),
+        manifest,
+    )
+    .await
+}
+
+async fn start_lineage_job_with_manifest(
+    app: &axum::Router,
+    agreement: &lsdc_common::dsp::ContractAgreement,
+    manifest: CsvTransformManifest,
+) -> LineageJobAccepted {
+    start_lineage_job_with_manifest_and_input(
+        app,
+        agreement,
+        None,
+        String::from_utf8(lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap())
+            .unwrap(),
+        manifest,
+    )
+    .await
+}
+
+async fn start_lineage_job_with_manifest_and_input(
+    app: &axum::Router,
+    agreement: &lsdc_common::dsp::ContractAgreement,
+    prior_receipt: Option<lsdc_common::crypto::ProvenanceReceipt>,
+    input_csv_utf8: String,
+    manifest: CsvTransformManifest,
+) -> LineageJobAccepted {
     get_json(
         app,
         Method::POST,
@@ -448,6 +583,32 @@ async fn start_lineage_job_with_input(
             prior_receipt,
         }),
         StatusCode::ACCEPTED,
+    )
+    .await
+}
+
+async fn start_lineage_job_with_input(
+    app: &axum::Router,
+    agreement: &lsdc_common::dsp::ContractAgreement,
+    prior_receipt: Option<lsdc_common::crypto::ProvenanceReceipt>,
+    input_csv_utf8: String,
+) -> LineageJobAccepted {
+    let mut manifest: CsvTransformManifest =
+        lsdc_common::fixtures::read_json("liquid/analytics_manifest.json").unwrap();
+    if prior_receipt.is_some() {
+        manifest.dataset_id = "dataset-derived".into();
+        manifest.ops.push(CsvTransformOp::HashColumns {
+            columns: vec!["region".into()],
+            salt: "tier-c".into(),
+        });
+    }
+
+    start_lineage_job_with_manifest_and_input(
+        app,
+        agreement,
+        prior_receipt,
+        input_csv_utf8,
+        manifest,
     )
     .await
 }
@@ -550,6 +711,7 @@ fn sample_lineage_job_request() -> LineageJobRequest {
 
 #[tokio::test]
 async fn test_internal_error_does_not_leak_raw_message() {
+    ensure_test_env();
     let app = build_test_app(start_simulated_agent().await).await;
     let invalid_receipt = ProvenanceReceipt {
         agreement_id: "agreement-invalid".into(),
@@ -571,6 +733,7 @@ async fn test_internal_error_does_not_leak_raw_message() {
             axum::http::Request::builder()
                 .method(Method::POST)
                 .uri("/lsdc/evidence/verify-chain")
+                .header("authorization", format!("Bearer {TEST_API_TOKEN}"))
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
                     serde_json::to_vec(&EvidenceVerificationRequest {
@@ -582,21 +745,18 @@ async fn test_internal_error_does_not_leak_raw_message() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::OK);
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let error_text = body["error"].as_str().unwrap();
-    assert_eq!(error_text, "internal server error");
-    assert!(
-        !error_text.to_lowercase().contains("json"),
-        "error response must not expose raw parse details: {error_text}"
-    );
+    let body: lsdc_service_types::EvidenceVerificationResult =
+        serde_json::from_slice(&bytes).unwrap();
+    assert!(!body.valid);
 }
 
 #[tokio::test]
 async fn test_empty_receipt_chain_is_invalid() {
+    ensure_test_env();
     let app = build_test_app(start_simulated_agent().await).await;
     let result: lsdc_service_types::EvidenceVerificationResult = get_json(
         &app,
@@ -612,6 +772,7 @@ async fn test_empty_receipt_chain_is_invalid() {
 
 #[tokio::test]
 async fn test_serve_reconciles_stale_jobs_on_startup() {
+    ensure_test_env();
     let agent_endpoint = start_simulated_agent().await;
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
     let request = sample_lineage_job_request();
@@ -661,6 +822,7 @@ where
         Request::builder()
             .method(method)
             .uri(path)
+            .header("authorization", format!("Bearer {TEST_API_TOKEN}"))
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap()
@@ -668,6 +830,7 @@ where
         Request::builder()
             .method(method)
             .uri(path)
+            .header("authorization", format!("Bearer {TEST_API_TOKEN}"))
             .body(Body::empty())
             .unwrap()
     };

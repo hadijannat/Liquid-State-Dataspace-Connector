@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+export LSDC_ALLOW_DEV_DEFAULTS=1
+export LSDC_API_BEARER_TOKEN="${LSDC_API_BEARER_TOKEN:-phase3-demo-token}"
+export LSDC_PROOF_SECRET="${LSDC_PROOF_SECRET:-phase3-proof-secret}"
+export LSDC_FORGETTING_SECRET="${LSDC_FORGETTING_SECRET:-phase3-forgetting-secret}"
+export LSDC_PRICING_SECRET="${LSDC_PRICING_SECRET:-phase3-pricing-secret}"
+export LSDC_ATTESTATION_SECRET="${LSDC_ATTESTATION_SECRET:-phase3-attestation-secret}"
+
 if [[ ! -x ".venv/bin/python" ]]; then
   echo "expected .venv/bin/python; run ./scripts/bootstrap-ubuntu.sh first" >&2
   exit 1
@@ -46,6 +53,7 @@ echo "tier-a API: http://127.0.0.1:7001"
 echo "tier-b API: http://127.0.0.1:7002"
 echo "tier-c API: http://127.0.0.1:7003"
 echo "pricing health: http://127.0.0.1:8000/health"
+echo "API bearer token: ${LSDC_API_BEARER_TOKEN}"
 echo "Press Ctrl+C to stop all processes."
 
 wait

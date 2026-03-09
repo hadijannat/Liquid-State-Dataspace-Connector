@@ -68,6 +68,8 @@ cargo test --workspace
 .venv/bin/python -m pytest python/pricing-oracle/tests
 ```
 
+Before running the reference stack outside tests, set the control-plane bearer token plus the proof, forgetting, and pricing signing secrets. The demo script exports development values for you and enables explicit dev-mode fallbacks with `LSDC_ALLOW_DEV_DEFAULTS=1`.
+
 Start the local Phase 3 reference stack:
 
 ```bash
@@ -116,6 +118,8 @@ Main HTTP routes exposed by `control-plane-api`:
 - `POST /lsdc/evidence/verify-chain`
 - `GET /lsdc/agreements/:agreement_id/settlement`
 
+`GET /health` is intentionally public. Every other route requires `Authorization: Bearer <LSDC_API_BEARER_TOKEN>`.
+
 ## Example Flow
 
 The default repo flow is a three-party A -> B -> C CSV lineage demo backed by simulated agents, `nitro-dev`, the default `DevReceiptProofEngine`, and advisory pricing:
@@ -123,7 +127,14 @@ The default repo flow is a three-party A -> B -> C CSV lineage demo backed by si
 1. Submit a contract request to `/dsp/contracts/request` using the policy in `fixtures/odrl/supported_policy.json`.
 2. Finalize the returned offer through `/dsp/contracts/finalize` to persist the agreement and inspect the requested versus actual execution profile.
 3. Submit a lineage job to `/lsdc/lineage/jobs` using `fixtures/csv/lineage_input.csv` and `fixtures/liquid/analytics_manifest.json`, then poll `/lsdc/lineage/jobs/:job_id` for completion.
-4. Inspect `/lsdc/evidence/verify-chain` and `/lsdc/agreements/:agreement_id/settlement` to verify emitted evidence and retrieve the advisory settlement decision.
+4. Inspect `/lsdc/evidence/verify-chain` and `/lsdc/agreements/:agreement_id/settlement` to verify emitted evidence and retrieve the advisory settlement decision. Chain verification is receipt-aware: the endpoint verifies each receipt against its declared backend and rejects broken `prior_receipt_hash` links even when the current node is running a different proof backend.
+
+## Security Defaults
+
+- `LSDC_API_BEARER_TOKEN` is required for all non-health HTTP routes.
+- `LSDC_PROOF_SECRET`, `LSDC_FORGETTING_SECRET`, and `LSDC_PRICING_SECRET` must be set unless `LSDC_ALLOW_DEV_DEFAULTS=1`.
+- Insecure pricing gRPC is development-only. It is allowed only for loopback binds and only when `LSDC_ALLOW_DEV_DEFAULTS=1`.
+- Dynamic transport session ports keep the current hash-derived port as the preferred choice, then linearly probe `20000..60000` to avoid active-selector collisions on the same interface and protocol.
 
 For the exact implemented runtime contract, use [docs/current-state.md](docs/current-state.md). For the aspirational extensions beyond this flow, use [docs/research/README.md](docs/research/README.md).
 

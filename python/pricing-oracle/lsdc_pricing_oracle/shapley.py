@@ -14,6 +14,8 @@ import os
 
 
 DEFAULT_PRICING_SECRET = "lsdc-pricing-dev-secret"
+PRICING_SECRET_ENV = "LSDC_PRICING_SECRET"
+ALLOW_DEV_DEFAULTS_ENV = "LSDC_ALLOW_DEV_DEFAULTS"
 
 
 @dataclass
@@ -105,6 +107,29 @@ def calculate_price_decision(
     return decision
 
 
+def allow_dev_defaults() -> bool:
+    return os.getenv(ALLOW_DEV_DEFAULTS_ENV) == "1"
+
+
+def resolve_pricing_secret(
+    explicit_secret: str | None = None,
+    allow_dev_defaults_override: bool | None = None,
+) -> str:
+    if explicit_secret is None:
+        explicit_secret = os.getenv(PRICING_SECRET_ENV)
+    if explicit_secret:
+        return explicit_secret
+
+    if allow_dev_defaults_override is None:
+        allow_dev_defaults_override = allow_dev_defaults()
+    if allow_dev_defaults_override:
+        return DEFAULT_PRICING_SECRET
+
+    raise RuntimeError(
+        f"{PRICING_SECRET_ENV} must be set unless {ALLOW_DEV_DEFAULTS_ENV}=1"
+    )
+
+
 def sign_price_decision(decision: PriceDecision) -> str:
     payload = json.dumps(
         {
@@ -120,5 +145,5 @@ def sign_price_decision(decision: PriceDecision) -> str:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    secret = os.getenv("LSDC_PRICING_SECRET", DEFAULT_PRICING_SECRET).encode("utf-8")
+    secret = resolve_pricing_secret().encode("utf-8")
     return hmac.new(secret, payload, hashlib.sha256).hexdigest()

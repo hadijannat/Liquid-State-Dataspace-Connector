@@ -1,5 +1,5 @@
 use crate::attestation::build_attestation_document;
-use crate::forgetting::build_proof_of_forgetting;
+use crate::forgetting::{build_proof_of_forgetting, validate_forgetting_secret};
 use async_trait::async_trait;
 use lsdc_common::crypto::{AttestationDocument, AttestationMeasurements, ProofBundle, Sha256Hash};
 use lsdc_common::error::{LsdcError, Result};
@@ -26,12 +26,13 @@ pub struct NitroLiveAttestationMaterial {
 }
 
 impl NitroEnclaveManager {
-    pub fn new_dev(proof_engine: Arc<dyn ProofEngine>) -> Self {
-        Self {
+    pub fn new_dev(proof_engine: Arc<dyn ProofEngine>) -> Result<Self> {
+        validate_forgetting_secret()?;
+        Ok(Self {
             proof_engine,
             mode: TeeBackend::NitroDev,
             live_attestation: None,
-        }
+        })
     }
 
     pub fn new_live(

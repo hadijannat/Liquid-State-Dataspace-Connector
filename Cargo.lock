@@ -945,6 +945,7 @@ dependencies = [
  "lsdc-config",
  "lsdc-ports",
  "lsdc-service-types",
+ "proof-plane-core",
  "proof-plane-host",
  "serde",
  "serde_json",

@@ -1,32 +1,92 @@
-use crate::error::{ApiError, ApiResult};
+use crate::error::ApiResult;
 use crate::state::ApiState;
 use axum::extract::State;
 use axum::Json;
-use lsdc_common::error::LsdcError;
+use lsdc_common::crypto::ProvenanceReceipt;
+use lsdc_common::execution::ProofBackend;
 use lsdc_service_types::{EvidenceVerificationRequest, EvidenceVerificationResult};
+use proof_plane_core::verify_receipt_links;
+#[cfg(feature = "risc0")]
+use proof_plane_host::Risc0ProofEngine;
 
 pub async fn verify_evidence_chain(
     State(state): State<ApiState>,
     Json(request): Json<EvidenceVerificationRequest>,
 ) -> ApiResult<Json<EvidenceVerificationResult>> {
-    let valid = if request.receipts.is_empty()
-        || request
+    let verified_backends = dedup_backends(&request.receipts);
+    let linkage = verify_receipt_links(
+        &request
             .receipts
             .iter()
-            .any(|receipt| receipt.proof_backend != state.proof_engine.proof_backend())
-    {
+            .map(proof_plane_core::ReceiptEnvelopeV1::from)
+            .collect::<Vec<_>>(),
+    );
+    let valid = if request.receipts.is_empty() || !linkage.valid {
         false
     } else {
-        match state.proof_engine.verify_chain(&request.receipts).await {
-            Ok(valid) => valid,
-            Err(LsdcError::Unsupported(_)) => false,
-            Err(err) => return Err(ApiError::internal(err)),
+        let mut all_valid = true;
+        for receipt in &request.receipts {
+            if !verify_receipt_for_backend(&state, receipt).await {
+                all_valid = false;
+                break;
+            }
         }
+        all_valid
     };
 
     Ok(Json(EvidenceVerificationResult {
-        proof_backend: state.proof_engine.proof_backend(),
+        verified_backends,
         checked_receipt_count: request.receipts.len(),
         valid,
     }))
+}
+
+async fn verify_receipt_for_backend(state: &ApiState, receipt: &ProvenanceReceipt) -> bool {
+    let verification = match receipt.proof_backend {
+        ProofBackend::DevReceipt => state.dev_receipt_verifier.verify_receipt(receipt).await,
+        ProofBackend::RiscZero => verify_risc0_receipt(state, receipt).await,
+        ProofBackend::None => return false,
+    };
+
+    match verification {
+        Ok(valid) => valid,
+        Err(err) => {
+            tracing::warn!(
+                proof_backend = ?receipt.proof_backend,
+                error = %err,
+                "receipt verification failed"
+            );
+            false
+        }
+    }
+}
+
+#[cfg(feature = "risc0")]
+async fn verify_risc0_receipt(
+    state: &ApiState,
+    receipt: &ProvenanceReceipt,
+) -> lsdc_common::Result<bool> {
+    if state.proof_engine.proof_backend() == ProofBackend::RiscZero {
+        return state.proof_engine.verify_receipt(receipt).await;
+    }
+
+    Risc0ProofEngine::new().verify_receipt(receipt).await
+}
+
+#[cfg(not(feature = "risc0"))]
+async fn verify_risc0_receipt(
+    _state: &ApiState,
+    _receipt: &ProvenanceReceipt,
+) -> lsdc_common::Result<bool> {
+    Ok(false)
+}
+
+fn dedup_backends(receipts: &[ProvenanceReceipt]) -> Vec<ProofBackend> {
+    let mut ordered = Vec::new();
+    for receipt in receipts {
+        if !ordered.contains(&receipt.proof_backend) {
+            ordered.push(receipt.proof_backend);
+        }
+    }
+    ordered
 }

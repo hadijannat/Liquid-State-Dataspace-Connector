@@ -15,11 +15,14 @@ import uvicorn
 
 from .proto_loader import load_pricing_proto
 from .shapley import (
+    ALLOW_DEV_DEFAULTS_ENV,
     MetricsWindow,
     PricingAuditContext,
     ShapleyResult,
     calculate_price_decision,
+    allow_dev_defaults,
     estimate_shapley_value,
+    resolve_pricing_secret,
 )
 
 pricing_pb2, pricing_pb2_grpc = load_pricing_proto()
@@ -74,6 +77,17 @@ def _check_insecure_host_warning(host: str) -> None:
             "The gRPC server has no TLS or authentication. "
             "For production, restrict to loopback or configure mTLS.",
             host,
+        )
+
+
+def _ensure_insecure_bind_allowed(host: str) -> None:
+    if not allow_dev_defaults():
+        raise RuntimeError(
+            f"insecure pricing gRPC requires {ALLOW_DEV_DEFAULTS_ENV}=1"
+        )
+    if not _is_loopback_host(host):
+        raise RuntimeError(
+            "insecure pricing gRPC must bind to a loopback address"
         )
 
 
@@ -172,6 +186,8 @@ class PricingOracleService(pricing_pb2_grpc.PricingOracleServicer):
 
 
 async def serve_grpc(host: str = "127.0.0.1", port: int = 50051):
+    resolve_pricing_secret()
+    _ensure_insecure_bind_allowed(host)
     server = grpc.aio.server()
     pricing_pb2_grpc.add_PricingOracleServicer_to_server(PricingOracleService(), server)
     _check_insecure_host_warning(host)
@@ -190,6 +206,7 @@ async def serve_health(host: str = "127.0.0.1", port: int = 8000):
 
 
 async def main():
+    resolve_pricing_secret()
     grpc_host = os.getenv("LSDC_PRICING_GRPC_HOST", "127.0.0.1")
     grpc_port = int(os.getenv("LSDC_PRICING_GRPC_PORT", "50051"))
     health_host = os.getenv("LSDC_PRICING_HTTP_HOST", "127.0.0.1")

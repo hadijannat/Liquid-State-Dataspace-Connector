@@ -79,6 +79,10 @@ pub struct EvidenceEnvelope {
 }
 
 impl ReceiptEnvelopeV1 {
+    pub fn receipt_hash(&self) -> Sha256Hash {
+        Sha256Hash::digest_bytes(&self.proof)
+    }
+
     pub fn verified_claims(&self, agreement_id: impl Into<String>) -> VerifiedClaims {
         VerifiedClaims {
             agreement_id: agreement_id.into(),
