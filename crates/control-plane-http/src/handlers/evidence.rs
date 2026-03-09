@@ -9,12 +9,11 @@ pub async fn verify_evidence_chain(
     State(state): State<ApiState>,
     Json(request): Json<EvidenceVerificationRequest>,
 ) -> ApiResult<Json<EvidenceVerificationResult>> {
-    let valid = if request.receipts.is_empty() {
-        false
-    } else if request
-        .receipts
-        .iter()
-        .any(|receipt| receipt.proof_backend != state.proof_engine.proof_backend())
+    let valid = if request.receipts.is_empty()
+        || request
+            .receipts
+            .iter()
+            .any(|receipt| receipt.proof_backend != state.proof_engine.proof_backend())
     {
         false
     } else {

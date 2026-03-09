@@ -15,6 +15,10 @@ use crate::backend::linux_xdp::{
     attach_linux, detach_linux, insert_linux_maps, read_counters, remove_linux_maps,
 };
 #[cfg(target_os = "linux")]
+use crate::runtime::InterfaceRuntime;
+#[cfg(target_os = "linux")]
+use crate::runtime::LinuxAttachment;
+#[cfg(target_os = "linux")]
 use std::collections::HashSet;
 
 pub struct LiquidDataPlane {

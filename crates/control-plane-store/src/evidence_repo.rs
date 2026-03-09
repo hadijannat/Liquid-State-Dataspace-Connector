@@ -4,6 +4,16 @@ use lsdc_common::error::Result;
 use lsdc_service_types::LineageJobResult;
 use rusqlite::{params, Transaction};
 
+struct EvidenceRecordWrite<'a> {
+    job_id: &'a str,
+    agreement_id: &'a str,
+    evidence_kind: &'a str,
+    schema_version: i64,
+    anchor_hash: Option<String>,
+    payload_json: &'a str,
+    now: &'a str,
+}
+
 pub(crate) fn persist_job_evidence(
     tx: &Transaction<'_>,
     job_id: &str,
@@ -44,51 +54,48 @@ pub(crate) fn persist_job_evidence(
 
     persist_record(
         tx,
-        job_id,
-        agreement_id,
-        "proof_bundle",
-        1,
-        Some(result.proof_bundle.job_audit_hash.to_hex()),
-        &proof_bundle_json,
-        now,
+        EvidenceRecordWrite {
+            job_id,
+            agreement_id,
+            evidence_kind: "proof_bundle",
+            schema_version: 1,
+            anchor_hash: Some(result.proof_bundle.job_audit_hash.to_hex()),
+            payload_json: &proof_bundle_json,
+            now,
+        },
     )?;
     persist_record(
         tx,
-        job_id,
-        agreement_id,
-        "price_decision",
-        1,
-        Some(result.price_decision.signature_hex.clone()),
-        &price_decision_json,
-        now,
+        EvidenceRecordWrite {
+            job_id,
+            agreement_id,
+            evidence_kind: "price_decision",
+            schema_version: 1,
+            anchor_hash: Some(result.price_decision.signature_hex.clone()),
+            payload_json: &price_decision_json,
+            now,
+        },
     )?;
     persist_record(
         tx,
-        job_id,
-        agreement_id,
-        "sanction_proposal",
-        1,
-        result
-            .sanction_proposal
-            .as_ref()
-            .map(|proposal| proposal.evidence_hash.to_hex()),
-        &canonical_sanction_json,
-        now,
+        EvidenceRecordWrite {
+            job_id,
+            agreement_id,
+            evidence_kind: "sanction_proposal",
+            schema_version: 1,
+            anchor_hash: result
+                .sanction_proposal
+                .as_ref()
+                .map(|proposal| proposal.evidence_hash.to_hex()),
+            payload_json: &canonical_sanction_json,
+            now,
+        },
     )?;
 
     Ok(())
 }
 
-fn persist_record(
-    tx: &Transaction<'_>,
-    job_id: &str,
-    agreement_id: &str,
-    evidence_kind: &str,
-    schema_version: i64,
-    anchor_hash: Option<String>,
-    payload_json: &str,
-    now: &str,
-) -> Result<()> {
+fn persist_record(tx: &Transaction<'_>, record: EvidenceRecordWrite<'_>) -> Result<()> {
     tx.execute(
         "INSERT OR REPLACE INTO evidence_records (
             job_id,
@@ -100,13 +107,13 @@ fn persist_record(
             created_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
-            job_id,
-            agreement_id,
-            evidence_kind,
-            schema_version,
-            anchor_hash,
-            payload_json,
-            now
+            record.job_id,
+            record.agreement_id,
+            record.evidence_kind,
+            record.schema_version,
+            record.anchor_hash,
+            record.payload_json,
+            record.now
         ],
     )
     .map_err(sqlite_error)?;

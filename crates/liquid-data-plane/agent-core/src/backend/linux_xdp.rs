@@ -5,7 +5,7 @@ use crate::projection::{
 use crate::runtime::LinuxAttachment;
 use aya::{
     maps::HashMap as BpfHashMap,
-    programs::{xdp::XdpLinkId, Xdp, XdpFlags},
+    programs::{Xdp, XdpFlags},
     Ebpf,
 };
 use lsdc_common::error::{LsdcError, Result};
