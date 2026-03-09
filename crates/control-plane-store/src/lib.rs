@@ -304,6 +304,55 @@ impl Store {
         .transpose()
     }
 
+    /// Returns all jobs in `pending` or `running` state — used at startup to
+    /// requeue jobs that were interrupted by a process crash.
+    pub fn get_stale_jobs(&self) -> Result<Vec<LineageJobRecord>> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT job_id, agreement_id, state, request_json, result_json, \
+                 error_text, created_at, updated_at
+                 FROM lineage_jobs
+                 WHERE state IN ('pending', 'running')
+                 ORDER BY created_at ASC",
+            )
+            .map_err(sqlite_error)?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            })
+            .map_err(sqlite_error)?;
+
+        rows.map(|r| {
+            let (job_id, agreement_id, state, request_json, result_json, error_text, created_at, updated_at) =
+                r.map_err(sqlite_error)?;
+            Ok(LineageJobRecord {
+                job_id,
+                agreement_id,
+                state: parse_job_state(&state)?,
+                request: from_json(&request_json)?,
+                result: result_json
+                    .as_deref()
+                    .map(from_json::<LineageJobResult>)
+                    .transpose()?,
+                error: error_text,
+                created_at: parse_timestamp(&created_at)?,
+                updated_at: parse_timestamp(&updated_at)?,
+            })
+        })
+        .collect()
+    }
+
     pub fn get_settlement(&self, agreement_id: &str) -> Result<Option<SettlementDecision>> {
         if self.get_agreement(agreement_id)?.is_none() {
             return Ok(None);
