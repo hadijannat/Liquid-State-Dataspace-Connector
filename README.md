@@ -4,107 +4,71 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](Cargo.toml)
 [![Rust nightly](https://img.shields.io/badge/rust-nightly-orange.svg)](rust-toolchain.toml)
 
-The Liquid-State Dataspace Connector (LSDC) is a Rust-first dataspace prototype that keeps `DSP + ODRL` at the external boundary, but treats the connector itself as a runtime platform for negotiation, transport enforcement, provenance proofs, attested execution, and advisory pricing. The repo is intentionally strict about truthfulness: the local stack runs real control-plane, agent, proof, and pricing flows today, while recursive proofs, live enclave orchestration, and autonomous contract mutation or billing settlement remain research or future work rather than current runtime claims.
+The Liquid-State Dataspace Connector (LSDC) is a Rust-first dataspace runtime with a DSP-compatible HTTP boundary and an additive LSDC execution overlay. The repo is intentionally strict about truthfulness: it documents the default Phase 3 stack that runs today, the advanced modes that are implemented but non-default, and the research track that is still out of scope for current runtime claims.
 
-## Architecture At a Glance
+- Default reference stack: three `control-plane-api` nodes, three simulated `liquid-agent` nodes, and the Python pricing oracle.
+- Public surface: DSP contract and transfer routes plus additive `/lsdc/v1/*` execution-overlay routes.
+- Implemented non-default modes: Linux Aya/XDP transport, feature-gated `RISC Zero`, `nitro_live`, AWS Nitro attestation verification, and AWS KMS-backed attested key release when configured.
+- Explicit future work: recursive proof rollups, live enclave lifecycle orchestration, autonomous contract mutation or settlement, and richer enforcement beyond the implemented executable subset.
+
+## Architecture
 
 ```mermaid
 flowchart LR
-    Client(["External DSP<br/>+ ODRL Clients"])
-
-    subgraph CP["Control Plane"]
-        direction TB
-        API["control-plane-api<br/>HTTP API"]
-        Orch["Negotiation + Policy Lowering<br/>crates/control-plane"]
-        Store[("SQLite Persistence<br/>crates/control-plane-store")]
-        API --> Orch
-        Orch <--> Store
-    end
-
-    subgraph DP["Liquid Data Plane"]
-        direction TB
-        AgentGrpc["gRPC Coordination<br/>liquid-agent-grpc"]
-        Agent["liquid-agent<br/>Daemon"]
-        Enforce["Transport Enforcement<br/>Sim / Aya/XDP"]
-        AgentGrpc --> Agent --> Enforce
-    end
-
-    subgraph PP["Proof Plane"]
-        direction TB
-        ProofHost["Proof Host<br/>crates/proof-plane/host"]
-        Kernel["Transform Kernel<br/>CSV Lineage Execution"]
-        Evidence["Receipt Proofs +<br/>Forgetting Artifacts"]
-        ProofHost --> Kernel --> Evidence
-    end
-
-    subgraph AT["Attestation + Pricing"]
-        direction TB
-        TEE["TEE Orchestrator<br/>Attestation-Aware Execution"]
-        Pricing["Pricing Oracle<br/>Advisory gRPC Decisions"]
-    end
-
-    Surfaces(["Transfer · Lineage<br/>Evidence · Settlement"])
+    Client["External DSP and ODRL clients"]
+    API["control-plane-api"]
+    DSP["DSP compatibility routes<br/>contracts and transfers"]
+    Overlay["LSDC execution overlay<br/>/lsdc/v1 capabilities, sessions, evidence"]
+    Services["Control-plane services<br/>agreements, lineage, pricing, breach handling"]
+    Transport["Liquid agent<br/>simulated or Aya/XDP"]
+    Proof["Proof plane<br/>dev_receipt or RISC Zero"]
+    TEE["TEE orchestrator<br/>nitro_dev or nitro_live"]
+    Pricing["Pricing oracle<br/>advisory gRPC"]
+    Outputs["Transfer, lineage,<br/>evidence, settlement"]
 
     Client --> API
-    Orch --> AgentGrpc
-    Orch --> ProofHost
-    Orch --> TEE
-    Enforce & Evidence & TEE & Pricing --> Surfaces
+    API --> DSP
+    API --> Overlay
+    DSP --> Services
+    Overlay --> Services
+    Services --> Transport
+    Services --> Proof
+    Services --> TEE
+    Services --> Pricing
+    Transport --> Outputs
+    Proof --> Outputs
+    TEE --> Outputs
+    Pricing --> Outputs
 ```
 
 Static fallback: [docs/architecture.svg](docs/architecture.svg) for renderers that do not support Mermaid.
 
-The diagram reflects the currently implemented runtime path. The control plane orchestrates all four subsystems, and their outputs feed the transfer, lineage, evidence, and settlement surfaces exposed by `control-plane-api`. Recursive proof rollups, live enclave lifecycle orchestration, and non-advisory pricing or settlement mutation remain future work.
+The default Phase 3 demo runs this flow with simulated transport, `dev_receipt`, `nitro_dev`, and advisory pricing. The same HTTP service also exposes the newer execution-overlay routes alongside the older DSP and lineage compatibility paths, and `/health` reports both configured and realized backends.
 
-## What LSDC Is
+## What Runs Today
 
-- A control-plane API that negotiates DSP-style contracts and exposes transfer, lineage, evidence, and settlement surfaces.
-- A liquid data plane that enforces transport policy through simulated guards or Aya/XDP on Linux.
-- A proof and evidence layer that turns approved transforms into lineage records, receipt proofs, and proof-of-forgetting artifacts.
-- A TEE and pricing integration surface that pairs attestation-aware execution with advisory gRPC pricing decisions.
+| Layer | Default reference stack | Implemented non-default modes |
+| --- | --- | --- |
+| Transport | `simulated` via `liquid-agent` | Aya/XDP on privileged Linux runners |
+| Proof | `dev_receipt` | Feature-gated `RISC Zero` single-hop proof path |
+| TEE | `nitro_dev` | `nitro_live` with AWS Nitro attestation verification and AWS KMS-backed attested key release when configured |
+| Pricing | Advisory gRPC decisions | Same advisory model; no autonomous mutation or billing settlement |
+| Public APIs | DSP compatibility routes plus lineage, evidence, and settlement compatibility views | `/lsdc/v1/*` execution-overlay routes for capabilities, sessions, attestation evidence, transparency receipts, and DAG verification |
 
-## What Exists Today
+LSDC does not currently claim:
 
-- DSP contract request and finalize flows with stable raw-ODRL policy hashing and lowering into `RequestedExecutionProfile`.
-- Policy truthfulness classification that marks negotiated clauses as `executable`, `metadata_only`, or `rejected`.
-- `apps/control-plane-api`, an `axum` + SQLite HTTP service over the control-plane, store, and transport crates.
-- `apps/liquid-agent`, a config-driven gRPC daemon that runs real Aya/XDP enforcement on Linux and simulation elsewhere.
-- Batch CSV lineage with the default `DevReceiptProofEngine`, proof-of-forgetting, and advisory pricing behind the HTTP API.
-- Feature-gated single-hop `RISC Zero` proving plus Nitro-oriented attestation flows for `nitro-dev` and pinned-measurement validation for `nitro-live`.
-- Startup validation that checks configured transport, proof, and TEE intent against the runtime components actually instantiated.
-
-## What Is Explicitly Future Work
-
-- Recursive proof rollups.
-- Live enclave lifecycle orchestration on Nitro-capable runners.
-- Non-advisory pricing, contract mutation, or billing settlement.
-- Richer ODRL enforcement beyond the currently executable subset.
-
-Implemented behavior belongs in [docs/current-state.md](docs/current-state.md). Long-horizon architecture and research direction belong in [docs/research/README.md](docs/research/README.md).
-
-## How The Diagram Maps To The Repo
-
-- HTTP entrypoint: `apps/control-plane-api` hosts the `axum` service and wires together the control-plane, transport, proof, TEE, and pricing integrations.
-- Control plane modules: `crates/control-plane`, `crates/control-plane-http`, and `crates/control-plane-store` own negotiation, policy lowering, route handling, and SQLite-backed state.
-- Liquid data plane: `apps/liquid-agent`, `crates/liquid-agent-grpc`, `crates/liquid-data-plane/agent-core`, and `crates/liquid-data-plane/ebpf` implement agent communication and transport enforcement.
-- Proof, TEE, and pricing integrations: `crates/proof-plane/host`, `crates/proof-plane/transform-kernel`, `crates/tee-orchestrator`, `proto/pricing/v1/pricing.proto`, and `python/pricing-oracle` provide lineage execution, evidence generation, attestation-aware execution hooks, and advisory pricing.
-
-## Repo Layout
-
-- Apps: `apps/control-plane-api` and `apps/liquid-agent` are the binary entrypoints. Both binaries are config-driven and currently expose `--config <CONFIG>` as their runtime interface.
-- Core crates: `crates/lsdc-common`, `crates/lsdc-config`, `crates/lsdc-ports`, and `crates/lsdc-service-types` hold shared types, config loading, runtime ports, and HTTP DTOs.
-- Data plane, proof, and TEE crates: `crates/liquid-data-plane/*`, `crates/proof-plane/*`, and `crates/tee-orchestrator` contain the execution-heavy subsystems.
-- The embedded `crates/proof-plane/risc0-guest` package is used only by the feature-gated `RISC Zero` build and is not a root workspace member.
-- Python oracle: `python/pricing-oracle` is the advisory pricing sidecar generated from the repo-level pricing proto.
-- Fixtures: `fixtures/` contains the reusable ODRL policy, CSV input, transform manifest, proof outputs, and Nitro attestation samples used by tests and the reference flow.
+- recursive proof rollups
+- live enclave lifecycle orchestration on Nitro-capable infrastructure
+- autonomous pricing, contract mutation, or ledger settlement
+- richer enforcement beyond the currently executable transport, proof, attestation, and evidence paths
 
 ## Quickstart
 
 Prerequisites:
 
-- Ubuntu or Debian if you want to use the bootstrap script as-is.
-- `curl` and `sudo` so the script can install the Rust toolchain and required system packages.
-- Linux with elevated privileges only if you want to run the real XDP path; the default reference stack works in simulated mode.
+- Ubuntu or Debian if you want to use the bootstrap script as-is
+- `curl` and `sudo` so the script can install Rust and system packages
+- Linux with elevated privileges only if you want the real XDP path; the default reference stack runs in simulated mode
 
 Bootstrap the repo:
 
@@ -112,9 +76,7 @@ Bootstrap the repo:
 ./scripts/bootstrap-ubuntu.sh
 ```
 
-That script installs the nightly Rust toolchain with `rustfmt`, `clippy`, and `rust-src`, provisions system packages for the data plane, and creates `.venv` for the pricing oracle.
-
-Verify the default Rust and Python surfaces:
+Verify the Rust and Python surfaces:
 
 ```bash
 cargo xtask verify-repo
@@ -122,79 +84,83 @@ cargo test --workspace
 .venv/bin/python -m pytest python/pricing-oracle/tests
 ```
 
-Before running the reference stack outside tests, set the control-plane bearer token plus the proof, forgetting, and pricing signing secrets. The demo script exports development values for the stack processes it launches, enables explicit dev-mode fallbacks with `LSDC_ALLOW_DEV_DEFAULTS=1`, and prints the bearer token you will need from any separate shell that calls the protected HTTP routes.
-
-Start the local Phase 3 reference stack:
+Start the default Phase 3 reference stack:
 
 ```bash
 ./scripts/run-phase3-demo.sh
 ```
 
-This launches the Python pricing oracle, three simulated `liquid-agent` nodes, and three `control-plane-api` nodes using the configs in `configs/phase3/`.
+That script launches:
 
-Optional Linux XDP path:
+- three `control-plane-api` processes on `127.0.0.1:7001`, `:7002`, and `:7003`
+- three simulated `liquid-agent` processes on `127.0.0.1:7101`, `:7102`, and `:7103`
+- the Python pricing oracle with health on `http://127.0.0.1:8000/health`
 
-```bash
-cargo xtask build-ebpf
-sudo cargo test -p liquid-agent --test linux_agent_tests -- --ignored
-```
+It also exports explicit development values for the launched processes, enables `LSDC_ALLOW_DEV_DEFAULTS=1`, and prints the bearer token required for protected HTTP routes from any separate shell.
 
-Optional feature-gated `RISC Zero` path:
+For manual startup and deeper stack details, use [docs/phase3-reference-stack.md](docs/phase3-reference-stack.md) and [docs/current-state.md](docs/current-state.md).
 
-```bash
-curl -L https://risczero.com/install | bash
-export PATH="$HOME/.risc0/bin:$PATH"
-rzup install cargo-risczero 5.0.0-rc.1
-rzup install rust 1.91.1
-cargo test -p control-plane-api --features risc0 --test risc0_http_tests
-```
+## API Surface
 
-The `RISC Zero` path is off by default and requires both the `cargo-risczero` CLI and the matching guest Rust toolchain on the machine that runs it.
+`GET /health` is intentionally public. Every other route requires `Authorization: Bearer <LSDC_API_BEARER_TOKEN>`.
 
-## Reference Stack And Endpoints
+DSP compatibility routes:
 
-Default reference stack addresses:
-
-- tier-a API: `http://127.0.0.1:7001`
-- tier-b API: `http://127.0.0.1:7002`
-- tier-c API: `http://127.0.0.1:7003`
-- pricing health: `http://127.0.0.1:8000/health`
-
-Main HTTP routes exposed by `control-plane-api`:
-
-- `GET /health`
 - `POST /dsp/contracts/request`
 - `POST /dsp/contracts/finalize`
 - `POST /dsp/transfers/start`
 - `POST /dsp/transfers/:transfer_id/complete`
+
+Compatibility runtime routes:
+
 - `POST /lsdc/lineage/jobs`
 - `GET /lsdc/lineage/jobs/:job_id`
 - `POST /lsdc/evidence/verify-chain`
 - `GET /lsdc/agreements/:agreement_id/settlement`
 
-`GET /health` is intentionally public. Every other route requires `Authorization: Bearer <LSDC_API_BEARER_TOKEN>`.
+Execution-overlay routes:
 
-## Example Flow
+- `GET /lsdc/v1/capabilities`
+- `POST /lsdc/v1/sessions`
+- `POST /lsdc/v1/sessions/:session_id/challenges`
+- `POST /lsdc/v1/sessions/:session_id/attestation-evidence`
+- `POST /lsdc/v1/evidence/statements`
+- `GET /lsdc/v1/evidence/statements/:statement_id/receipt`
+- `POST /lsdc/v1/evidence/verify`
 
-The default repo flow is a three-party A -> B -> C CSV lineage demo backed by simulated agents, `nitro-dev`, the default `DevReceiptProofEngine`, and advisory pricing:
+The older lineage, evidence, and settlement routes remain available as compatibility views over the same execution and evidence model that backs the `/lsdc/v1/*` overlay.
 
-1. Submit a contract request to `/dsp/contracts/request` using the policy in `fixtures/odrl/supported_policy.json`.
-2. Finalize the returned offer through `/dsp/contracts/finalize` to persist the agreement and inspect the requested versus actual execution profile.
-3. Submit a lineage job to `/lsdc/lineage/jobs` using `fixtures/csv/lineage_input.csv` and `fixtures/liquid/analytics_manifest.json`, then poll `/lsdc/lineage/jobs/:job_id` for completion.
-4. Inspect `/lsdc/evidence/verify-chain` and `/lsdc/agreements/:agreement_id/settlement` to verify emitted evidence and retrieve the advisory settlement decision. Chain verification is receipt-aware: the endpoint verifies each receipt against its declared backend and rejects broken `prior_receipt_hash` links even when the current node is running a different proof backend.
+## Runtime Modes
 
-## Security Defaults
+- Transport: `liquid-agent` defaults to simulated enforcement. Aya/XDP is available on Linux and built with `cargo xtask build-ebpf`.
+- Proof: `proof_backend = "dev_receipt"` is the default. `risc_zero` is supported behind the `risc0` feature and the external guest toolchain.
+- TEE: `tee_backend = "nitro_dev"` is the default. `nitro_live` is supported as a non-default mode with AWS Nitro attestation verification and optional AWS KMS-backed attested key release.
+- Pricing: the pricing plane is advisory-only gRPC. Insecure `http://` pricing endpoints are development-only and must stay on loopback with `LSDC_ALLOW_DEV_DEFAULTS=1`.
 
-- `LSDC_API_BEARER_TOKEN` is required for all non-health HTTP routes.
-- `LSDC_PROOF_SECRET`, `LSDC_FORGETTING_SECRET`, and `LSDC_PRICING_SECRET` must be set unless `LSDC_ALLOW_DEV_DEFAULTS=1`.
-- Insecure pricing gRPC is development-only. It is allowed only for loopback binds and only when `LSDC_ALLOW_DEV_DEFAULTS=1`.
-- Dynamic transport session ports keep the current hash-derived port as the preferred choice, then linearly probe `20000..60000` to avoid active-selector collisions on the same interface and protocol.
+Non-default `nitro_live` configuration uses the existing control-plane config knobs:
 
-For the exact implemented runtime contract, use [docs/current-state.md](docs/current-state.md). For the aspirational extensions beyond this flow, use [docs/research/README.md](docs/research/README.md).
+- `key_broker_backend`
+- `aws_region`
+- `kms_key_id`
+- `nitro_trust_bundle_path`
+- `nitro_live_attestation_path`
+
+Those are supported runtime configuration fields, not new public schema work. The default Phase 3 configs in [`configs/phase3/`](configs/phase3/) still run `nitro_dev`.
+
+## Repo Layout
+
+- `apps/control-plane-api` and `apps/liquid-agent` are the binary entrypoints.
+- `crates/control-plane`, `crates/control-plane-http`, and `crates/control-plane-store` own orchestration, HTTP handlers, and SQLite-backed persistence.
+- `crates/lsdc-policy`, `crates/lsdc-contracts`, `crates/lsdc-evidence`, `crates/lsdc-execution-protocol`, `crates/lsdc-runtime-model`, `crates/lsdc-config`, `crates/lsdc-ports`, and `crates/lsdc-service-types` hold the domain, config, runtime port, and service types.
+- `crates/liquid-agent-grpc` provides the shared gRPC contract between the API-facing stack and `liquid-agent`.
+- `crates/liquid-data-plane/*`, `crates/proof-plane/*`, `crates/tee-orchestrator`, and `crates/receipt-log` implement transport, proving, attestation, key release, and transparency behavior.
+- `crates/proof-plane/risc0-guest` supports the feature-gated `RISC Zero` path and is not a root workspace member.
+- `python/pricing-oracle`, `proto/pricing/v1/pricing.proto`, and `fixtures/` support the advisory pricing sidecar and the reference flow.
 
 ## Documentation Map
 
-- Current state: [docs/current-state.md](docs/current-state.md) for the truthful runtime model, supported ODRL subset, implemented backends, and verification commands.
-- Roadmap: [docs/roadmap.md](docs/roadmap.md) for the next delivery sequence and what is being hardened next.
-- Vision: [docs/vision.md](docs/vision.md) for the long-horizon connector model without implying current implementation.
-- Research track: [docs/research/README.md](docs/research/README.md) for the RFC-style pillar documents on transport, recursive proofs, TEE brokering, and pricing.
+- [docs/current-state.md](docs/current-state.md): implemented runtime model, supported modes, and verification commands
+- [docs/phase3-reference-stack.md](docs/phase3-reference-stack.md): local three-node demo topology and flow
+- [docs/roadmap.md](docs/roadmap.md): active delivery sequence
+- [docs/vision.md](docs/vision.md): long-horizon architecture without implying current runtime support
+- [docs/research/README.md](docs/research/README.md): RFC-style research track for transport, recursive proofs, TEE brokering, and pricing
