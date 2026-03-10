@@ -9,7 +9,8 @@ mod stub {
     use lsdc_common::error::{LsdcError, Result};
     use lsdc_common::execution::ProofBackend;
     use lsdc_common::liquid::CsvTransformManifest;
-    use lsdc_ports::{ProofEngine, ProofExecutionResult};
+    use lsdc_common::runtime_model::EvidenceDag;
+    use lsdc_ports::{CompositionContext, ExecutionBindings, ProofEngine, ProofExecutionResult};
 
     const RISC0_DISABLED_MESSAGE: &str =
         "risc0 backend requires the `risc0` feature and Risc Zero guest toolchain";
@@ -35,6 +36,7 @@ mod stub {
             _input_csv: &[u8],
             _manifest: &CsvTransformManifest,
             _prior_receipt: Option<&ProvenanceReceipt>,
+            _execution_bindings: Option<&ExecutionBindings>,
         ) -> Result<ProofExecutionResult> {
             Err(LsdcError::Unsupported(RISC0_DISABLED_MESSAGE.into()))
         }
@@ -44,6 +46,18 @@ mod stub {
         }
 
         async fn verify_chain(&self, _chain: &[ProvenanceReceipt]) -> Result<bool> {
+            Err(LsdcError::Unsupported(RISC0_DISABLED_MESSAGE.into()))
+        }
+
+        async fn compose_receipts(
+            &self,
+            _receipts: &[ProvenanceReceipt],
+            _ctx: CompositionContext,
+        ) -> Result<ProvenanceReceipt> {
+            Err(LsdcError::Unsupported(RISC0_DISABLED_MESSAGE.into()))
+        }
+
+        async fn verify_receipt_dag(&self, _dag: &EvidenceDag) -> Result<bool> {
             Err(LsdcError::Unsupported(RISC0_DISABLED_MESSAGE.into()))
         }
     }

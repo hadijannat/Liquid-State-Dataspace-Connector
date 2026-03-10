@@ -141,6 +141,7 @@ async fn test_single_hop_risc0_lineage_via_http_api() {
                 metrics_window_ended_at: chrono::Utc::now(),
             },
             prior_receipt: None,
+            execution_bindings: None,
         },
         StatusCode::ACCEPTED,
     )
@@ -198,7 +199,7 @@ async fn test_risc0_node_verifies_valid_dev_receipt_chain() {
     let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
     let dev_engine = proof_plane_host::DevReceiptProofEngine::new().unwrap();
     let first = dev_engine
-        .execute_csv_transform(&agreement, &input, &manifest, None)
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
         .await
         .unwrap();
     let second = dev_engine
@@ -207,6 +208,7 @@ async fn test_risc0_node_verifies_valid_dev_receipt_chain() {
             &first.output_csv,
             &manifest,
             Some(&first.receipt),
+            None,
         )
         .await
         .unwrap();

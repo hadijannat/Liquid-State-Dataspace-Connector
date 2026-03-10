@@ -1,5 +1,5 @@
 use crate::error::ApiError;
-use crate::handlers::{contracts, evidence, lineage, settlement, transfers};
+use crate::handlers::{contracts, evidence, execution, lineage, settlement, transfers};
 use crate::state::ApiState;
 use axum::body::Body;
 use axum::http::{header, Request};
@@ -20,6 +20,34 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/dsp/transfers/:transfer_id/complete",
             post(transfers::transfer_complete),
+        )
+        .route(
+            "/lsdc/v1/capabilities",
+            get(execution::execution_capabilities),
+        )
+        .route(
+            "/lsdc/v1/sessions",
+            post(execution::create_execution_session),
+        )
+        .route(
+            "/lsdc/v1/sessions/:session_id/challenges",
+            post(execution::issue_execution_challenge),
+        )
+        .route(
+            "/lsdc/v1/sessions/:session_id/attestation-evidence",
+            post(execution::submit_attestation_evidence),
+        )
+        .route(
+            "/lsdc/v1/evidence/statements",
+            post(execution::register_evidence_statement),
+        )
+        .route(
+            "/lsdc/v1/evidence/statements/:statement_id/receipt",
+            get(execution::get_transparency_receipt),
+        )
+        .route(
+            "/lsdc/v1/evidence/verify",
+            post(execution::verify_evidence_dag),
         )
         .route("/lsdc/lineage/jobs", post(lineage::create_lineage_job))
         .route("/lsdc/lineage/jobs/:job_id", get(lineage::get_lineage_job))

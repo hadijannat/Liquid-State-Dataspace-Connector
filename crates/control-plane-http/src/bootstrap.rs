@@ -11,6 +11,7 @@ use proof_plane_host::DevReceiptProofEngine;
 #[cfg(feature = "risc0")]
 use proof_plane_host::Risc0ProofEngine;
 use std::sync::Arc;
+use tee_orchestrator::attestation::LocalAttestationVerifier;
 use tee_orchestrator::enclave::{NitroEnclaveManager, NitroLiveAttestationMaterial};
 
 const API_BEARER_TOKEN_ENV: &str = "LSDC_API_BEARER_TOKEN";
@@ -50,6 +51,7 @@ pub async fn state_from_config(config: &ControlPlaneApiConfig) -> AnyhowResult<A
         Arc::new(GrpcPricingOracle::new(config.pricing_endpoint.clone()));
     let store = Store::new(&config.database_path)?;
     let api_bearer_token = required_api_bearer_token()?;
+    let attestation_verifier = Arc::new(LocalAttestationVerifier::new());
 
     Ok(ApiState::new(ApiStateInit {
         store,
@@ -57,6 +59,7 @@ pub async fn state_from_config(config: &ControlPlaneApiConfig) -> AnyhowResult<A
         liquid_agent,
         proof_engine,
         dev_receipt_verifier,
+        attestation_verifier,
         enclave_manager,
         pricing_oracle,
         default_interface: config.default_interface.clone(),

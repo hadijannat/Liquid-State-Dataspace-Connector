@@ -1,13 +1,16 @@
 use crate::breach_service::assess_evidence;
 use crate::pricing_service::PricingService;
 use lsdc_common::crypto::{
-    MetricsWindow, PriceDecision, PricingAuditContext, ProofBundle, SanctionProposal, Sha256Hash,
+    canonical_json_bytes, ExecutionEvidenceBundle, MetricsWindow, PriceDecision,
+    PricingAuditContext, ProofBundle, SanctionProposal, Sha256Hash,
 };
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
+use lsdc_common::execution_overlay::ExecutionSessionChallenge;
 use lsdc_common::liquid::CsvTransformManifest;
 use lsdc_ports::{
-    DataPlane, EnclaveJobRequest, EnclaveManager, EnforcementHandle, PricingOracle, TrainingMetrics,
+    DataPlane, EnclaveJobRequest, EnclaveManager, EnforcementHandle, ExecutionBindings,
+    PricingOracle, ResolvedTransportGuard, TrainingMetrics,
 };
 use std::sync::Arc;
 
@@ -19,12 +22,15 @@ pub struct BatchLineageRequest {
     pub current_price: f64,
     pub metrics: TrainingMetrics,
     pub prior_receipt: Option<lsdc_common::crypto::ProvenanceReceipt>,
+    pub execution_bindings: Option<ExecutionBindings>,
 }
 
 pub struct BatchLineageResult {
     pub enforcement_handle: EnforcementHandle,
+    pub execution_bindings: Option<ExecutionBindings>,
     pub transformed_csv: Vec<u8>,
     pub proof_bundle: ProofBundle,
+    pub execution_evidence: ExecutionEvidenceBundle,
     pub price_decision: PriceDecision,
     pub sanction_proposal: Option<SanctionProposal>,
     pub settlement_allowed: bool,
@@ -73,8 +79,11 @@ impl ExecutionPipeline {
             current_price,
             metrics,
             prior_receipt,
+            execution_bindings,
         } = request;
         let handle = self.activate_agreement(&agreement, &iface).await?;
+        let execution_bindings =
+            materialize_execution_bindings(execution_bindings, handle.resolved_transport.as_ref())?;
         let result = async {
             let agreement_id = agreement.agreement_id.0.clone();
             let dataset_id = manifest.dataset_id.clone();
@@ -85,6 +94,7 @@ impl ExecutionPipeline {
                     input_csv,
                     manifest,
                     prior_receipt,
+                    execution_bindings: execution_bindings.clone(),
                 })
                 .await?;
 
@@ -114,8 +124,10 @@ impl ExecutionPipeline {
 
             Ok(BatchLineageResult {
                 enforcement_handle: handle.clone(),
+                execution_bindings,
                 transformed_csv: job_result.output_csv,
                 proof_bundle: job_result.proof_bundle,
+                execution_evidence: job_result.execution_evidence,
                 price_decision,
                 sanction_proposal: breach.sanction_proposal,
                 settlement_allowed: breach.settlement_allowed,
@@ -129,6 +141,43 @@ impl ExecutionPipeline {
 
         result
     }
+}
+
+fn materialize_execution_bindings(
+    execution_bindings: Option<ExecutionBindings>,
+    resolved_transport: Option<&ResolvedTransportGuard>,
+) -> Result<Option<ExecutionBindings>> {
+    let Some(mut bindings) = execution_bindings else {
+        return Ok(None);
+    };
+    let Some(resolved_transport) = resolved_transport.cloned() else {
+        bindings.resolved_transport = None;
+        return Ok(Some(bindings));
+    };
+    let resolved_selector_hash = Sha256Hash::digest_bytes(
+        &canonical_json_bytes(&serde_json::to_value(&resolved_transport).map_err(LsdcError::from)?)
+            .map_err(LsdcError::from)?,
+    );
+    bindings.resolved_transport = Some(resolved_transport);
+    bindings.session.resolved_selector_hash = Some(resolved_selector_hash.clone());
+
+    match bindings.challenge.as_ref() {
+        Some(challenge) if challenge.resolved_selector_hash != resolved_selector_hash => {
+            return Err(LsdcError::PolicyCompile(
+                "execution challenge does not match resolved transport guard".into(),
+            ));
+        }
+        Some(_) => {}
+        None => {
+            bindings.challenge = Some(ExecutionSessionChallenge::issue(
+                &bindings.session,
+                resolved_selector_hash,
+                chrono::Utc::now(),
+            ));
+        }
+    }
+
+    Ok(Some(bindings))
 }
 
 pub fn require_enclave_manager(

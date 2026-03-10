@@ -1,18 +1,17 @@
 [package]
-name = "tee-orchestrator"
+name = "receipt-log"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-lsdc-common = { path = "../lsdc-common" }
 lsdc-evidence = { path = "../lsdc-evidence" }
+lsdc-execution-protocol = { path = "../lsdc-execution-protocol" }
 lsdc-ports = { path = "../lsdc-ports" }
-tokio = { workspace = true }
-async-trait = { workspace = true }
-tracing = { workspace = true }
-chrono = { workspace = true }
+lsdc-policy = { path = "../lsdc-policy" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
 uuid = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 hex = { workspace = true }
-zeroize = "1"

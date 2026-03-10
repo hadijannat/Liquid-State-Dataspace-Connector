@@ -1,16 +1,26 @@
-use crate::attestation::build_attestation_document;
+use crate::attestation::{
+    build_attestation_document, build_attestation_document_with_binding, AttestationBinding,
+    LocalAttestationVerifier,
+};
 use crate::forgetting::{build_proof_of_forgetting, validate_forgetting_secret};
 use async_trait::async_trait;
-use lsdc_common::crypto::{AttestationDocument, AttestationMeasurements, ProofBundle, Sha256Hash};
+use lsdc_common::crypto::{
+    canonical_json_bytes, AttestationDocument, AttestationEvidence, AttestationMeasurements,
+    ExecutionEvidenceBundle, ProofBundle, Sha256Hash, TeardownEvidence,
+};
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::TeeBackend;
-use lsdc_ports::{EnclaveJobRequest, EnclaveJobResult, EnclaveManager, ProofEngine};
+use lsdc_evidence::DevDeletionEvidence;
+use lsdc_ports::{
+    AttestationVerifier, EnclaveJobRequest, EnclaveJobResult, EnclaveManager, ProofEngine,
+};
 use std::sync::Arc;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
 pub struct NitroEnclaveManager {
     proof_engine: Arc<dyn ProofEngine>,
+    attestation_verifier: Arc<dyn AttestationVerifier>,
     mode: TeeBackend,
     live_attestation: Option<NitroLiveAttestationMaterial>,
 }
@@ -30,6 +40,7 @@ impl NitroEnclaveManager {
         validate_forgetting_secret()?;
         Ok(Self {
             proof_engine,
+            attestation_verifier: Arc::new(LocalAttestationVerifier::new()),
             mode: TeeBackend::NitroDev,
             live_attestation: None,
         })
@@ -43,6 +54,7 @@ impl NitroEnclaveManager {
         validate_live_attestation(&live_attestation)?;
         Ok(Self {
             proof_engine,
+            attestation_verifier: Arc::new(LocalAttestationVerifier::new()),
             mode: TeeBackend::NitroLive,
             live_attestation: Some(live_attestation),
         })
@@ -69,7 +81,26 @@ impl EnclaveManager for NitroEnclaveManager {
         let attestation = match self.mode {
             TeeBackend::NitroDev => {
                 let enclave_id = format!("nitro-{}", Uuid::new_v4());
-                build_attestation_document(&enclave_id, &manifest_hash, chrono::Utc::now())?
+                let binding = request
+                    .execution_bindings
+                    .as_ref()
+                    .and_then(|bindings| bindings.challenge.as_ref())
+                    .map(|challenge| AttestationBinding {
+                        challenge_nonce_hex: &challenge.challenge_nonce_hex,
+                        public_key: Some(challenge.requester_ephemeral_pubkey.as_slice()),
+                        user_data_hash: Some(&challenge.resolved_selector_hash),
+                    });
+                match binding {
+                    Some(binding) => build_attestation_document_with_binding(
+                        &enclave_id,
+                        &manifest_hash,
+                        chrono::Utc::now(),
+                        Some(binding),
+                    )?,
+                    None => {
+                        build_attestation_document(&enclave_id, &manifest_hash, chrono::Utc::now())?
+                    }
+                }
             }
             TeeBackend::NitroLive => {
                 let live_attestation = self.live_attestation.as_ref().ok_or_else(|| {
@@ -85,6 +116,28 @@ impl EnclaveManager for NitroEnclaveManager {
                 ))
             }
         };
+        let attestation_evidence = AttestationEvidence {
+            evidence_profile: attestation.platform.clone(),
+            document: attestation.clone(),
+        };
+        let attestation_result = self.attestation_verifier.appraise_attestation_evidence(
+            &attestation_evidence,
+            request
+                .execution_bindings
+                .as_ref()
+                .and_then(|bindings| bindings.challenge.as_ref()),
+        )?;
+        let attestation_result_hash = Sha256Hash::digest_bytes(
+            &canonical_json_bytes(
+                &serde_json::to_value(&attestation_result).map_err(LsdcError::from)?,
+            )
+            .map_err(LsdcError::from)?,
+        );
+        let proof_execution_bindings = request.execution_bindings.as_ref().map(|bindings| {
+            let mut bound = bindings.clone();
+            bound.attestation_result_hash = Some(attestation_result_hash.clone());
+            bound
+        });
 
         let proof_result = self
             .proof_engine
@@ -93,39 +146,77 @@ impl EnclaveManager for NitroEnclaveManager {
                 request.input_csv.as_slice(),
                 &request.manifest,
                 request.prior_receipt.as_ref(),
+                proof_execution_bindings.as_ref(),
             )
             .await?;
 
-        let input_hash = Sha256Hash::digest_bytes(&request.input_csv);
         let mut wipe_buffer = request.input_csv.clone();
         wipe_buffer.zeroize();
 
-        let proof_of_forgetting =
-            build_proof_of_forgetting(attestation.clone(), chrono::Utc::now(), &input_hash)?;
+        let proof_of_forgetting = build_proof_of_forgetting(
+            attestation.clone(),
+            chrono::Utc::now(),
+            &proof_result.receipt.input_hash,
+        )?;
+        let dev_deletion_evidence = DevDeletionEvidence::from(&proof_of_forgetting);
+        let evidence_root_hash = Sha256Hash::digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "receipt_hash": proof_result.receipt.receipt_hash.to_hex(),
+                "attestation_result_hash": attestation_result_hash.to_hex(),
+                "teardown_hash": dev_deletion_evidence.proof_hash.to_hex(),
+            }))
+            .map_err(LsdcError::from)?,
+        );
 
         let audit_bytes = serde_json::to_vec(&serde_json::json!({
             "receipt_hash": proof_result.receipt.receipt_hash.to_hex(),
             "attestation_hash": attestation.document_hash.to_hex(),
-            "forgetting_hash": proof_of_forgetting.proof_hash.to_hex(),
+            "attestation_result_hash": attestation_result_hash.to_hex(),
+            "teardown_hash": dev_deletion_evidence.proof_hash.to_hex(),
             "output_hash": Sha256Hash::digest_bytes(&proof_result.output_csv).to_hex(),
+            "evidence_root_hash": evidence_root_hash.to_hex(),
         }))
         .map_err(LsdcError::from)?;
 
-        let proof_bundle = ProofBundle {
-            proof_backend: proof_result.receipt.proof_backend,
-            receipt_format_version: proof_result.receipt.receipt_format_version.clone(),
-            proof_method_id: proof_result.receipt.proof_method_id.clone(),
-            prior_receipt_hash: proof_result.receipt.prior_receipt_hash.clone(),
-            raw_receipt_bytes: proof_result.receipt.receipt_bytes.clone(),
+        let execution_evidence = ExecutionEvidenceBundle {
+            attestation_evidence,
             provenance_receipt: proof_result.receipt,
-            attestation,
-            proof_of_forgetting,
+            attestation_result: Some(attestation_result),
+            teardown_evidence: Some(TeardownEvidence::DevDeletion(dev_deletion_evidence.clone())),
+            transparency_receipt_hash: None,
+            evidence_root_hash,
             job_audit_hash: Sha256Hash::digest_bytes(&audit_bytes),
+        };
+        let proof_bundle = ProofBundle {
+            proof_backend: execution_evidence.provenance_receipt.proof_backend,
+            receipt_format_version: execution_evidence
+                .provenance_receipt
+                .receipt_format_version
+                .clone(),
+            proof_method_id: execution_evidence
+                .provenance_receipt
+                .proof_method_id
+                .clone(),
+            prior_receipt_hash: execution_evidence
+                .provenance_receipt
+                .prior_receipt_hash
+                .clone(),
+            raw_receipt_bytes: execution_evidence.provenance_receipt.receipt_bytes.clone(),
+            provenance_receipt: execution_evidence.provenance_receipt.clone(),
+            attestation: attestation.clone(),
+            proof_of_forgetting,
+            attestation_result: execution_evidence.attestation_result.clone(),
+            teardown_evidence: execution_evidence.teardown_evidence.clone(),
+            key_erasure_evidence: None,
+            evidence_root_hash: Some(execution_evidence.evidence_root_hash.clone()),
+            transparency_receipt_hash: execution_evidence.transparency_receipt_hash.clone(),
+            job_audit_hash: execution_evidence.job_audit_hash.clone(),
         };
 
         Ok(EnclaveJobResult {
             output_csv: proof_result.output_csv,
             proof_bundle,
+            execution_evidence,
         })
     }
 }
@@ -165,6 +256,9 @@ fn validate_live_attestation(
         platform: "aws-nitro-live".into(),
         binary_hash: material.expected_image_hash.clone(),
         measurements: material.measurements.clone(),
+        nonce: None,
+        public_key: None,
+        user_data_hash: None,
         document_hash,
         timestamp: material.timestamp,
         raw_attestation_document: material.raw_attestation_document.clone(),
@@ -196,6 +290,7 @@ mod tests {
             _input_csv: &[u8],
             _manifest: &lsdc_common::liquid::CsvTransformManifest,
             _prior_receipt: Option<&lsdc_common::crypto::ProvenanceReceipt>,
+            _execution_bindings: Option<&lsdc_ports::ExecutionBindings>,
         ) -> Result<lsdc_ports::ProofExecutionResult> {
             unreachable!("proof execution is not used in this test")
         }
@@ -212,6 +307,21 @@ mod tests {
             _chain: &[lsdc_common::crypto::ProvenanceReceipt],
         ) -> Result<bool> {
             unreachable!("chain verification is not used in this test")
+        }
+
+        async fn compose_receipts(
+            &self,
+            _receipts: &[lsdc_common::crypto::ProvenanceReceipt],
+            _ctx: lsdc_ports::CompositionContext,
+        ) -> Result<lsdc_common::crypto::ProvenanceReceipt> {
+            unreachable!("composition is not used in this test")
+        }
+
+        async fn verify_receipt_dag(
+            &self,
+            _dag: &lsdc_common::runtime_model::EvidenceDag,
+        ) -> Result<bool> {
+            unreachable!("dag verification is not used in this test")
         }
     }
 

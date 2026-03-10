@@ -165,6 +165,7 @@ async fn test_two_hop_batch_lineage_flow() {
                 metrics_window_ended_at: chrono::Utc::now(),
             },
             prior_receipt: None,
+            execution_bindings: None,
         })
         .await
         .unwrap();
@@ -199,6 +200,7 @@ async fn test_two_hop_batch_lineage_flow() {
                 metrics_window_ended_at: chrono::Utc::now(),
             },
             prior_receipt: Some(first.proof_bundle.provenance_receipt.clone()),
+            execution_bindings: None,
         })
         .await
         .unwrap();

@@ -4,6 +4,7 @@ use crate::liquid::{
     CsvTransformOpKind, EvidenceRequirement, LiquidPolicyIr, RuntimeGuard, TransformGuard,
     TransportGuard, TransportProtocol,
 };
+use crate::profile::LSDC_PROFILE_OPERANDS;
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -52,6 +53,7 @@ pub fn lower_policy(
     let mut allow_transfer = false;
     let mut allow_anonymize = false;
     let mut packet_caps = Vec::new();
+    let mut byte_caps = Vec::new();
     let mut allowed_regions = Vec::new();
     let mut allowed_purposes = Vec::new();
     let mut required_ops = Vec::new();
@@ -80,10 +82,12 @@ pub fn lower_policy(
                         &mut allowed_regions,
                         parse_string_list_right_operand(constraint)?,
                     ),
+                    "maxEgressBytes" => byte_caps.push(parse_u64_right_operand(constraint)?),
                     "purpose" => extend_unique(
                         &mut allowed_purposes,
                         parse_string_list_right_operand(constraint)?,
                     ),
+                    other if LSDC_PROFILE_OPERANDS.contains(&other) => {}
                     other => {
                         return Err(LsdcError::PolicyCompile(format!(
                             "unsupported ODRL constraint `{other}`"
@@ -143,6 +147,9 @@ pub fn lower_policy(
                         let constraint = &constraints[0];
                         let operand = required_string(constraint, "leftOperand")?;
                         if operand != "transform-required" {
+                            if LSDC_PROFILE_OPERANDS.contains(&operand.as_str()) {
+                                continue;
+                            }
                             return Err(LsdcError::PolicyCompile(format!(
                                 "unsupported anonymize duty operand `{operand}`"
                             )));
@@ -178,7 +185,7 @@ pub fn lower_policy(
             allow_read,
             allow_transfer,
             packet_cap: packet_caps.into_iter().min(),
-            byte_cap: None,
+            byte_cap: byte_caps.into_iter().min(),
             allowed_regions,
             valid_until,
             protocol: TransportProtocol::Udp,

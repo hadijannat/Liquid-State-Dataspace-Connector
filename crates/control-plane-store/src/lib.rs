@@ -1,6 +1,7 @@
 mod agreements_repo;
 mod db;
 mod evidence_repo;
+mod execution_overlay_repo;
 mod lineage_jobs_repo;
 mod migrations;
 mod ser;

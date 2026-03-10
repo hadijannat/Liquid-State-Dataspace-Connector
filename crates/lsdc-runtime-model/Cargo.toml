@@ -1,0 +1,11 @@
+[package]
+name = "lsdc-runtime-model"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lsdc-evidence = { path = "../lsdc-evidence" }
+lsdc-execution-protocol = { path = "../lsdc-execution-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+

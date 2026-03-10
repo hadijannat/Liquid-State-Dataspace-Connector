@@ -2,14 +2,20 @@
 
 ## Truthful Runtime Model
 
-Negotiation now derives a `RequestedExecutionProfile`, which describes requested capability intent only:
+Negotiation still derives a `RequestedExecutionProfile`, which describes requested capability intent only:
 
 - transport intent: guarded transfer
 - proof intent: provenance receipt required
 - TEE intent: attested execution required
 - pricing mode: advisory
 
-Actual runtime backends are chosen by the instantiated components and the evidence they emit at execution time. The repo no longer treats negotiation as proof that `RISC Zero` or `nitro-live` are being used, and `control-plane-api` now validates configured transport/proof/TEE intent against instantiated runtime components before startup succeeds.
+Actual runtime backends are chosen by the instantiated components and the evidence they emit at execution time. The repo does not treat negotiation as proof that `RISC Zero` or `nitro-live` are being used, and `control-plane-api` validates configured transport, proof, and TEE intent against instantiated runtime components before startup succeeds.
+
+The current branch adds an **LSDC execution overlay** on top of DSP:
+
+- DSP remains the contract and transfer protocol surface.
+- LSDC adds execution capability advertisement, session binding, verifier-produced attestation results, proof receipt binding, and transparency receipts.
+- Legacy routes continue to work, but the runtime now treats them as compatibility paths over the same execution-session and evidence graph model.
 
 The API now also exposes `PolicyExecutionClassification`, which labels negotiated clauses as:
 
@@ -17,14 +23,15 @@ The API now also exposes `PolicyExecutionClassification`, which labels negotiate
 - `metadata_only`: negotiated and surfaced, but not technically enforced in this phase
 - `rejected`: incompatible with the instantiated runtime stack
 
-Internally, the repo now keeps four layers separate:
+Internally, the repo now keeps five layers separate:
 
 - policy lowering: ODRL parsing, normalization, lowering, requested-profile derivation, and clause classification
+- execution overlay: capability descriptors, overlay commitments, execution sessions, challenges, and truthfulness mode
 - execution planning: backend-neutral transport plans and execution-pipeline inputs
 - backend realization: XDP/simulated transport enforcement, dev/live TEE adapters, and proof backend adapters
-- evidence generation: receipts, deletion evidence, pricing evidence, and settlement inputs
+- evidence generation: attestation evidence, verifier-produced attestation results, receipt DAG nodes, teardown evidence, transparency receipts, pricing evidence, and settlement inputs
 
-That layering is implemented without changing the public HTTP routes, gRPC proto, or current config schema.
+That layering is implemented as an additive change: the new `/lsdc/v1/*` overlay routes exist alongside the previous HTTP surface, and older job and settlement responses remain available as compatibility views.
 
 ## Internal Architecture
 
@@ -32,6 +39,9 @@ That layering is implemented without changing the public HTTP routes, gRPC proto
   - `crates/lsdc-policy`: ODRL AST/parser, lowering, `LiquidPolicyIr`, `RequestedExecutionProfile`, `PolicyExecutionClassification`
   - `crates/lsdc-contracts`: DSP-facing agreement, transfer, lineage-job, and settlement DTOs
   - `crates/lsdc-evidence`: receipt envelopes, attestation DTOs, deletion evidence, pricing evidence, and evidence hashing
+  - `crates/lsdc-execution-protocol`: execution capability descriptors, overlay commitments, sessions, challenges, statements, and transparency receipts
+  - `crates/lsdc-runtime-model`: `ExecutionSessionAggregate`, `CapabilityResolution`, `EvidenceDag`, and legacy projection builders
+  - `crates/receipt-log`: local append-only transparency log and inclusion receipts
 - Compatibility facades:
   - `crates/lsdc-common` now re-exports the policy/contracts/evidence domains for one release while keeping `fixtures` and `identity`
   - `crates/proof-plane/host` remains the compatibility host crate while `proof-plane-core`, `proof-plane-dev`, and `proof-plane-risc0` expose clearer proof-plane surfaces
@@ -41,7 +51,7 @@ That layering is implemented without changing the public HTTP routes, gRPC proto
 - HTTP and store split:
   - `crates/control-plane-http` is now separated into bootstrap, router, state, error, and aggregate handlers
   - detached lineage execution is owned by `LineageJobRunner`, which is reused for both startup reconciliation and newly created jobs
-  - `crates/control-plane-store` is split by aggregate and now dual-writes canonical evidence into `evidence_records` while preserving legacy settlement reads
+  - `crates/control-plane-store` is split by aggregate and now persists execution sessions, evidence graph nodes and edges, transparency receipts, and compatibility records for older settlement reads
 - Liquid data plane split:
   - `crates/liquid-data-plane/agent-core` now separates `planner`, `projection`, `runtime`, `backend/linux_xdp`, `backend/simulated`, and `service`
   - the static XDP program and map-driven parameterization remain in place; policy lowering does not know XDP map layout
@@ -49,19 +59,21 @@ That layering is implemented without changing the public HTTP routes, gRPC proto
 ## Implemented Behavior
 
 - Reference stack:
-  - `apps/control-plane-api` exposes DSP-style contract and transfer endpoints plus `lsdc` lineage, evidence, and settlement endpoints
+  - `apps/control-plane-api` exposes DSP-style contract and transfer endpoints plus additive LSDC execution-overlay routes under `/lsdc/v1/*`
   - `apps/control-plane-api` requires `Authorization: Bearer <LSDC_API_BEARER_TOKEN>` on every non-health route
   - `apps/control-plane-api` reports configured versus resolved actual backends from `/health`
-  - `apps/control-plane-api` exposes policy-truthfulness details on finalize, transfer, lineage, settlement, and health responses
-  - `apps/control-plane-api` verifies evidence chains by checking canonical receipt linkage first, then verifying each receipt against the backend declared inside the receipt
-  - `apps/control-plane-api` persists agreements, transfer sessions, lineage jobs, proof bundles, pricing decisions, sanction proposals, and canonical evidence records in SQLite
+  - `apps/control-plane-api` exposes policy-truthfulness details and execution capability advertisement on finalize, transfer, lineage, settlement, health, and `/lsdc/v1/capabilities`
+  - `apps/control-plane-api` can verify both the legacy linear receipt chain and the newer evidence-DAG plus transparency-receipt path
+  - `apps/control-plane-api` persists agreements, execution sessions, lineage jobs, evidence graph records, transparency receipts, pricing decisions, sanction proposals, and compatibility evidence records in SQLite
   - `apps/liquid-agent` is a binary composition root over the shared `liquid-agent-grpc` contract crate
   - the pricing oracle and the Rust gRPC client both compile from `proto/pricing/v1/pricing.proto`
 - ODRL subset:
   - actions: `read`, `transfer`, `anonymize`
   - constraints: `count`, `purpose`, `validUntil`
   - duties: `transform-required`, `delete-after`
-  - negotiated metadata only: `spatial`
+  - overlay operands: `teeImageSha384`, `attestationFreshnessSeconds`, `proofKind`, `keyReleaseProfile`, `maxEgressBytes`, `deletionMode`
+  - session-binding and transparency-registration requirements live in the execution overlay, not the ODRL profile
+  - negotiated metadata only or strict-rejected depending on truthfulness mode: unsupported overlay clauses and `spatial`
 - Liquid data plane:
   - parameterized Aya/XDP enforcement for packet and byte caps
   - multi-agreement lifecycle keyed by agreement identity and protocol-aware transport selector
@@ -74,23 +86,43 @@ That layering is implemented without changing the public HTTP routes, gRPC proto
   - `proof-plane-core` defines canonical receipt and chain-verification types
   - `proof-plane-dev` re-exports the dev receipt engine
   - `proof-plane-risc0` is present in the workspace but the real backend is enabled only with the `risc0` feature and the external guest toolchain
-  - recursive proving explicitly unsupported for the `RISC Zero` backend in this phase
+  - session-bound receipts now carry agreement and challenge commitments
+  - receipt DAG composition is modeled truthfully in the local stack without claiming recursive zk proving
+  - recursive proving remains explicitly unsupported for the `RISC Zero` backend in the default workspace
 - TEE plane:
   - deterministic `nitro-dev`
   - pinned-measurement `nitro-live` validation with shared fixture coverage
-  - current forgetting evidence is development evidence, not hardware-rooted deletion proof
-  - `DevDeletionEvidence` is the truthful canonical label for the current secret-signed teardown path
-  - current settlement gating verifies that dev deletion evidence and its embedded dev attestation are both internally consistent
-  - future attested teardown evidence is modeled separately and not implemented
+  - submitted `AttestationEvidence` is appraised server-side into `AttestationResult`
+  - verifier-produced `AttestationResult` is the canonical execution appraisal object
+  - challenge nonce and resolved transport guard bindings are part of the execution-session model
+  - `TeardownEvidence` truthfully defaults to `DevDeletionEvidence`; `KeyErasureEvidence` is modeled for future broker-backed paths
+  - `nitro-live` remains a truthful local-first measurement-validation path, not a full provider-PKI or KMS-backed attested key-release flow
+- Transparency plane:
+  - a local append-only Merkle log registers execution statement hashes and returns inclusion receipts
+  - settlement and verification can anchor to the resulting transparency receipts
+  - this is not presented as an external SCITT deployment or internet-facing transparency service
 - Pricing plane:
   - gRPC transport
   - signed, advisory-only decisions
   - truthful algorithm label: `heuristic_marginal_v0`
   - canonical `PricingEvidenceV1` records algorithm id/version, decision policy id/version, advisory status, and evidence anchor hash
+  - pricing remains anchored into the evidence DAG without claiming autonomous contract mutation
   - insecure loopback-only gRPC is supported only in explicit development mode with `LSDC_ALLOW_DEV_DEFAULTS=1`
 - Cross-node validation:
-  - HTTP integration tests cover request/finalize, transfer start/complete, async lineage jobs, evidence verification, and settlement responses
-  - the default demo path is a three-party A -> B -> C CSV flow backed by simulated liquid agents, `nitro-dev`, and `DevReceiptProofEngine`
+  - HTTP integration tests cover request/finalize, transfer start/complete, async lineage jobs, legacy chain verification, execution-overlay endpoints, and settlement responses
+  - the default demo path is a three-party A -> B -> C CSV flow backed by simulated liquid agents, `nitro-dev`, local transparency receipts, and the dev receipt backend
+
+## Production Boundaries
+
+The branch still does **not** claim:
+
+- AWS certificate-chain validation for Nitro attestation
+- AWS KMS-backed key release
+- recursive `RISC Zero` proving in the default workspace
+- hardware-rooted deletion proof
+- autonomous pricing or ledger mutation
+
+Those capabilities may appear in descriptors or policy clauses, but they must remain surfaced as unsupported or metadata-only until real implementations exist.
 
 ## Shared Fixtures
 

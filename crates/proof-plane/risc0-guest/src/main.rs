@@ -21,7 +21,16 @@ fn main() {
         output_hash: Sha256Hash::digest_bytes(&output_csv),
         policy_hash: hash_json(&input.odrl_policy).expect("policy should hash"),
         transform_manifest_hash,
-        output_csv,
+        agreement_commitment_hash: input.agreement_commitment_hash,
+        session_id: input.session_id,
+        challenge_nonce_hash: input.challenge_nonce_hash,
+        selector_hash: input.selector_hash,
+        attestation_result_hash: input.attestation_result_hash,
+        capability_commitment_hash: input.capability_commitment_hash,
+        transparency_statement_hash: input.transparency_statement_hash,
+        parent_receipt_hashes: input.parent_receipt_hashes,
+        recursion_depth: input.recursion_depth,
+        receipt_kind: input.receipt_kind,
     };
 
     env::commit(&journal);

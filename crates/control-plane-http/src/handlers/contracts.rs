@@ -31,14 +31,22 @@ pub async fn contract_finalize(
         .await
         .map_err(ApiError::bad_request)?;
     let policy_execution = state.policy_execution_for(&negotiated.agreement);
+    let execution_overlay = state
+        .execution_overlay_for(&negotiated.agreement)
+        .map_err(ApiError::bad_request)?;
     state
         .store
         .upsert_agreement(&negotiated.agreement, &negotiated.requested_profile)
+        .map_err(ApiError::internal)?;
+    state
+        .store
+        .upsert_agreement_overlay(&negotiated.agreement.agreement_id.0, &execution_overlay)
         .map_err(ApiError::internal)?;
 
     Ok(Json(FinalizeContractResponse {
         agreement: negotiated.agreement,
         requested_profile: negotiated.requested_profile,
         policy_execution: Some(policy_execution),
+        execution_overlay: Some(execution_overlay),
     }))
 }
