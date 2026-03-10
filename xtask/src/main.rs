@@ -150,8 +150,17 @@ fn verify_repo() -> Result<()> {
     require_contains(&readme, "crates/lsdc-service-types", "README workspace map")?;
     require_contains(
         &readme,
+        "docs/architecture.svg",
+        "README architecture SVG fallback link",
+    )?;
+    require_contains(
+        &readme,
         "not a root workspace member",
         "README risc0 guest note",
+    )?;
+    require_exists(
+        &workspace_root.join("docs/architecture.svg"),
+        "architecture SVG fallback",
     )?;
 
     println!("Repo verification passed.");

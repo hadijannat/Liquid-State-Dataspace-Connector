@@ -52,7 +52,9 @@ flowchart LR
     Enforce & Evidence & TEE & Pricing --> Surfaces
 ```
 
-The diagram reflects the currently implemented runtime path. All four subsystems surface their results through the control-plane-api HTTP boundary. Recursive proof rollups, live enclave lifecycle orchestration, and non-advisory pricing or settlement mutation remain future work.
+Static fallback: [docs/architecture.svg](docs/architecture.svg) for renderers that do not support Mermaid.
+
+The diagram reflects the currently implemented runtime path. The control plane orchestrates all four subsystems, and their outputs feed the transfer, lineage, evidence, and settlement surfaces exposed by `control-plane-api`. Recursive proof rollups, live enclave lifecycle orchestration, and non-advisory pricing or settlement mutation remain future work.
 
 ## What LSDC Is
 
