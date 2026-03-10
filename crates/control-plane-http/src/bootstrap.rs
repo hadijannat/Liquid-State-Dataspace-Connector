@@ -46,9 +46,13 @@ pub async fn state_from_config(config: &ControlPlaneApiConfig) -> AnyhowResult<A
         proof_engine.proof_backend(),
     )?;
     let attestation_verifier = build_attestation_verifier(config)?;
-    let enclave_manager =
-        build_enclave_manager(config.tee_backend, proof_engine.clone(), attestation_verifier.clone(), config)
-            .await?;
+    let enclave_manager = build_enclave_manager(
+        config.tee_backend,
+        proof_engine.clone(),
+        attestation_verifier.clone(),
+        config,
+    )
+    .await?;
     validate_backend_intent(
         "tee",
         configured_backends.tee_backend,
@@ -120,13 +124,10 @@ fn build_attestation_verifier(
             Ok(Arc::new(LocalAttestationVerifier::new()))
         }
         lsdc_common::execution::TeeBackend::NitroLive => {
-            let path = config
-                .nitro_live_attestation_path
-                .as_ref()
-                .ok_or_else(|| anyhow!("nitro_live requires `nitro_live_attestation_path`"))?;
-            let fixture = load_live_attestation_fixture(path)?;
             Ok(Arc::new(AwsNitroAttestationVerifier::new(
-                fixture.expected_image_hash_hex,
+                load_live_attestation_fixture_mode(config)?
+                    .as_ref()
+                    .map(|fixture| fixture.expected_image_hash_hex.clone()),
                 config.nitro_trust_bundle_path.as_deref(),
             )?))
         }
@@ -143,22 +144,24 @@ async fn build_enclave_manager(
     config: &ControlPlaneApiConfig,
 ) -> AnyhowResult<Arc<dyn EnclaveManager>> {
     match tee_backend {
-        lsdc_common::execution::TeeBackend::NitroDev => {
-            Ok(Arc::new(NitroEnclaveManager::new_dev(
-                proof_engine,
-                attestation_verifier,
-            )?))
-        }
+        lsdc_common::execution::TeeBackend::NitroDev => Ok(Arc::new(NitroEnclaveManager::new_dev(
+            proof_engine,
+            attestation_verifier,
+        )?)),
         lsdc_common::execution::TeeBackend::NitroLive => {
-            let path = config
-                .nitro_live_attestation_path
-                .as_ref()
-                .ok_or_else(|| anyhow!("nitro_live requires `nitro_live_attestation_path`"))?;
             let key_broker = build_key_broker(config).await?;
             Ok(Arc::new(NitroEnclaveManager::new_live(
                 proof_engine,
                 attestation_verifier,
-                load_live_attestation_material(path, config.nitro_trust_bundle_path.as_deref())?,
+                load_live_attestation_fixture_mode(config)?
+                    .as_ref()
+                    .map(|fixture| {
+                        load_live_attestation_material(
+                            fixture,
+                            config.nitro_trust_bundle_path.as_deref(),
+                        )
+                    })
+                    .transpose()?,
                 key_broker,
             )?))
         }
@@ -254,14 +257,25 @@ fn load_live_attestation_fixture(path: &str) -> AnyhowResult<NitroLiveAttestatio
     Ok(serde_json::from_str(&raw)?)
 }
 
+fn load_live_attestation_fixture_mode(
+    config: &ControlPlaneApiConfig,
+) -> AnyhowResult<Option<NitroLiveAttestationFixture>> {
+    match config.nitro_live_attestation_path.as_deref() {
+        Some(_path) if !allow_dev_defaults() => Err(anyhow!(
+            "nitro_live_attestation_path is fixture/demo-only and requires {ALLOW_DEV_DEFAULTS_ENV}=1"
+        )),
+        Some(path) => load_live_attestation_fixture(path).map(Some),
+        None => Ok(None),
+    }
+}
+
 fn load_live_attestation_material(
-    path: &str,
+    fixture: &NitroLiveAttestationFixture,
     trust_bundle_path: Option<&str>,
 ) -> AnyhowResult<NitroLiveAttestationMaterial> {
-    let fixture = load_live_attestation_fixture(path)?;
     let raw_attestation_document = match (
-        fixture.raw_attestation_document_base64,
-        fixture.raw_attestation_document_utf8,
+        fixture.raw_attestation_document_base64.clone(),
+        fixture.raw_attestation_document_utf8.clone(),
     ) {
         (Some(base64), _) => base64::engine::general_purpose::STANDARD.decode(base64)?,
         (None, Some(raw_utf8)) => raw_utf8.into_bytes(),
@@ -273,7 +287,7 @@ fn load_live_attestation_material(
     };
     Ok(NitroLiveAttestationMaterial {
         document: build_aws_nitro_attestation_document_from_bundle(
-            &fixture.expected_image_hash_hex,
+            Some(&fixture.expected_image_hash_hex),
             &raw_attestation_document,
             trust_bundle_path,
         )?,
@@ -313,7 +327,9 @@ async fn build_key_broker(config: &ControlPlaneApiConfig) -> AnyhowResult<Arc<dy
 
 #[cfg(test)]
 mod tests {
-    use super::{build_key_broker, validate_pricing_endpoint_with_policy};
+    use super::{
+        build_attestation_verifier, build_key_broker, validate_pricing_endpoint_with_policy,
+    };
     use lsdc_common::execution::{ProofBackend, TeeBackend, TransportBackend};
     use lsdc_config::{ControlPlaneApiConfig, KeyBrokerBackend};
 
@@ -332,10 +348,7 @@ mod tests {
             aws_region: Some("eu-central-1".into()),
             kms_key_id: Some("arn:aws:kms:eu-central-1:123:key/test".into()),
             nitro_trust_bundle_path: None,
-            nitro_live_attestation_path: Some(
-                "/Users/aeroshariati/Liquid-State-Dataspace-Connector/fixtures/nitro/live_attestation_material.json"
-                    .into(),
-            ),
+            nitro_live_attestation_path: None,
         }
     }
 
@@ -343,6 +356,14 @@ mod tests {
     fn test_validate_pricing_endpoint_rejects_insecure_non_loopback_host() {
         let err = validate_pricing_endpoint_with_policy("http://0.0.0.0:50051", true).unwrap_err();
         assert!(err.to_string().contains("must use a loopback host"));
+    }
+
+    #[test]
+    fn test_build_attestation_verifier_allows_nitro_live_without_fixture_path() {
+        let config = sample_nitro_live_config();
+
+        build_attestation_verifier(&config)
+            .expect("nitro_live should not require nitro_live_attestation_path at startup");
     }
 
     #[tokio::test]

@@ -488,19 +488,16 @@ impl ApiState {
                 "attestation result nonce mismatch".into(),
             ));
         }
-        if !challenge.requester_ephemeral_pubkey.is_empty()
-            && attestation_result.public_key.as_deref()
-                != Some(challenge.requester_ephemeral_pubkey.as_slice())
-        {
-            return Err(lsdc_common::error::LsdcError::PolicyCompile(
-                "attestation result requester key binding mismatch".into(),
-            ));
-        }
         if attestation_result.user_data_hash.as_ref() != Some(&challenge.resolved_selector_hash) {
             return Err(lsdc_common::error::LsdcError::PolicyCompile(
                 "attestation result resolved transport binding mismatch".into(),
             ));
         }
+        let (agreement, _) = self
+            .store
+            .get_agreement(&session.agreement_id)?
+            .ok_or_else(|| lsdc_common::error::LsdcError::Database("agreement not found".into()))?;
+        validate_live_attestation_policy(&agreement, self.actual_tee_backend, &attestation_result)?;
         if attestation_result.appraisal != AppraisalStatus::Accepted {
             return Err(lsdc_common::error::LsdcError::PolicyCompile(
                 "attestation evidence appraisal rejected".into(),
@@ -610,7 +607,11 @@ impl ApiState {
         let overlay_commitment = self.execution_overlay_commitment_for(agreement)?;
         let created = self.create_execution_session(CreateExecutionSessionRequest {
             agreement_id: agreement.agreement_id.0.clone(),
-            requester_ephemeral_pubkey: self.default_requester_ephemeral_pubkey.clone(),
+            requester_ephemeral_pubkey: if self.actual_tee_backend == TeeBackend::NitroLive {
+                Vec::new()
+            } else {
+                self.default_requester_ephemeral_pubkey.clone()
+            },
             expires_in_seconds: Some(900),
         })?;
 
@@ -919,4 +920,35 @@ fn resolved_transport_hash(
         )
         .map_err(lsdc_common::error::LsdcError::from)?],
     ))
+}
+
+fn validate_live_attestation_policy(
+    agreement: &ContractAgreement,
+    tee_backend: TeeBackend,
+    attestation_result: &lsdc_common::crypto::AttestationResult,
+) -> lsdc_common::error::Result<()> {
+    if tee_backend != TeeBackend::NitroLive {
+        return Ok(());
+    }
+
+    let normalized = normalize_policy(&agreement.odrl_policy)?;
+    for permission in &normalized.permissions {
+        for constraint in &permission.constraints {
+            if constraint.clause_id != "teeImageSha384" {
+                continue;
+            }
+            let expected = constraint.right_operand.as_str().ok_or_else(|| {
+                lsdc_common::error::LsdcError::PolicyCompile(
+                    "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
+                )
+            })?;
+            if !expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
+                return Err(lsdc_common::error::LsdcError::PolicyCompile(
+                    "attestation result image hash does not satisfy teeImageSha384 policy".into(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }

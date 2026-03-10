@@ -60,10 +60,9 @@ impl KmsDataKeyClient for AwsSdkKmsDataKeyClient {
             operation = operation.encryption_context(key, value);
         }
 
-        let output = operation
-            .send()
-            .await
-            .map_err(|err| LsdcError::Attestation(format!("aws kms generate_data_key failed: {err}")))?;
+        let output = operation.send().await.map_err(|err| {
+            LsdcError::Attestation(format!("aws kms generate_data_key failed: {err}"))
+        })?;
         let ciphertext_for_recipient = output
             .ciphertext_for_recipient()
             .map(|blob| blob.as_ref().to_vec())
@@ -128,12 +127,13 @@ impl KeyBroker for AwsKmsKeyBroker {
                 "aws kms key release requires a challenge-bound nonce".into(),
             ));
         }
-        if !session.requester_ephemeral_pubkey.is_empty()
-            && attestation_result.public_key.as_deref()
-                != Some(session.requester_ephemeral_pubkey.as_slice())
+        if attestation_result
+            .public_key
+            .as_ref()
+            .is_none_or(|public_key| public_key.is_empty())
         {
             return Err(LsdcError::Attestation(
-                "aws kms key release requester key binding mismatch".into(),
+                "aws kms key release requires an attested recipient public key".into(),
             ));
         }
         if attestation_result.user_data_hash.as_ref() != Some(&session.resolved_selector_hash) {
@@ -141,7 +141,11 @@ impl KeyBroker for AwsKmsKeyBroker {
                 "aws kms key release selector hash binding mismatch".into(),
             ));
         }
-        if attestation_evidence.document.raw_attestation_document.is_empty() {
+        if attestation_evidence
+            .document
+            .raw_attestation_document
+            .is_empty()
+        {
             return Err(LsdcError::Attestation(
                 "aws kms key release requires a raw nitro attestation document".into(),
             ));
@@ -149,15 +153,29 @@ impl KeyBroker for AwsKmsKeyBroker {
 
         let request = GenerateDataKeyRequest {
             kms_key_id: self.kms_key_id.clone(),
-            attestation_document: attestation_evidence.document.raw_attestation_document.clone(),
+            attestation_document: attestation_evidence
+                .document
+                .raw_attestation_document
+                .clone(),
             encryption_context: BTreeMap::from([
                 ("agreement_id".into(), policy.agreement_id.clone()),
                 ("session_id".into(), session.session_id.to_string()),
                 (
+                    "agreement_commitment_hash".into(),
+                    policy.agreement_commitment_hash.to_hex(),
+                ),
+                (
                     "capability_descriptor_hash".into(),
                     policy.capability_descriptor_hash.to_hex(),
                 ),
-                ("selector_hash".into(), session.resolved_selector_hash.to_hex()),
+                (
+                    "resolved_selector_hash".into(),
+                    policy.resolved_selector_hash.to_hex(),
+                ),
+                (
+                    "challenge_nonce_hash".into(),
+                    policy.challenge_nonce_hash.to_hex(),
+                ),
             ]),
         };
         let response = self.client.generate_data_key(request).await?;
@@ -172,7 +190,10 @@ impl KeyBroker for AwsKmsKeyBroker {
         })
     }
 
-    fn attest_erasure(&self, handle: EphemeralKeyHandle) -> Result<lsdc_common::crypto::KeyErasureEvidence> {
+    fn attest_erasure(
+        &self,
+        handle: EphemeralKeyHandle,
+    ) -> Result<lsdc_common::crypto::KeyErasureEvidence> {
         let released = self
             .released_keys
             .lock()
@@ -198,7 +219,9 @@ impl KeyBroker for AwsKmsKeyBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsdc_common::crypto::{AppraisalStatus, AttestationDocument, AttestationMeasurements, EvidenceClass, Sha256Hash};
+    use lsdc_common::crypto::{
+        AppraisalStatus, AttestationDocument, AttestationMeasurements, EvidenceClass, Sha256Hash,
+    };
 
     struct FakeKmsClient {
         response: Mutex<Option<GenerateDataKeyResponse>>,
@@ -240,7 +263,10 @@ mod tests {
             requires_attestation: true,
             requires_teardown_evidence: true,
             agreement_id: "agreement-1".into(),
+            agreement_commitment_hash: Sha256Hash::digest_bytes(b"agreement-commitment"),
             capability_descriptor_hash: Sha256Hash::digest_bytes(b"capability"),
+            resolved_selector_hash: Sha256Hash::digest_bytes(b"selector"),
+            challenge_nonce_hash: Sha256Hash::digest_bytes(&[0xaa, 0xbb, 0xcc]),
         }
     }
 
@@ -272,7 +298,7 @@ mod tests {
                     debug: false,
                 },
                 nonce: Some(challenge.challenge_nonce_hex.clone()),
-                public_key: Some(challenge.requester_ephemeral_pubkey.clone()),
+                public_key: Some(vec![9, 8, 7, 6]),
                 user_data_hash: Some(challenge.resolved_selector_hash.clone()),
                 document_hash: Sha256Hash::digest_bytes(b"document"),
                 timestamp: chrono::Utc::now(),
@@ -291,7 +317,7 @@ mod tests {
             nonce: Some(challenge.challenge_nonce_hex.clone()),
             image_sha384: "abcd".into(),
             pcrs: BTreeMap::new(),
-            public_key: Some(challenge.requester_ephemeral_pubkey.clone()),
+            public_key: Some(vec![9, 8, 7, 6]),
             user_data_hash: Some(challenge.resolved_selector_hash.clone()),
             cert_chain_verified: true,
             freshness_ok: true,
@@ -322,14 +348,29 @@ mod tests {
         let requests = fake.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].attestation_document, vec![7, 8, 9]);
-        assert_eq!(requests[0].encryption_context["agreement_id"], "agreement-1");
+        assert_eq!(
+            requests[0].encryption_context["agreement_id"],
+            "agreement-1"
+        );
         assert_eq!(
             requests[0].encryption_context["session_id"],
             challenge.session_id.to_string()
         );
         assert_eq!(
-            requests[0].encryption_context["selector_hash"],
-            challenge.resolved_selector_hash.to_hex()
+            requests[0].encryption_context["agreement_commitment_hash"],
+            sample_policy().agreement_commitment_hash.to_hex()
+        );
+        assert_eq!(
+            requests[0].encryption_context["capability_descriptor_hash"],
+            sample_policy().capability_descriptor_hash.to_hex()
+        );
+        assert_eq!(
+            requests[0].encryption_context["resolved_selector_hash"],
+            sample_policy().resolved_selector_hash.to_hex()
+        );
+        assert_eq!(
+            requests[0].encryption_context["challenge_nonce_hash"],
+            sample_policy().challenge_nonce_hash.to_hex()
         );
     }
 
@@ -355,6 +396,30 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("accepted attestation appraisal"));
+    }
+
+    #[tokio::test]
+    async fn test_release_key_rejects_missing_recipient_public_key() {
+        let challenge = sample_challenge();
+        let fake = Arc::new(FakeKmsClient::succeed(GenerateDataKeyResponse {
+            key_id: "kms-key".into(),
+            ciphertext_for_recipient: vec![4, 5, 6],
+        }));
+        let broker = AwsKmsKeyBroker::new("arn:aws:kms:eu-central-1:123:key/test", fake);
+        let mut result = sample_result(&challenge);
+        result.public_key = None;
+
+        let err = broker
+            .release_key(
+                &sample_policy(),
+                &sample_evidence(&challenge),
+                &result,
+                &challenge,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("attested recipient public key"));
     }
 
     #[tokio::test]

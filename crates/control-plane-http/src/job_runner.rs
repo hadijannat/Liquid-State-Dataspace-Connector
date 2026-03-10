@@ -63,17 +63,13 @@ impl LineageJobRunner {
                 current_price,
                 metrics,
                 prior_receipt,
-                attestation_evidence: execution_bindings
-                    .as_ref()
-                    .and_then(|bindings| {
-                        self.state
-                            .store
-                            .get_latest_attestation_evidence(
-                                &bindings.session.session_id.to_string(),
-                            )
-                            .ok()
-                            .flatten()
-                    }),
+                attestation_evidence: execution_bindings.as_ref().and_then(|bindings| {
+                    self.state
+                        .store
+                        .get_latest_attestation_evidence(&bindings.session.session_id.to_string())
+                        .ok()
+                        .flatten()
+                }),
                 execution_bindings: execution_bindings.clone(),
             })
             .await;
@@ -166,17 +162,26 @@ impl LineageJobRunner {
             .or(requested_execution_bindings.as_ref());
 
         if let Some(bindings) = execution_bindings {
+            let session_id = bindings.session.session_id.to_string();
             self.state
                 .store
                 .upsert_execution_session(&bindings.session, bindings.challenge.as_ref())
                 .ok();
-            if self
+            let attestation_already_persisted = self
                 .state
-                .submit_attestation_evidence(
-                    &bindings.session.session_id.to_string(),
-                    &execution_evidence.attestation_evidence,
-                )
-                .is_err()
+                .store
+                .get_latest_attestation_evidence(&session_id)
+                .ok()
+                .flatten()
+                .is_some();
+            if !attestation_already_persisted
+                && self
+                    .state
+                    .submit_attestation_evidence(
+                        &session_id,
+                        &execution_evidence.attestation_evidence,
+                    )
+                    .is_err()
             {
                 tracing::warn!(
                     job_id,

@@ -206,8 +206,8 @@ mod tests {
 
     #[test]
     fn test_live_key_erasure_teardown_allows_settlement() {
-        let assessment = assess_evidence(&sample_agreement(), &sample_live_proof_bundle(true))
-            .unwrap();
+        let assessment =
+            assess_evidence(&sample_agreement(), &sample_live_proof_bundle(true)).unwrap();
 
         assert!(assessment.settlement_allowed);
         assert!(assessment.sanction_proposal.is_none());
@@ -215,8 +215,8 @@ mod tests {
 
     #[test]
     fn test_live_missing_teardown_blocks_settlement() {
-        let assessment = assess_evidence(&sample_agreement(), &sample_live_proof_bundle(false))
-            .unwrap();
+        let assessment =
+            assess_evidence(&sample_agreement(), &sample_live_proof_bundle(false)).unwrap();
 
         assert!(!assessment.settlement_allowed);
         assert!(assessment.sanction_proposal.is_some());

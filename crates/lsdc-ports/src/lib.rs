@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use lsdc_common::crypto::{
-    AttestationDocument, AttestationEvidence, AttestationResult, ExecutionEvidenceBundle,
-    EvidenceClass, KeyErasureEvidence, PriceDecision, PricingAuditContext, ProofBundle,
+    AttestationDocument, AttestationEvidence, AttestationResult, EvidenceClass,
+    ExecutionEvidenceBundle, KeyErasureEvidence, PriceDecision, PricingAuditContext, ProofBundle,
     ProvenanceReceipt, Sha256Hash, ShapleyValue, TeardownEvidence,
 };
 use lsdc_common::dsp::ContractAgreement;
@@ -332,7 +332,10 @@ pub struct KeyReleasePolicy {
     pub requires_attestation: bool,
     pub requires_teardown_evidence: bool,
     pub agreement_id: String,
+    pub agreement_commitment_hash: Sha256Hash,
     pub capability_descriptor_hash: Sha256Hash,
+    pub resolved_selector_hash: Sha256Hash,
+    pub challenge_nonce_hash: Sha256Hash,
 }
 
 #[async_trait]

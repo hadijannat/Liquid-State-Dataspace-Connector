@@ -24,8 +24,7 @@ pub struct NitroEnclaveManager {
     attestation_verifier: Arc<dyn AttestationVerifier>,
     key_broker: Option<Arc<dyn KeyBroker>>,
     mode: TeeBackend,
-    live_attestation: Option<NitroLiveAttestationMaterial>,
-    default_requester_ephemeral_pubkey: Vec<u8>,
+    live_attestation_fixture: Option<NitroLiveAttestationMaterial>,
 }
 
 #[derive(Clone)]
@@ -44,35 +43,23 @@ impl NitroEnclaveManager {
             attestation_verifier,
             key_broker: None,
             mode: TeeBackend::NitroDev,
-            live_attestation: None,
-            default_requester_ephemeral_pubkey: Vec::new(),
+            live_attestation_fixture: None,
         })
     }
 
     pub fn new_live(
         proof_engine: Arc<dyn ProofEngine>,
         attestation_verifier: Arc<dyn AttestationVerifier>,
-        live_attestation: NitroLiveAttestationMaterial,
+        live_attestation_fixture: Option<NitroLiveAttestationMaterial>,
         key_broker: Arc<dyn KeyBroker>,
     ) -> Result<Self> {
         validate_forgetting_secret()?;
-        let default_requester_ephemeral_pubkey = live_attestation
-            .document
-            .public_key
-            .clone()
-            .ok_or_else(|| {
-                LsdcError::Attestation(
-                    "nitro-live attestation document must embed a requester/enclave public key"
-                        .into(),
-                )
-            })?;
         Ok(Self {
             proof_engine,
             attestation_verifier,
             key_broker: Some(key_broker),
             mode: TeeBackend::NitroLive,
-            live_attestation: Some(live_attestation),
-            default_requester_ephemeral_pubkey,
+            live_attestation_fixture,
         })
     }
 }
@@ -92,7 +79,7 @@ impl EnclaveManager for NitroEnclaveManager {
     }
 
     fn default_requester_ephemeral_pubkey(&self) -> Vec<u8> {
-        self.default_requester_ephemeral_pubkey.clone()
+        Vec::new()
     }
 
     async fn run_csv_job(&self, request: EnclaveJobRequest) -> Result<EnclaveJobResult> {
@@ -147,31 +134,32 @@ impl EnclaveManager for NitroEnclaveManager {
                     document: attestation,
                 }
             }
-            TeeBackend::NitroLive => match attestation_evidence {
-                Some(attestation_evidence) => attestation_evidence,
-                None if key_release_policy.is_some() => {
-                    return Err(LsdcError::Attestation(
+            TeeBackend::NitroLive => {
+                match attestation_evidence {
+                    Some(attestation_evidence) => attestation_evidence,
+                    None if key_release_policy.is_some() => return Err(LsdcError::Attestation(
                         "kms-attested nitro-live execution requires submitted attestation evidence"
                             .into(),
-                    ))
-                }
-                None => {
-                    let attestation = self
-                        .live_attestation
-                        .as_ref()
-                        .ok_or_else(|| {
-                            LsdcError::Attestation(
-                                "nitro-live mode requires validated attestation material".into(),
-                            )
-                        })?
-                        .document
-                        .clone();
-                    AttestationEvidence {
-                        evidence_profile: attestation.platform.clone(),
-                        document: attestation,
+                    )),
+                    None => {
+                        let attestation = self
+                            .live_attestation_fixture
+                            .as_ref()
+                            .ok_or_else(|| {
+                                LsdcError::Attestation(
+                                    "nitro-live execution requires submitted attestation evidence"
+                                        .into(),
+                                )
+                            })?
+                            .document
+                            .clone();
+                        AttestationEvidence {
+                            evidence_profile: attestation.platform.clone(),
+                            document: attestation,
+                        }
                     }
                 }
-            },
+            }
             TeeBackend::None => {
                 return Err(LsdcError::Attestation(
                     "nitro enclave manager requires a nitro backend".into(),
@@ -185,6 +173,7 @@ impl EnclaveManager for NitroEnclaveManager {
         let attestation_result = self
             .attestation_verifier
             .appraise_attestation_evidence(&attestation_evidence, challenge)?;
+        validate_live_attestation_policy(&agreement, self.mode, &attestation_result)?;
         let attestation_result_hash = Sha256Hash::digest_bytes(
             &canonical_json_bytes(
                 &serde_json::to_value(&attestation_result).map_err(LsdcError::from)?,
@@ -262,9 +251,9 @@ impl EnclaveManager for NitroEnclaveManager {
             }
             TeeBackend::NitroLive => {
                 let teardown_evidence = match (self.key_broker.as_ref(), live_erasure_handle) {
-                    (Some(key_broker), Some(handle)) => {
-                        Some(TeardownEvidence::KeyErasure(key_broker.attest_erasure(handle)?))
-                    }
+                    (Some(key_broker), Some(handle)) => Some(TeardownEvidence::KeyErasure(
+                        key_broker.attest_erasure(handle)?,
+                    )),
                     _ => None,
                 };
                 (
@@ -276,7 +265,9 @@ impl EnclaveManager for NitroEnclaveManager {
                     teardown_evidence,
                 )
             }
-            TeeBackend::None => unreachable!("nitro enclave manager does not serve tee_backend=none"),
+            TeeBackend::None => {
+                unreachable!("nitro enclave manager does not serve tee_backend=none")
+            }
         };
         let teardown_hash = teardown_evidence.as_ref().map(teardown_hash);
         let evidence_root_hash = Sha256Hash::digest_bytes(
@@ -345,8 +336,7 @@ fn derive_key_release_policy(
         TeeBackend::NitroDev => {
             if live_profile_requested {
                 return Err(LsdcError::PolicyCompile(
-                    "kms-attested key release is executable only on nitro_live with aws_kms"
-                        .into(),
+                    "kms-attested key release is executable only on nitro_live with aws_kms".into(),
                 ));
             }
             Ok(None)
@@ -381,13 +371,64 @@ fn derive_key_release_policy(
                 requires_attestation: true,
                 requires_teardown_evidence: true,
                 agreement_id: agreement.agreement_id.0.clone(),
+                agreement_commitment_hash: overlay_commitment.agreement_commitment_hash.clone(),
                 capability_descriptor_hash: overlay_commitment.capability_descriptor_hash.clone(),
+                resolved_selector_hash: execution_bindings
+                    .and_then(|bindings| bindings.challenge.as_ref())
+                    .map(|challenge| challenge.resolved_selector_hash.clone())
+                    .ok_or_else(|| {
+                        LsdcError::PolicyCompile(
+                            "kms-attested key release requires an active execution challenge"
+                                .into(),
+                        )
+                    })?,
+                challenge_nonce_hash: execution_bindings
+                    .and_then(|bindings| bindings.challenge.as_ref())
+                    .map(|challenge| challenge.challenge_nonce_hash.clone())
+                    .ok_or_else(|| {
+                        LsdcError::PolicyCompile(
+                            "kms-attested key release requires an active execution challenge"
+                                .into(),
+                        )
+                    })?,
             }))
         }
         TeeBackend::None => Err(LsdcError::PolicyCompile(
             "tee backend none cannot satisfy key release policy".into(),
         )),
     }
+}
+
+fn validate_live_attestation_policy(
+    agreement: &lsdc_common::dsp::ContractAgreement,
+    tee_backend: TeeBackend,
+    attestation_result: &lsdc_common::crypto::AttestationResult,
+) -> Result<()> {
+    if tee_backend != TeeBackend::NitroLive {
+        return Ok(());
+    }
+
+    let normalized = normalize_policy(&agreement.odrl_policy)?;
+    for permission in &normalized.permissions {
+        for constraint in &permission.constraints {
+            if constraint.clause_id != "teeImageSha384" {
+                continue;
+            }
+            let expected = constraint.right_operand.as_str().ok_or_else(|| {
+                LsdcError::PolicyCompile(
+                    "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
+                )
+            })?;
+            if !expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
+                return Err(LsdcError::Attestation(
+                    "nitro-live attestation image hash does not satisfy teeImageSha384 policy"
+                        .into(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn teardown_hash(teardown_evidence: &TeardownEvidence) -> Sha256Hash {
@@ -404,21 +445,23 @@ mod tests {
     use crate::forgetting::build_key_erasure_evidence;
     use async_trait::async_trait;
     use lsdc_common::crypto::{
-        AppraisalStatus, AttestationMeasurements, AttestationResult, ProvenanceReceipt,
-        Sha256Hash, TeardownEvidence,
+        AppraisalStatus, AttestationMeasurements, AttestationResult, ProvenanceReceipt, Sha256Hash,
+        TeardownEvidence,
     };
     use lsdc_common::execution::ProofBackend;
     use lsdc_common::execution_overlay::{
         AdvertisedProfiles, CapabilitySupportLevel, ExecutionCapabilityDescriptor,
         ExecutionEvidenceRequirements, ExecutionOverlayCommitment, ExecutionSession,
-        ExecutionSessionChallenge, ExecutionSessionState, ProofCompositionMode,
-        TransparencyMode, TruthfulnessMode,
+        ExecutionSessionChallenge, ExecutionSessionState, ProofCompositionMode, TransparencyMode,
+        TruthfulnessMode,
     };
     use lsdc_common::liquid::{
         CsvTransformManifest, LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard,
     };
     use lsdc_common::odrl::ast::PolicyId;
-    use lsdc_ports::{CompositionContext, EphemeralDataKey, ExecutionBindings, ProofExecutionResult};
+    use lsdc_ports::{
+        CompositionContext, EphemeralDataKey, ExecutionBindings, ProofExecutionResult,
+    };
     use std::collections::BTreeMap;
     use std::sync::{Mutex, Once};
 
@@ -494,9 +537,7 @@ mod tests {
                     agreement_id: agreement.agreement_id.0.clone(),
                     input_hash: Sha256Hash::digest_bytes(input_csv),
                     output_hash: Sha256Hash::digest_bytes(b"transformed"),
-                    policy_hash: Sha256Hash::digest_bytes(
-                        agreement.policy_hash.as_bytes(),
-                    ),
+                    policy_hash: Sha256Hash::digest_bytes(agreement.policy_hash.as_bytes()),
                     transform_manifest_hash: Sha256Hash::digest_bytes(
                         &serde_json::to_vec(manifest).unwrap(),
                     ),
@@ -617,10 +658,12 @@ mod tests {
                 attestation_result.nonce.as_deref(),
                 Some(session.challenge_nonce_hex.as_str())
             );
-            self.released_documents
-                .lock()
-                .unwrap()
-                .push(attestation_evidence.document.raw_attestation_document.clone());
+            self.released_documents.lock().unwrap().push(
+                attestation_evidence
+                    .document
+                    .raw_attestation_document
+                    .clone(),
+            );
             self.released_sessions
                 .lock()
                 .unwrap()
@@ -696,6 +739,39 @@ mod tests {
         }
     }
 
+    fn sample_live_agreement_with_image(
+        expected_image_sha384: &str,
+    ) -> lsdc_common::dsp::ContractAgreement {
+        let mut agreement = sample_live_agreement();
+        agreement.odrl_policy = serde_json::json!({
+            "@context": "https://www.w3.org/ns/odrl.jsonld",
+            "permission": [{
+                "action": ["read", "transfer", "anonymize"],
+                "constraint": [
+                    { "leftOperand": "purpose", "rightOperand": ["analytics"] },
+                    { "leftOperand": "teeImageSha384", "operator": "eq", "rightOperand": expected_image_sha384 },
+                    { "leftOperand": "keyReleaseProfile", "operator": "eq", "rightOperand": "kms-attested" },
+                    { "leftOperand": "deletionMode", "operator": "eq", "rightOperand": "kms_erasure" }
+                ]
+            }]
+        });
+        agreement
+    }
+
+    fn sample_fixture_mode_agreement() -> lsdc_common::dsp::ContractAgreement {
+        let mut agreement = sample_live_agreement();
+        agreement.odrl_policy = serde_json::json!({
+            "@context": "https://www.w3.org/ns/odrl.jsonld",
+            "permission": [{
+                "action": ["read", "transfer", "anonymize"],
+                "constraint": [
+                    { "leftOperand": "purpose", "rightOperand": ["analytics"] }
+                ]
+            }]
+        });
+        agreement
+    }
+
     fn sample_execution_bindings() -> ExecutionBindings {
         let now = chrono::Utc::now();
         let selector_hash = Sha256Hash::digest_bytes(b"selector");
@@ -756,7 +832,10 @@ mod tests {
         }
     }
 
-    fn sample_live_attestation_document(public_key: Vec<u8>, raw: Vec<u8>) -> AttestationDocument {
+    fn sample_live_attestation_document(
+        public_key: Option<Vec<u8>>,
+        raw: Vec<u8>,
+    ) -> AttestationDocument {
         AttestationDocument {
             enclave_id: "enc-live".into(),
             platform: "aws-nitro-live".into(),
@@ -767,7 +846,7 @@ mod tests {
                 debug: false,
             },
             nonce: None,
-            public_key: Some(public_key),
+            public_key,
             user_data_hash: None,
             document_hash: Sha256Hash::digest_bytes(&raw),
             timestamp: chrono::Utc::now(),
@@ -794,7 +873,7 @@ mod tests {
                     debug: false,
                 },
                 nonce: Some(challenge.challenge_nonce_hex.clone()),
-                public_key: Some(challenge.requester_ephemeral_pubkey.clone()),
+                public_key: Some(vec![9, 8, 7, 6]),
                 user_data_hash: Some(challenge.resolved_selector_hash.clone()),
                 document_hash,
                 timestamp: chrono::Utc::now(),
@@ -806,7 +885,25 @@ mod tests {
     }
 
     #[test]
-    fn test_new_live_requires_public_key_binding() {
+    fn test_new_live_keeps_requester_key_empty_even_with_fixture_material() {
+        ensure_test_env();
+        let proof_engine = Arc::new(NoopProofEngine);
+        let verifier = Arc::new(StaticVerifier);
+        let manager = NitroEnclaveManager::new_live(
+            proof_engine,
+            verifier,
+            Some(NitroLiveAttestationMaterial {
+                document: sample_live_attestation_document(Some(vec![1, 2, 3, 4]), vec![1, 2, 3]),
+            }),
+            Arc::new(DummyBroker),
+        )
+        .unwrap();
+
+        assert!(manager.default_requester_ephemeral_pubkey().is_empty());
+    }
+
+    #[test]
+    fn test_new_live_allows_fixture_without_public_key() {
         ensure_test_env();
         let proof_engine = Arc::new(NoopProofEngine);
         let verifier = Arc::new(StaticVerifier);
@@ -831,17 +928,13 @@ mod tests {
             },
         };
 
-        let err = match NitroEnclaveManager::new_live(
+        NitroEnclaveManager::new_live(
             proof_engine,
             verifier,
-            live_attestation,
+            Some(live_attestation),
             Arc::new(DummyBroker),
-        ) {
-            Ok(_) => panic!("expected missing public key binding to fail"),
-            Err(err) => err,
-        };
-
-        assert!(err.to_string().contains("public key"));
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -855,12 +948,9 @@ mod tests {
         let manager = NitroEnclaveManager::new_live(
             proof_engine,
             verifier,
-            NitroLiveAttestationMaterial {
-                document: sample_live_attestation_document(
-                    bindings.session.requester_ephemeral_pubkey.clone(),
-                    vec![0x99],
-                ),
-            },
+            Some(NitroLiveAttestationMaterial {
+                document: sample_live_attestation_document(Some(vec![1, 2, 3, 4]), vec![0x99]),
+            }),
             broker.clone(),
         )
         .unwrap();
@@ -895,7 +985,11 @@ mod tests {
         ));
         assert!(result.proof_bundle.key_erasure_evidence.is_some());
         assert_eq!(
-            result.execution_evidence.attestation_evidence.document.raw_attestation_document,
+            result
+                .execution_evidence
+                .attestation_evidence
+                .document
+                .raw_attestation_document,
             vec![0xAA, 0xBB, 0xCC]
         );
     }
@@ -910,12 +1004,9 @@ mod tests {
         let manager = NitroEnclaveManager::new_live(
             proof_engine,
             verifier,
-            NitroLiveAttestationMaterial {
-                document: sample_live_attestation_document(
-                    bindings.session.requester_ephemeral_pubkey.clone(),
-                    vec![0x99],
-                ),
-            },
+            Some(NitroLiveAttestationMaterial {
+                document: sample_live_attestation_document(Some(vec![1, 2, 3, 4]), vec![0x99]),
+            }),
             broker,
         )
         .unwrap();
@@ -939,5 +1030,88 @@ mod tests {
         assert!(err
             .to_string()
             .contains("requires submitted attestation evidence"));
+    }
+
+    #[tokio::test]
+    async fn test_run_live_csv_job_allows_fixture_mode_without_kms_policy() {
+        ensure_test_env();
+        let proof_engine = Arc::new(StaticProofEngine);
+        let verifier = Arc::new(StaticVerifier);
+        let bindings = sample_execution_bindings();
+        let manager = NitroEnclaveManager::new_live(
+            proof_engine,
+            verifier,
+            Some(NitroLiveAttestationMaterial {
+                document: sample_live_attestation_document(Some(vec![1, 2, 3, 4]), vec![0x99]),
+            }),
+            Arc::new(RecordingBroker::default()),
+        )
+        .unwrap();
+
+        let result = manager
+            .run_csv_job(EnclaveJobRequest {
+                agreement: sample_fixture_mode_agreement(),
+                input_csv: b"input".to_vec(),
+                manifest: CsvTransformManifest {
+                    dataset_id: "dataset-1".into(),
+                    purpose: "analytics".into(),
+                    ops: Vec::new(),
+                },
+                prior_receipt: None,
+                attestation_evidence: None,
+                execution_bindings: Some(bindings),
+            })
+            .await
+            .expect("fixture mode should remain available for local/demo NitroLive runs");
+
+        assert!(result.proof_bundle.teardown_evidence.is_none());
+        assert_eq!(
+            result
+                .execution_evidence
+                .attestation_evidence
+                .document
+                .raw_attestation_document,
+            vec![0x99]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_live_csv_job_rejects_tee_image_sha384_policy_mismatch() {
+        ensure_test_env();
+        let proof_engine = Arc::new(StaticProofEngine);
+        let verifier = Arc::new(StaticVerifier);
+        let bindings = sample_execution_bindings();
+        let challenge = bindings.challenge.clone().unwrap();
+        let broker = Arc::new(RecordingBroker::default());
+        let manager = NitroEnclaveManager::new_live(
+            proof_engine,
+            verifier,
+            Some(NitroLiveAttestationMaterial {
+                document: sample_live_attestation_document(Some(vec![1, 2, 3, 4]), vec![0x99]),
+            }),
+            broker,
+        )
+        .unwrap();
+
+        let err = manager
+            .run_csv_job(EnclaveJobRequest {
+                agreement: sample_live_agreement_with_image(&"ff".repeat(48)),
+                input_csv: b"input".to_vec(),
+                manifest: CsvTransformManifest {
+                    dataset_id: "dataset-1".into(),
+                    purpose: "analytics".into(),
+                    ops: Vec::new(),
+                },
+                prior_receipt: None,
+                attestation_evidence: Some(submitted_attestation_evidence(
+                    &challenge,
+                    vec![0xAA, 0xBB, 0xCC],
+                )),
+                execution_bindings: Some(bindings),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("teeImageSha384"));
     }
 }
