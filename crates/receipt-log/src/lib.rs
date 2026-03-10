@@ -186,7 +186,7 @@ fn merkle_inclusion_path(leaves: &[Sha256Hash], leaf_index: usize) -> Vec<Sha256
     let mut path = Vec::new();
 
     while level.len() > 1 {
-        let sibling = if index % 2 == 0 {
+        let sibling = if index.is_multiple_of(2) {
             level.get(index + 1).unwrap_or(&level[index]).clone()
         } else {
             level[index - 1].clone()
@@ -221,7 +221,7 @@ fn merkle_root_from_path(
     let mut hash = leaf.clone();
     let mut index = leaf_index;
     for sibling in path {
-        hash = if index % 2 == 0 {
+        hash = if index.is_multiple_of(2) {
             hash_pair(&hash, sibling)
         } else {
             hash_pair(sibling, &hash)
