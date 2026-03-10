@@ -5,14 +5,26 @@ use lsdc_common::crypto::{ProvenanceReceipt, ReceiptKind, Sha256Hash};
 use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement};
 #[cfg(feature = "risc0")]
 use lsdc_common::error::LsdcError;
+#[cfg(not(feature = "risc0"))]
 use lsdc_common::execution_overlay::ExecutionStatementKind;
+#[cfg(feature = "risc0")]
+use lsdc_common::execution_overlay::{
+    AdvertisedProfiles, CapabilitySupportLevel, ExecutionCapabilityDescriptor,
+    ExecutionEvidenceRequirements, ExecutionOverlayCommitment, ExecutionSession,
+    ExecutionSessionChallenge, ExecutionSessionState, ExecutionStatementKind, ProofCompositionMode,
+    TransparencyMode, TruthfulnessMode,
+};
 use lsdc_common::liquid::CsvTransformManifest;
 use lsdc_common::odrl::ast::PolicyId;
 use lsdc_common::odrl::parser::lower_policy;
 use lsdc_common::runtime_model::{
     DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus,
 };
+#[cfg(feature = "risc0")]
+use lsdc_ports::ExecutionBindings;
 use lsdc_ports::{CompositionContext, ProofEngine};
+#[cfg(feature = "risc0")]
+use std::collections::BTreeMap;
 #[cfg(feature = "risc0")]
 use std::future::Future;
 use std::sync::Once;
@@ -65,6 +77,62 @@ fn agreement() -> ContractAgreement {
 
 fn manifest() -> CsvTransformManifest {
     lsdc_common::fixtures::read_json("liquid/analytics_manifest.json").unwrap()
+}
+
+#[cfg(feature = "risc0")]
+fn recursive_execution_bindings() -> ExecutionBindings {
+    let agreement = agreement();
+    let now = chrono::Utc::now();
+    let selector_hash = Sha256Hash::digest_bytes(b"selector-binding");
+    let capability_descriptor = ExecutionCapabilityDescriptor {
+        overlay_version: "lsdc-execution-overlay/v1".into(),
+        truthfulness_default: TruthfulnessMode::Strict,
+        advertised_profiles: AdvertisedProfiles {
+            attestation_profile: "nitro-dev-attestation-result-v1".into(),
+            proof_profile: "risc0-recursive-dag-v1".into(),
+            transparency_profile: "local".into(),
+            teardown_profile: "dev-deletion-v1".into(),
+        },
+        support: BTreeMap::from([(
+            "proof.risc0_recursive".into(),
+            CapabilitySupportLevel::Implemented,
+        )]),
+    };
+    let evidence_requirements = ExecutionEvidenceRequirements {
+        challenge_nonce_required: true,
+        selector_hash_binding_required: true,
+        transparency_registration_mode: TransparencyMode::Required,
+        proof_composition_mode: ProofCompositionMode::Recursive,
+    };
+    let overlay_commitment = ExecutionOverlayCommitment::build(
+        &agreement.agreement_id.0,
+        TruthfulnessMode::Strict,
+        Sha256Hash::digest_bytes(b"policy"),
+        capability_descriptor,
+        evidence_requirements,
+    )
+    .unwrap();
+    let session = ExecutionSession {
+        session_id: "00000000-0000-0000-0000-000000000123".parse().unwrap(),
+        agreement_id: agreement.agreement_id.0,
+        agreement_commitment_hash: overlay_commitment.agreement_commitment_hash.clone(),
+        capability_descriptor_hash: overlay_commitment.capability_descriptor_hash.clone(),
+        evidence_requirements_hash: overlay_commitment.evidence_requirements_hash.clone(),
+        resolved_selector_hash: Some(selector_hash.clone()),
+        requester_ephemeral_pubkey: vec![1, 2, 3, 4],
+        state: ExecutionSessionState::Challenged,
+        created_at: now,
+        expires_at: Some(now + chrono::Duration::minutes(5)),
+    };
+    let challenge = ExecutionSessionChallenge::issue(&session, selector_hash, now);
+
+    ExecutionBindings {
+        overlay_commitment,
+        session,
+        challenge: Some(challenge),
+        resolved_transport: None,
+        attestation_result_hash: Some(Sha256Hash::digest_bytes(b"stable-attestation-binding")),
+    }
 }
 
 #[tokio::test]
@@ -226,6 +294,7 @@ fn test_risc0_single_hop_proves_and_verifies_transform() {
     );
 }
 
+#[cfg(feature = "risc0")]
 async fn assert_risc0_matches_dev_receipt_output_for_same_manifest() {
     let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
     let agreement = agreement();
@@ -302,6 +371,75 @@ fn test_risc0_recursive_transform_succeeds() {
     run_risc0_test(
         "risc0-recursive-transform",
         assert_risc0_recursive_transform_succeeds(),
+    );
+}
+
+#[cfg(feature = "risc0")]
+async fn assert_risc0_recursive_transform_preserves_non_null_bindings() {
+    let engine = Risc0ProofEngine::new();
+    let agreement = agreement();
+    let manifest = manifest();
+    let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
+    let bindings = recursive_execution_bindings();
+
+    let first = engine
+        .execute_csv_transform(&agreement, &input, &manifest, None, Some(&bindings))
+        .await
+        .unwrap();
+    let second = engine
+        .execute_csv_transform(
+            &agreement,
+            &first.output_csv,
+            &manifest,
+            Some(&first.receipt),
+            Some(&bindings),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        second.receipt.session_id,
+        Some(bindings.session.session_id.to_string())
+    );
+    assert_eq!(
+        second.receipt.challenge_nonce_hash,
+        bindings
+            .challenge
+            .as_ref()
+            .map(|challenge| challenge.challenge_nonce_hash.clone())
+    );
+    assert_eq!(
+        second.receipt.selector_hash,
+        bindings
+            .challenge
+            .as_ref()
+            .map(|challenge| challenge.resolved_selector_hash.clone())
+    );
+    assert_eq!(
+        second.receipt.attestation_result_hash,
+        bindings.attestation_result_hash
+    );
+    assert_eq!(
+        second.receipt.capability_commitment_hash,
+        Some(
+            bindings
+                .overlay_commitment
+                .capability_descriptor_hash
+                .clone()
+        )
+    );
+    assert!(engine
+        .verify_chain(&[first.receipt.clone(), second.receipt.clone()])
+        .await
+        .unwrap());
+}
+
+#[cfg(feature = "risc0")]
+#[test]
+fn test_risc0_recursive_transform_preserves_non_null_bindings() {
+    run_risc0_test(
+        "risc0-recursive-bindings",
+        assert_risc0_recursive_transform_preserves_non_null_bindings(),
     );
 }
 
@@ -388,6 +526,13 @@ async fn assert_risc0_rejects_tampered_recursive_receipts() {
     let mut tampered_method = second.receipt.clone();
     tampered_method.proof_method_id = "risc0.csv_transform.v1".into();
     match engine.verify_receipt(&tampered_method).await {
+        Ok(valid) => assert!(!valid),
+        Err(_) => {}
+    }
+
+    let mut tampered_bytes = second.receipt.clone();
+    tampered_bytes.receipt_bytes[0] ^= 0x01;
+    match engine.verify_receipt(&tampered_bytes).await {
         Ok(valid) => assert!(!valid),
         Err(_) => {}
     }

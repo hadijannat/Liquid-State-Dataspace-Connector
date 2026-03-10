@@ -474,4 +474,70 @@ mod tests {
 
         assert!(!verification.valid);
     }
+
+    #[test]
+    fn test_verify_provenance_receipt_dag_rejects_missing_parent_node() {
+        let left = provenance_receipt(b"left", None, Vec::new(), 0, ReceiptKind::Transform);
+        let right = provenance_receipt(b"right", None, Vec::new(), 0, ReceiptKind::Transform);
+        let composed = composition_receipt(&[&left, &right]);
+        let dag = EvidenceDag::new(
+            vec![proof_node("left", &left), proof_node("composed", &composed)],
+            vec![EvidenceEdge {
+                from_node_id: "left".into(),
+                to_node_id: "composed".into(),
+                dependency_type: DependencyType::DerivedFrom,
+            }],
+        )
+        .unwrap();
+
+        let verification = verify_provenance_receipt_dag(&dag).unwrap();
+
+        assert!(!verification.valid);
+    }
+
+    #[test]
+    fn test_verify_provenance_receipt_dag_rejects_duplicate_receipt_nodes() {
+        let left = provenance_receipt(b"left", None, Vec::new(), 0, ReceiptKind::Transform);
+        let dag = EvidenceDag::new(
+            vec![proof_node("left-a", &left), proof_node("left-b", &left)],
+            Vec::new(),
+        )
+        .unwrap();
+
+        let verification = verify_provenance_receipt_dag(&dag).unwrap();
+
+        assert!(!verification.valid);
+    }
+
+    #[test]
+    fn test_verify_provenance_receipt_dag_rejects_bad_composition_depth() {
+        let left = provenance_receipt(b"left", None, Vec::new(), 0, ReceiptKind::Transform);
+        let right = provenance_receipt(b"right", None, Vec::new(), 0, ReceiptKind::Transform);
+        let mut composed = composition_receipt(&[&left, &right]);
+        composed.recursion_depth += 1;
+        let dag = EvidenceDag::new(
+            vec![
+                proof_node("left", &left),
+                proof_node("right", &right),
+                proof_node("composed", &composed),
+            ],
+            vec![
+                EvidenceEdge {
+                    from_node_id: "left".into(),
+                    to_node_id: "composed".into(),
+                    dependency_type: DependencyType::DerivedFrom,
+                },
+                EvidenceEdge {
+                    from_node_id: "right".into(),
+                    to_node_id: "composed".into(),
+                    dependency_type: DependencyType::DerivedFrom,
+                },
+            ],
+        )
+        .unwrap();
+
+        let verification = verify_provenance_receipt_dag(&dag).unwrap();
+
+        assert!(!verification.valid);
+    }
 }

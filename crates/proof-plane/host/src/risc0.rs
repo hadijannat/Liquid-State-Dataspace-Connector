@@ -38,6 +38,12 @@ enum Risc0GuestMethod {
     Composition,
 }
 
+struct VerifiedRisc0Receipt {
+    method: Risc0GuestMethod,
+    decoded: Receipt,
+    journal: RecursiveCsvTransformProofJournal,
+}
+
 impl Risc0GuestMethod {
     fn elf(self) -> &'static [u8] {
         match self {
@@ -123,13 +129,83 @@ impl Risc0ProofEngine {
         })
     }
 
-    fn assumption_witness(receipt: &ProvenanceReceipt) -> Result<ReceiptAssumptionWitness> {
-        let method = Self::method_for_proof_method_id(&receipt.proof_method_id)
-            .ok_or_else(|| LsdcError::ProofGeneration("unsupported risc0 proof method".into()))?;
+    fn decode_verified_receipt(
+        receipt: &ProvenanceReceipt,
+    ) -> Result<Option<VerifiedRisc0Receipt>> {
+        if receipt.proof_backend != ProofBackend::RiscZero
+            || receipt.receipt_format_version != RISC0_RECEIPT_FORMAT_VERSION
+        {
+            return Ok(None);
+        }
+
+        let Some(method) = Self::method_for_proof_method_id(&receipt.proof_method_id) else {
+            return Ok(None);
+        };
         let decoded = Self::decode_receipt_bytes(&receipt.receipt_bytes)?;
         let journal = Self::verify_receipt_inner(&decoded, method)?;
 
-        Ok(ReceiptAssumptionWitness {
+        Ok(Some(VerifiedRisc0Receipt {
+            method,
+            decoded,
+            journal,
+        }))
+    }
+
+    fn receipt_matches_verified(
+        receipt: &ProvenanceReceipt,
+        verified: &VerifiedRisc0Receipt,
+    ) -> bool {
+        let expected_kind = match verified.method {
+            Risc0GuestMethod::Composition => ReceiptKind::Composition,
+            Risc0GuestMethod::LegacyTransform | Risc0GuestMethod::RecursiveTransform => {
+                ReceiptKind::Transform
+            }
+        };
+
+        receipt.receipt_hash == Sha256Hash::digest_bytes(&receipt.receipt_bytes)
+            && receipt.proof_method_id == verified.method.proof_method_id()
+            && receipt.receipt_kind == expected_kind
+            && verified.journal.agreement_id == receipt.agreement_id
+            && verified.journal.input_hash == receipt.input_hash
+            && verified.journal.output_hash == receipt.output_hash
+            && verified.journal.policy_hash == receipt.policy_hash
+            && verified.journal.transform_manifest_hash == receipt.transform_manifest_hash
+            && verified.journal.prior_receipt_hash == receipt.prior_receipt_hash
+            && verified.journal.agreement_commitment_hash == receipt.agreement_commitment_hash
+            && verified.journal.session_id == receipt.session_id
+            && verified.journal.challenge_nonce_hash == receipt.challenge_nonce_hash
+            && verified.journal.selector_hash == receipt.selector_hash
+            && verified.journal.attestation_result_hash == receipt.attestation_result_hash
+            && verified.journal.capability_commitment_hash == receipt.capability_commitment_hash
+            && verified.journal.transparency_statement_hash == receipt.transparency_statement_hash
+            && verified.journal.parent_receipt_hashes == receipt.parent_receipt_hashes
+            && verified.journal.recursion_depth == receipt.recursion_depth
+            && verified.journal.receipt_kind == receipt.receipt_kind
+            && match receipt.receipt_kind {
+                ReceiptKind::Transform => match receipt.prior_receipt_hash.as_ref() {
+                    Some(prior_hash) => {
+                        receipt.parent_receipt_hashes.as_slice() == [prior_hash.clone()]
+                    }
+                    None => receipt.parent_receipt_hashes.is_empty(),
+                },
+                ReceiptKind::Composition => {
+                    receipt.prior_receipt_hash.is_none()
+                        && !receipt.parent_receipt_hashes.is_empty()
+                }
+            }
+    }
+
+    fn assumption_witness(
+        receipt: &ProvenanceReceipt,
+        verified: VerifiedRisc0Receipt,
+    ) -> ReceiptAssumptionWitness {
+        let VerifiedRisc0Receipt {
+            method,
+            decoded,
+            journal,
+        } = verified;
+
+        ReceiptAssumptionWitness {
             method: method.receipt_method(),
             image_id: method.image_id(),
             journal_bytes: decoded.journal.bytes.clone(),
@@ -137,7 +213,7 @@ impl Risc0ProofEngine {
             receipt_hash: receipt.receipt_hash.clone(),
             receipt_kind: journal.receipt_kind,
             recursion_depth: journal.recursion_depth,
-        })
+        }
     }
 
     fn receipt_from_verified_journal(
@@ -186,13 +262,19 @@ impl Risc0ProofEngine {
             ));
         }
 
-        if !self.verify_receipt(receipt).await? {
+        let Some(verified) = Self::decode_verified_receipt(receipt)? else {
+            return Err(LsdcError::ProofGeneration(
+                RISC0_INVALID_RECURSIVE_PARENT.into(),
+            ));
+        };
+
+        if !Self::receipt_matches_verified(receipt, &verified) {
             return Err(LsdcError::ProofGeneration(
                 RISC0_INVALID_RECURSIVE_PARENT.into(),
             ));
         }
 
-        Self::assumption_witness(receipt)
+        Ok(Self::assumption_witness(receipt, verified))
     }
 
     fn prove_with_assumptions<T: Serialize>(
@@ -291,57 +373,11 @@ impl ProofEngine for Risc0ProofEngine {
     }
 
     async fn verify_receipt(&self, receipt: &ProvenanceReceipt) -> Result<bool> {
-        if receipt.proof_backend != ProofBackend::RiscZero
-            || receipt.receipt_format_version != RISC0_RECEIPT_FORMAT_VERSION
-        {
-            return Ok(false);
-        }
-
-        let Some(method) = Self::method_for_proof_method_id(&receipt.proof_method_id) else {
+        let Some(verified) = Self::decode_verified_receipt(receipt)? else {
             return Ok(false);
         };
-        let decoded = Self::decode_receipt_bytes(&receipt.receipt_bytes)?;
-        let journal = Self::verify_receipt_inner(&decoded, method)?;
-        let expected_kind = match method {
-            Risc0GuestMethod::Composition => ReceiptKind::Composition,
-            Risc0GuestMethod::LegacyTransform | Risc0GuestMethod::RecursiveTransform => {
-                ReceiptKind::Transform
-            }
-        };
 
-        Ok(
-            receipt.receipt_hash == Sha256Hash::digest_bytes(&receipt.receipt_bytes)
-                && receipt.proof_method_id == method.proof_method_id()
-                && receipt.receipt_kind == expected_kind
-                && journal.agreement_id == receipt.agreement_id
-                && journal.input_hash == receipt.input_hash
-                && journal.output_hash == receipt.output_hash
-                && journal.policy_hash == receipt.policy_hash
-                && journal.transform_manifest_hash == receipt.transform_manifest_hash
-                && journal.prior_receipt_hash == receipt.prior_receipt_hash
-                && journal.agreement_commitment_hash == receipt.agreement_commitment_hash
-                && journal.session_id == receipt.session_id
-                && journal.challenge_nonce_hash == receipt.challenge_nonce_hash
-                && journal.selector_hash == receipt.selector_hash
-                && journal.attestation_result_hash == receipt.attestation_result_hash
-                && journal.capability_commitment_hash == receipt.capability_commitment_hash
-                && journal.transparency_statement_hash == receipt.transparency_statement_hash
-                && journal.parent_receipt_hashes == receipt.parent_receipt_hashes
-                && journal.recursion_depth == receipt.recursion_depth
-                && journal.receipt_kind == receipt.receipt_kind
-                && match receipt.receipt_kind {
-                    ReceiptKind::Transform => match receipt.prior_receipt_hash.as_ref() {
-                        Some(prior_hash) => {
-                            receipt.parent_receipt_hashes.as_slice() == [prior_hash.clone()]
-                        }
-                        None => receipt.parent_receipt_hashes.is_empty(),
-                    },
-                    ReceiptKind::Composition => {
-                        receipt.prior_receipt_hash.is_none()
-                            && !receipt.parent_receipt_hashes.is_empty()
-                    }
-                },
-        )
+        Ok(Self::receipt_matches_verified(receipt, &verified))
     }
 
     async fn verify_chain(&self, chain: &[ProvenanceReceipt]) -> Result<bool> {

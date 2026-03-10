@@ -4,8 +4,8 @@ use control_plane::orchestrator::Orchestrator;
 use control_plane_store::Store;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use lsdc_common::crypto::{
-    canonical_json_bytes, AppraisalStatus, AttestationEvidence, PriceDecision, ProvenanceReceipt,
-    Sha256Hash,
+    attestation_result_binding_hash, canonical_json_bytes, AppraisalStatus, AttestationEvidence,
+    PriceDecision, ProvenanceReceipt, Sha256Hash,
 };
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::execution::{
@@ -528,13 +528,8 @@ impl ApiState {
             )
             .map_err(lsdc_common::error::LsdcError::from)?,
         );
-        let attestation_result_hash = Sha256Hash::digest_bytes(
-            &canonical_json_bytes(
-                &serde_json::to_value(&attestation_result)
-                    .map_err(lsdc_common::error::LsdcError::from)?,
-            )
-            .map_err(lsdc_common::error::LsdcError::from)?,
-        );
+        let attestation_result_hash = attestation_result_binding_hash(&attestation_result)
+            .map_err(lsdc_common::error::LsdcError::from)?;
         session.state = ExecutionSessionState::AttestationVerified;
         challenge.consumed_at = Some(now);
         self.store.save_attestation_evidence_and_result(

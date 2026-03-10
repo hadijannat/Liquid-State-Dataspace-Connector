@@ -182,6 +182,46 @@ pub struct AttestationResult {
     pub appraisal: AppraisalStatus,
 }
 
+#[derive(Debug, Serialize)]
+struct AttestationResultBinding<'a> {
+    profile: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nonce: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_sha384: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_key: Option<&'a Vec<u8>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_data_hash: Option<&'a Sha256Hash>,
+    cert_chain_verified: bool,
+    freshness_ok: bool,
+    appraisal: AppraisalStatus,
+}
+
+pub fn attestation_result_binding_hash(
+    result: &AttestationResult,
+) -> std::result::Result<Sha256Hash, serde_json::Error> {
+    let image_sha384 = if result.profile == "aws-nitro-live" {
+        Some(result.image_sha384.as_str())
+    } else {
+        None
+    };
+
+    hash_json(&serde_json::to_value(AttestationResultBinding {
+        profile: &result.profile,
+        session_id: result.session_id.as_ref(),
+        nonce: result.nonce.as_ref(),
+        image_sha384,
+        public_key: result.public_key.as_ref(),
+        user_data_hash: result.user_data_hash.as_ref(),
+        cert_chain_verified: result.cert_chain_verified,
+        freshness_ok: result.freshness_ok,
+        appraisal: result.appraisal,
+    })?)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationEvidence {
     pub evidence_profile: String,
@@ -369,4 +409,75 @@ pub struct SanctionProposal {
     pub reason: String,
     pub approval_required: bool,
     pub evidence_hash: Sha256Hash,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attestation_result(doc_seed: &[u8]) -> AttestationResult {
+        AttestationResult {
+            profile: "aws-nitro-dev".into(),
+            doc_hash: Sha256Hash::digest_bytes(doc_seed),
+            session_id: Some("session-1".into()),
+            nonce: Some("nonce-1".into()),
+            image_sha384: "11".repeat(48),
+            pcrs: BTreeMap::from([(0, "aa".repeat(48))]),
+            public_key: Some(vec![1, 2, 3, 4]),
+            user_data_hash: Some(Sha256Hash::digest_bytes(b"selector")),
+            cert_chain_verified: true,
+            freshness_ok: true,
+            appraisal: AppraisalStatus::Accepted,
+        }
+    }
+
+    #[test]
+    fn test_attestation_result_binding_hash_ignores_document_hash() {
+        let first = attestation_result(b"doc-a");
+        let second = attestation_result(b"doc-b");
+
+        assert_ne!(first.doc_hash, second.doc_hash);
+        assert_eq!(
+            attestation_result_binding_hash(&first).unwrap(),
+            attestation_result_binding_hash(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_attestation_result_binding_hash_ignores_dynamic_pcrs() {
+        let first = attestation_result(b"doc-a");
+        let mut second = attestation_result(b"doc-a");
+        second.pcrs.insert(2, "bb".repeat(48));
+
+        assert_ne!(first.pcrs, second.pcrs);
+        assert_eq!(
+            attestation_result_binding_hash(&first).unwrap(),
+            attestation_result_binding_hash(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_attestation_result_binding_hash_ignores_dev_image_projection() {
+        let first = attestation_result(b"doc-a");
+        let mut second = attestation_result(b"doc-a");
+        second.image_sha384 = "22".repeat(48);
+
+        assert_eq!(
+            attestation_result_binding_hash(&first).unwrap(),
+            attestation_result_binding_hash(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_attestation_result_binding_hash_keeps_live_image_binding() {
+        let mut first = attestation_result(b"doc-a");
+        first.profile = "aws-nitro-live".into();
+        let mut second = first.clone();
+        second.image_sha384 = "22".repeat(48);
+
+        assert_ne!(
+            attestation_result_binding_hash(&first).unwrap(),
+            attestation_result_binding_hash(&second).unwrap()
+        );
+    }
 }

@@ -32,6 +32,10 @@ fn main() {
                 assert_eq!(prior.journal.challenge_nonce_hash, input.challenge_nonce_hash);
                 assert_eq!(prior.journal.selector_hash, input.selector_hash);
                 assert_eq!(
+                    prior.journal.attestation_result_hash,
+                    input.attestation_result_hash
+                );
+                assert_eq!(
                     prior.journal.capability_commitment_hash,
                     input.capability_commitment_hash
                 );

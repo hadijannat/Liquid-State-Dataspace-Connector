@@ -4,7 +4,7 @@ use crate::attestation::{
 use crate::forgetting::{build_proof_of_forgetting, validate_forgetting_secret};
 use async_trait::async_trait;
 use lsdc_common::crypto::{
-    canonical_json_bytes, AttestationDocument, AttestationEvidence, EvidenceClass,
+    attestation_result_binding_hash, AttestationDocument, AttestationEvidence, EvidenceClass,
     ExecutionEvidenceBundle, Sha256Hash, TeardownEvidence,
 };
 use lsdc_common::error::{LsdcError, Result};
@@ -174,12 +174,8 @@ impl EnclaveManager for NitroEnclaveManager {
             .attestation_verifier
             .appraise_attestation_evidence(&attestation_evidence, challenge)?;
         validate_live_attestation_policy(&agreement, self.mode, &attestation_result)?;
-        let attestation_result_hash = Sha256Hash::digest_bytes(
-            &canonical_json_bytes(
-                &serde_json::to_value(&attestation_result).map_err(LsdcError::from)?,
-            )
-            .map_err(LsdcError::from)?,
-        );
+        let attestation_result_hash =
+            attestation_result_binding_hash(&attestation_result).map_err(LsdcError::from)?;
         let proof_execution_bindings = execution_bindings.as_ref().map(|bindings| {
             let mut bound = bindings.clone();
             bound.attestation_result_hash = Some(attestation_result_hash.clone());
