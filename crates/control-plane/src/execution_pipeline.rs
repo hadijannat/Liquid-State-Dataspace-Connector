@@ -1,13 +1,15 @@
 use crate::breach_service::assess_evidence;
 use crate::pricing_service::PricingService;
 use lsdc_common::crypto::{
-    MetricsWindow, PriceDecision, PricingAuditContext, ProofBundle, SanctionProposal, Sha256Hash,
+    ExecutionEvidenceBundle, MetricsWindow, PriceDecision, PricingAuditContext, ProofBundle,
+    SanctionProposal, Sha256Hash,
 };
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::liquid::CsvTransformManifest;
 use lsdc_ports::{
-    DataPlane, EnclaveJobRequest, EnclaveManager, EnforcementHandle, PricingOracle, TrainingMetrics,
+    DataPlane, EnclaveJobRequest, EnclaveManager, EnforcementHandle, ExecutionBindings,
+    PricingOracle, TrainingMetrics,
 };
 use std::sync::Arc;
 
@@ -19,12 +21,14 @@ pub struct BatchLineageRequest {
     pub current_price: f64,
     pub metrics: TrainingMetrics,
     pub prior_receipt: Option<lsdc_common::crypto::ProvenanceReceipt>,
+    pub execution_bindings: Option<ExecutionBindings>,
 }
 
 pub struct BatchLineageResult {
     pub enforcement_handle: EnforcementHandle,
     pub transformed_csv: Vec<u8>,
     pub proof_bundle: ProofBundle,
+    pub execution_evidence: ExecutionEvidenceBundle,
     pub price_decision: PriceDecision,
     pub sanction_proposal: Option<SanctionProposal>,
     pub settlement_allowed: bool,
@@ -73,6 +77,7 @@ impl ExecutionPipeline {
             current_price,
             metrics,
             prior_receipt,
+            execution_bindings,
         } = request;
         let handle = self.activate_agreement(&agreement, &iface).await?;
         let result = async {
@@ -85,6 +90,7 @@ impl ExecutionPipeline {
                     input_csv,
                     manifest,
                     prior_receipt,
+                    execution_bindings,
                 })
                 .await?;
 
@@ -116,6 +122,7 @@ impl ExecutionPipeline {
                 enforcement_handle: handle.clone(),
                 transformed_csv: job_result.output_csv,
                 proof_bundle: job_result.proof_bundle,
+                execution_evidence: job_result.execution_evidence,
                 price_decision,
                 sanction_proposal: breach.sanction_proposal,
                 settlement_allowed: breach.settlement_allowed,

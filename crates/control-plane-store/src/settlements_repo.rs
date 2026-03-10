@@ -37,6 +37,9 @@ impl Store {
                 price_decision: Some(result.price_decision),
                 sanction_proposal: result.sanction_proposal,
                 proof_bundle: Some(result.proof_bundle),
+                session_id: result.session_id,
+                evidence_root_hash: result.evidence_root_hash,
+                transparency_receipt_hash: result.transparency_receipt_hash,
             }));
         }
 
@@ -51,6 +54,9 @@ impl Store {
             price_decision: None,
             sanction_proposal: None,
             proof_bundle: None,
+            session_id: None,
+            evidence_root_hash: None,
+            transparency_receipt_hash: None,
         }))
     }
 }

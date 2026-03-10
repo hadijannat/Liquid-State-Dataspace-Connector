@@ -49,6 +49,7 @@ async fn test_proves_and_verifies_transform() {
             &lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap(),
             &manifest(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -65,7 +66,7 @@ async fn test_verifies_receipt_chain() {
     let manifest = manifest();
     let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
     let first = engine
-        .execute_csv_transform(&agreement, &input, &manifest, None)
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
         .await
         .unwrap();
     let second = engine
@@ -74,6 +75,7 @@ async fn test_verifies_receipt_chain() {
             first.output_csv.as_slice(),
             &manifest,
             Some(&first.receipt),
+            None,
         )
         .await
         .unwrap();
@@ -95,6 +97,7 @@ async fn test_risc0_single_hop_proves_and_verifies_transform() {
             &lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap(),
             &manifest(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -113,12 +116,12 @@ async fn test_risc0_matches_dev_receipt_output_for_same_manifest() {
 
     let dev_output = DevReceiptProofEngine::new()
         .unwrap()
-        .execute_csv_transform(&agreement, &input, &manifest, None)
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
         .await
         .unwrap()
         .output_csv;
     let risc0_output = Risc0ProofEngine::new()
-        .execute_csv_transform(&agreement, &input, &manifest, None)
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
         .await
         .unwrap()
         .output_csv;
@@ -139,6 +142,7 @@ async fn test_risc0_rejects_recursive_receipts() {
             &lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap(),
             &manifest,
             None,
+            None,
         )
         .await
         .unwrap()
@@ -150,6 +154,7 @@ async fn test_risc0_rejects_recursive_receipts() {
             &lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap(),
             &manifest,
             Some(&prior_receipt),
+            None,
         )
         .await
         .unwrap_err();

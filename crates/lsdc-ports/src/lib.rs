@@ -1,13 +1,22 @@
 use async_trait::async_trait;
 use lsdc_common::crypto::{
-    PriceDecision, PricingAuditContext, ProofBundle, ProvenanceReceipt, ShapleyValue,
+    AttestationDocument, AttestationResult, ExecutionEvidenceBundle, KeyErasureEvidence,
+    PriceDecision, PricingAuditContext, ProofBundle, ProvenanceReceipt, ShapleyValue, Sha256Hash,
 };
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::execution::{ProofBackend, TeeBackend, TransportBackend, TransportSelector};
+use lsdc_common::execution_overlay::{
+    ExecutionOverlayCommitment, ExecutionSession, ExecutionSessionChallenge, ExecutionStatement,
+    TransparencyReceipt,
+};
 use lsdc_common::liquid::CsvTransformManifest;
+use lsdc_common::profile::{
+    ClauseRealization, NormalizedPolicy, RuntimeCapabilities,
+};
+use lsdc_common::runtime_model::EvidenceDag;
 use lsdc_common::Result;
 use lsdc_evidence::{
-    AttestationDocument, ChainVerification, DevDeletionEvidence, ReceiptEnvelopeV1, VerifiedClaims,
+    ChainVerification, DevDeletionEvidence, ReceiptEnvelopeV1, VerifiedClaims,
 };
 use serde::{Deserialize, Serialize};
 
@@ -122,6 +131,24 @@ pub struct ProofExecutionResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionBindings {
+    pub overlay_commitment: ExecutionOverlayCommitment,
+    pub session: ExecutionSession,
+    pub challenge: ExecutionSessionChallenge,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_result_hash: Option<Sha256Hash>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompositionContext {
+    pub agreement_id: String,
+    pub agreement_commitment_hash: Option<Sha256Hash>,
+    pub session_id: Option<String>,
+    pub selector_hash: Option<Sha256Hash>,
+    pub capability_commitment_hash: Option<Sha256Hash>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformOutput {
     pub output_bytes: Vec<u8>,
     pub media_type: String,
@@ -141,6 +168,7 @@ pub struct ProofContext<'a> {
     pub output_bytes: &'a [u8],
     pub manifest: &'a CsvTransformManifest,
     pub prior_receipt: Option<&'a ReceiptEnvelopeV1>,
+    pub execution_bindings: Option<&'a ExecutionBindings>,
 }
 
 #[async_trait]
@@ -160,9 +188,16 @@ pub trait ProofEngine: Send + Sync {
         input_csv: &[u8],
         manifest: &CsvTransformManifest,
         prior_receipt: Option<&ProvenanceReceipt>,
+        execution_bindings: Option<&ExecutionBindings>,
     ) -> Result<ProofExecutionResult>;
     async fn verify_receipt(&self, receipt: &ProvenanceReceipt) -> Result<bool>;
     async fn verify_chain(&self, chain: &[ProvenanceReceipt]) -> Result<bool>;
+    async fn compose_receipts(
+        &self,
+        receipts: &[ProvenanceReceipt],
+        ctx: CompositionContext,
+    ) -> Result<ProvenanceReceipt>;
+    async fn verify_receipt_dag(&self, dag: &EvidenceDag) -> Result<bool>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,12 +206,14 @@ pub struct EnclaveJobRequest {
     pub input_csv: Vec<u8>,
     pub manifest: CsvTransformManifest,
     pub prior_receipt: Option<ProvenanceReceipt>,
+    pub execution_bindings: Option<ExecutionBindings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnclaveJobResult {
     pub output_csv: Vec<u8>,
     pub proof_bundle: ProofBundle,
+    pub execution_evidence: ExecutionEvidenceBundle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,13 +239,17 @@ pub struct WorkloadRequest {
 pub struct WorkloadResult {
     pub output_bytes: Vec<u8>,
     pub attestation: Option<AttestationDocument>,
+    pub attestation_result: Option<AttestationResult>,
     pub deletion_evidence: Option<DevDeletionEvidence>,
+    pub key_erasure_evidence: Option<KeyErasureEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DestroyEvidence {
     pub attestation: Option<AttestationDocument>,
+    pub attestation_result: Option<AttestationResult>,
     pub deletion_evidence: Option<DevDeletionEvidence>,
+    pub key_erasure_evidence: Option<KeyErasureEvidence>,
 }
 
 #[async_trait]
@@ -227,6 +268,54 @@ pub trait EnclaveSessionManager: Send + Sync {
 pub trait EnclaveManager: Send + Sync {
     fn tee_backend(&self) -> TeeBackend;
     async fn run_csv_job(&self, request: EnclaveJobRequest) -> Result<EnclaveJobResult>;
+}
+
+pub trait CapabilitySolver: Send + Sync {
+    fn solve(
+        &self,
+        policy: &NormalizedPolicy,
+        capabilities: &RuntimeCapabilities,
+        evidence_requirements: &[lsdc_common::liquid::EvidenceRequirement],
+    ) -> Vec<ClauseRealization>;
+}
+
+pub trait AttestationVerifier: Send + Sync {
+    fn verify_attestation(
+        &self,
+        document: &AttestationDocument,
+        challenge: Option<&ExecutionSessionChallenge>,
+    ) -> Result<AttestationResult>;
+}
+
+pub trait TransparencyLog: Send + Sync {
+    fn register(&self, statement: &ExecutionStatement) -> Result<TransparencyReceipt>;
+    fn verify_receipt(
+        &self,
+        statement_hash: &Sha256Hash,
+        receipt: &TransparencyReceipt,
+    ) -> Result<()>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EphemeralDataKey {
+    pub key_id: String,
+    pub wrapped_key: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EphemeralKeyHandle {
+    pub key_id: String,
+}
+
+pub trait KeyBroker: Send + Sync {
+    fn release_key(
+        &self,
+        policy: &str,
+        attestation: &AttestationResult,
+        session: &ExecutionSessionChallenge,
+    ) -> Result<EphemeralDataKey>;
+
+    fn attest_erasure(&self, handle: EphemeralKeyHandle) -> Result<KeyErasureEvidence>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

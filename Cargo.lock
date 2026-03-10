@@ -940,6 +940,7 @@ dependencies = [
  "chrono",
  "control-plane",
  "control-plane-store",
+ "hex",
  "liquid-agent-grpc",
  "lsdc-common",
  "lsdc-config",
@@ -947,6 +948,7 @@ dependencies = [
  "lsdc-service-types",
  "proof-plane-core",
  "proof-plane-host",
+ "receipt-log",
  "serde",
  "serde_json",
  "tee-orchestrator",
@@ -966,6 +968,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -2460,7 +2463,9 @@ dependencies = [
  "hmac",
  "lsdc-contracts",
  "lsdc-evidence",
+ "lsdc-execution-protocol",
  "lsdc-policy",
+ "lsdc-runtime-model",
  "serde",
  "serde_json",
  "sha2",
@@ -2501,6 +2506,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lsdc-execution-protocol"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "lsdc-evidence",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "lsdc-policy"
 version = "0.1.0"
 dependencies = [
@@ -2522,6 +2538,16 @@ dependencies = [
  "lsdc-common",
  "lsdc-evidence",
  "serde",
+]
+
+[[package]]
+name = "lsdc-runtime-model"
+version = "0.1.0"
+dependencies = [
+ "lsdc-evidence",
+ "lsdc-execution-protocol",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3470,6 +3496,23 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "receipt-log"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "hmac",
+ "lsdc-evidence",
+ "lsdc-execution-protocol",
+ "lsdc-policy",
+ "lsdc-ports",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
 ]
 
 [[package]]
@@ -4520,6 +4563,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "hex",
  "lsdc-common",
  "lsdc-evidence",
  "lsdc-ports",

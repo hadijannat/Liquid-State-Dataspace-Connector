@@ -7,22 +7,32 @@ use liquid_agent_core::loader::LiquidDataPlane;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use liquid_agent_grpc::server::{serve as serve_agent, LiquidAgentService};
 use lsdc_common::crypto::{
-    PriceDecision, PricingAuditContext, ProvenanceReceipt, Sha256Hash, ShapleyValue,
+    AppraisalStatus, AttestationResult, PriceDecision, PricingAuditContext, ProvenanceReceipt,
+    ReceiptKind, Sha256Hash, ShapleyValue,
 };
 use lsdc_common::dsp::{
     ContractAgreement, ContractOffer, ContractRequest, EvidenceRequirement, TransferRequest,
     TransportProtocol,
 };
 use lsdc_common::execution::{PricingMode, ProofBackend, TeeBackend, TransportBackend};
+use lsdc_common::execution_overlay::{
+    ExecutionSessionState, ExecutionStatement, ExecutionStatementKind,
+    LSDC_EXECUTION_PROTOCOL_VERSION,
+};
 use lsdc_common::liquid::{
     CsvTransformManifest, CsvTransformOp, LiquidPolicyIr, RuntimeGuard, TransformGuard,
     TransportGuard,
 };
 use lsdc_common::odrl::ast::PolicyId;
+use lsdc_common::runtime_model::{EvidenceDag, EvidenceNode, NodeStatus};
 use lsdc_ports::{DataPlane, PricingOracle, TrainingMetrics};
 use lsdc_service_types::{
-    EvidenceVerificationRequest, FinalizeContractResponse, LineageJobAccepted, LineageJobRecord,
-    LineageJobRequest, LineageJobState, SettlementDecision, TransferStartResponse,
+    CreateExecutionSessionRequest, CreateExecutionSessionResponse, EvidenceVerificationRequest,
+    ExecutionCapabilitiesResponse, FinalizeContractResponse, IssueExecutionChallengeResponse,
+    LineageJobAccepted, LineageJobRecord, LineageJobRequest, LineageJobState,
+    RegisterAttestationResultRequest, RegisterAttestationResultResponse,
+    RegisterEvidenceStatementRequest, RegisterEvidenceStatementResponse, SettlementDecision,
+    TransferStartResponse, VerifyEvidenceDagRequest, VerifyEvidenceDagResponse,
 };
 use proof_plane_host::DevReceiptProofEngine;
 use std::sync::Arc;
@@ -88,6 +98,21 @@ async fn test_contract_finalize_transfer_and_settlement_surface() {
     let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
     let finalized = finalize_offer(&app, &offer).await;
     assert!(finalized.policy_execution.is_some());
+    let execution_overlay = finalized
+        .execution_overlay
+        .clone()
+        .expect("expected execution overlay summary");
+    assert_eq!(
+        execution_overlay.capability_descriptor.protocol_version,
+        LSDC_EXECUTION_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        execution_overlay.capability_descriptor_hash,
+        execution_overlay
+            .capability_descriptor
+            .canonical_hash()
+            .expect("capability descriptor hash")
+    );
 
     let settlement = get_json::<SettlementDecision, _>(
         &app,
@@ -104,6 +129,9 @@ async fn test_contract_finalize_transfer_and_settlement_surface() {
     assert!(settlement.latest_job_id.is_none());
     assert!(!settlement.settlement_allowed);
     assert!(settlement.policy_execution.is_some());
+    assert!(settlement.session_id.is_none());
+    assert!(settlement.evidence_root_hash.is_none());
+    assert!(settlement.transparency_receipt_hash.is_none());
 
     let transfer = get_json::<TransferStartResponse, _>(
         &app,
@@ -158,6 +186,9 @@ async fn test_phase3_three_party_demo_flow() {
         .expect("expected lineage result");
     assert_eq!(first_record.state, LineageJobState::Succeeded);
     assert!(first_result.settlement_allowed);
+    assert!(first_result.session_id.is_some());
+    assert!(first_result.evidence_root_hash.is_some());
+    assert!(first_result.transparency_receipt_hash.is_some());
     assert_eq!(
         first_result.actual_execution_profile.pricing_mode,
         PricingMode::Advisory
@@ -177,6 +208,9 @@ async fn test_phase3_three_party_demo_flow() {
         .expect("expected downstream lineage result");
     assert_eq!(second_record.state, LineageJobState::Succeeded);
     assert!(second_result.settlement_allowed);
+    assert!(second_result.session_id.is_some());
+    assert!(second_result.evidence_root_hash.is_some());
+    assert!(second_result.transparency_receipt_hash.is_some());
 
     let verification = get_json::<lsdc_service_types::EvidenceVerificationResult, _>(
         &tier_c,
@@ -211,6 +245,12 @@ async fn test_phase3_three_party_demo_flow() {
     .await;
     assert!(settlement_b.settlement_allowed);
     assert!(settlement_b.price_decision.is_some());
+    assert_eq!(settlement_b.session_id, first_result.session_id);
+    assert_eq!(settlement_b.evidence_root_hash, first_result.evidence_root_hash);
+    assert_eq!(
+        settlement_b.transparency_receipt_hash,
+        first_result.transparency_receipt_hash
+    );
 
     let settlement_c = get_json::<SettlementDecision, _>(
         &tier_c,
@@ -225,6 +265,12 @@ async fn test_phase3_three_party_demo_flow() {
     .await;
     assert!(settlement_c.settlement_allowed);
     assert!(settlement_c.proof_bundle.is_some());
+    assert_eq!(settlement_c.session_id, second_result.session_id);
+    assert_eq!(settlement_c.evidence_root_hash, second_result.evidence_root_hash);
+    assert_eq!(
+        settlement_c.transparency_receipt_hash,
+        second_result.transparency_receipt_hash
+    );
 }
 
 #[tokio::test]
@@ -255,9 +301,320 @@ async fn test_health_reports_configured_and_actual_backends() {
     assert_eq!(health["actual_backends"]["proof_backend"], "dev_receipt");
     assert_eq!(health["actual_backends"]["tee_backend"], "nitro_dev");
     assert_eq!(
+        health["execution_overlay"]["capability_descriptor"]["protocol_version"],
+        LSDC_EXECUTION_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        health["execution_overlay"]["strict_mode_supported"],
+        serde_json::Value::Bool(true)
+    );
+    assert_eq!(
         health["policy_truthfulness"]["clauses"][3]["clause"],
         "transport.valid_until"
     );
+}
+
+#[tokio::test]
+async fn test_execution_overlay_session_and_evidence_endpoints() {
+    ensure_test_env();
+    let app = build_test_app(start_simulated_agent().await).await;
+    let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
+    let finalized = finalize_offer(&app, &offer).await;
+    let finalized_overlay = finalized
+        .execution_overlay
+        .clone()
+        .expect("expected execution overlay summary");
+
+    let capabilities: ExecutionCapabilitiesResponse = get_json(
+        &app,
+        Method::GET,
+        "/lsdc/v1/capabilities",
+        None::<serde_json::Value>,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        capabilities.capability_descriptor.protocol_version,
+        LSDC_EXECUTION_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        capabilities.capability_descriptor_hash,
+        capabilities
+            .capability_descriptor
+            .canonical_hash()
+            .expect("capability descriptor hash")
+    );
+
+    let created: CreateExecutionSessionResponse = get_json(
+        &app,
+        Method::POST,
+        "/lsdc/v1/sessions",
+        Some(CreateExecutionSessionRequest {
+            agreement_id: finalized.agreement.agreement_id.0.clone(),
+            selector_hash: None,
+            requester_ephemeral_pubkey: vec![1, 2, 3],
+            expires_in_seconds: Some(120),
+        }),
+        StatusCode::CREATED,
+    )
+    .await;
+    assert_eq!(
+        created.execution_overlay.agreement_commitment_hash,
+        finalized_overlay.agreement_commitment_hash
+    );
+    assert_eq!(created.session.state, ExecutionSessionState::Created);
+
+    let challenge: IssueExecutionChallengeResponse = get_json(
+        &app,
+        Method::POST,
+        &format!("/lsdc/v1/sessions/{}/challenge", created.session.session_id),
+        None::<serde_json::Value>,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(challenge.session.state, ExecutionSessionState::Challenged);
+    assert_eq!(
+        challenge.challenge.agreement_hash,
+        created.execution_overlay.agreement_commitment_hash
+    );
+
+    let duplicate_challenge_error: serde_json::Value = get_json(
+        &app,
+        Method::POST,
+        &format!("/lsdc/v1/sessions/{}/challenge", created.session.session_id),
+        None::<serde_json::Value>,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    assert!(duplicate_challenge_error["error"]
+        .as_str()
+        .unwrap()
+        .contains("active challenge"));
+
+    let attestation_result = AttestationResult {
+        profile: "nitro-dev-attestation-result-v1".into(),
+        doc_hash: Sha256Hash::digest_bytes(b"attestation-doc"),
+        session_id: Some(created.session.session_id.to_string()),
+        nonce: Some(challenge.challenge.challenge_nonce_hex.clone()),
+        image_sha384: "image-sha384".into(),
+        pcrs: std::collections::BTreeMap::from([(0, "pcr0".into())]),
+        public_key: Some(vec![9, 9, 9]),
+        user_data_hash: Some(Sha256Hash::digest_bytes(b"user-data")),
+        cert_chain_verified: true,
+        freshness_ok: true,
+        appraisal: AppraisalStatus::Accepted,
+    };
+
+    let registered_attestation: RegisterAttestationResultResponse = get_json(
+        &app,
+        Method::POST,
+        &format!(
+            "/lsdc/v1/sessions/{}/attestation-result",
+            created.session.session_id
+        ),
+        Some(RegisterAttestationResultRequest {
+            session_id: created.session.session_id.to_string(),
+            attestation_result: attestation_result.clone(),
+        }),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        registered_attestation.session.state,
+        ExecutionSessionState::AttestationVerified
+    );
+
+    let statement = ExecutionStatement {
+        statement_id: "statement-http-test".into(),
+        agreement_id: finalized.agreement.agreement_id.0.clone(),
+        session_id: Some(created.session.session_id),
+        kind: ExecutionStatementKind::SettlementRecord,
+        subject_hash: registered_attestation.attestation_result_hash.clone(),
+        parent_hashes: vec![registered_attestation.attestation_result_hash.clone()],
+        created_at: chrono::Utc::now(),
+        payload_hash: registered_attestation.attestation_result_hash.clone(),
+    };
+    let registered_statement: RegisterEvidenceStatementResponse = get_json(
+        &app,
+        Method::POST,
+        "/lsdc/v1/evidence/register",
+        Some(RegisterEvidenceStatementRequest {
+            statement: statement.clone(),
+        }),
+        StatusCode::CREATED,
+    )
+    .await;
+    assert_eq!(
+        registered_statement.receipt.statement_id,
+        statement.statement_id
+    );
+
+    let fetched_receipt: lsdc_common::execution_overlay::TransparencyReceipt = get_json(
+        &app,
+        Method::GET,
+        &format!("/lsdc/v1/evidence/{}/receipt", statement.statement_id),
+        None::<serde_json::Value>,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(fetched_receipt.root_hash, registered_statement.receipt.root_hash);
+
+    let dag = EvidenceDag::new(
+        vec![EvidenceNode {
+            node_id: statement.statement_id.clone(),
+            kind: statement.kind,
+            canonical_hash: statement.canonical_hash().expect("statement hash"),
+            status: NodeStatus::Anchored,
+            payload_json: serde_json::to_value(&statement).unwrap(),
+        }],
+        vec![],
+    )
+    .unwrap();
+    let verification: VerifyEvidenceDagResponse = get_json(
+        &app,
+        Method::POST,
+        "/lsdc/v1/evidence/verify",
+        Some(VerifyEvidenceDagRequest {
+            dag,
+            receipts: vec![registered_statement.receipt],
+        }),
+        StatusCode::OK,
+    )
+    .await;
+    assert!(verification.valid);
+    assert_eq!(verification.checked_receipt_count, 1);
+    assert_eq!(verification.checked_statement_count, 1);
+}
+
+#[tokio::test]
+async fn test_lineage_jobs_persist_evidence_dag_and_verify_via_v1_route() {
+    ensure_test_env();
+    let agent_endpoint = start_simulated_agent().await;
+    let store = control_plane_api::store::Store::new(":memory:").unwrap();
+    let app = router(build_test_state(agent_endpoint, store.clone()));
+    let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
+    let finalized = finalize_offer(&app, &offer).await;
+
+    let accepted = start_lineage_job(&app, &finalized.agreement, None).await;
+    let record = wait_for_job(&app, &accepted.job_id).await;
+    let result = record.result.expect("expected lineage result");
+    assert_eq!(record.state, LineageJobState::Succeeded);
+    assert!(result.session_id.is_some());
+    assert!(result.evidence_root_hash.is_some());
+    assert!(result.transparency_receipt_hash.is_some());
+
+    let dag = store
+        .get_evidence_dag(&accepted.job_id)
+        .unwrap()
+        .expect("expected persisted evidence dag");
+    let receipt = store
+        .get_transparency_receipt(&format!("{}:settlement", accepted.job_id))
+        .unwrap()
+        .expect("expected transparency receipt");
+
+    let verification: VerifyEvidenceDagResponse = get_json(
+        &app,
+        Method::POST,
+        "/lsdc/v1/evidence/verify",
+        Some(VerifyEvidenceDagRequest {
+            dag: dag.clone(),
+            receipts: vec![receipt.clone()],
+        }),
+        StatusCode::OK,
+    )
+    .await;
+
+    assert!(verification.valid);
+    assert_eq!(verification.evidence_root_hash, dag.root_hash);
+    assert_eq!(
+        result.transparency_receipt_hash,
+        Some(
+            receipt
+                .canonical_hash()
+                .expect("transparency receipt hash")
+        )
+    );
+}
+
+#[tokio::test]
+async fn test_register_attestation_result_rejects_expired_and_mismatched_challenges() {
+    ensure_test_env();
+    let agent_endpoint = start_simulated_agent().await;
+    let store = control_plane_api::store::Store::new(":memory:").unwrap();
+    let state = build_test_state(agent_endpoint, store.clone());
+    let app = router(state.clone());
+    let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
+    let finalized = finalize_offer(&app, &offer).await;
+
+    let created = state
+        .create_execution_session(CreateExecutionSessionRequest {
+            agreement_id: finalized.agreement.agreement_id.0.clone(),
+            selector_hash: None,
+            requester_ephemeral_pubkey: vec![4, 5, 6],
+            expires_in_seconds: Some(120),
+        })
+        .expect("execution session");
+    let challenged = state
+        .issue_execution_challenge(&created.session.session_id.to_string())
+        .expect("execution challenge");
+
+    let expired_challenge = lsdc_common::execution_overlay::ExecutionSessionChallenge {
+        expires_at: chrono::Utc::now() - chrono::Duration::seconds(1),
+        ..challenged.challenge.clone()
+    };
+    store
+        .update_execution_challenge(
+            &created.session.session_id.to_string(),
+            &challenged.session,
+            &expired_challenge,
+        )
+        .unwrap();
+
+    let attestation_result = AttestationResult {
+        profile: "nitro-dev-attestation-result-v1".into(),
+        doc_hash: Sha256Hash::digest_bytes(b"attestation-doc-expired"),
+        session_id: Some(created.session.session_id.to_string()),
+        nonce: Some(expired_challenge.challenge_nonce_hex.clone()),
+        image_sha384: "image-sha384".into(),
+        pcrs: std::collections::BTreeMap::from([(0, "pcr0".into())]),
+        public_key: Some(vec![1, 2, 3]),
+        user_data_hash: Some(Sha256Hash::digest_bytes(b"user-data")),
+        cert_chain_verified: true,
+        freshness_ok: true,
+        appraisal: AppraisalStatus::Accepted,
+    };
+    let expired_err = state
+        .register_attestation_result(&created.session.session_id.to_string(), &attestation_result)
+        .unwrap_err();
+    assert!(expired_err.to_string().contains("challenge has expired"));
+
+    let mismatch_challenge = lsdc_common::execution_overlay::ExecutionSessionChallenge {
+        agreement_hash: Sha256Hash::digest_bytes(b"wrong-agreement"),
+        expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+        ..challenged.challenge
+    };
+    store
+        .update_execution_challenge(
+            &created.session.session_id.to_string(),
+            &challenged.session,
+            &mismatch_challenge,
+        )
+        .unwrap();
+
+    let mismatch_attestation = AttestationResult {
+        doc_hash: Sha256Hash::digest_bytes(b"attestation-doc-mismatch"),
+        nonce: Some(mismatch_challenge.challenge_nonce_hex.clone()),
+        ..attestation_result
+    };
+    let mismatch_err = state
+        .register_attestation_result(
+            &created.session.session_id.to_string(),
+            &mismatch_attestation,
+        )
+        .unwrap_err();
+    assert!(mismatch_err
+        .to_string()
+        .contains("agreement hash mismatch"));
 }
 
 #[tokio::test]
@@ -608,6 +965,7 @@ async fn start_lineage_job_with_manifest_and_input(
                 metrics_window_ended_at: chrono::Utc::now(),
             },
             prior_receipt,
+            execution_bindings: None,
         }),
         StatusCode::ACCEPTED,
     )
@@ -733,6 +1091,7 @@ fn sample_lineage_job_request() -> LineageJobRequest {
             metrics_window_ended_at: now,
         },
         prior_receipt: None,
+        execution_bindings: None,
     }
 }
 
@@ -753,6 +1112,16 @@ async fn test_internal_error_does_not_leak_raw_message() {
         proof_method_id: "dev-hmac-manifest-v1".into(),
         receipt_bytes: b"not-json".to_vec(),
         timestamp: chrono::Utc::now(),
+        agreement_commitment_hash: None,
+        session_id: None,
+        challenge_nonce_hash: None,
+        selector_hash: None,
+        attestation_result_hash: None,
+        capability_commitment_hash: None,
+        transparency_statement_hash: None,
+        parent_receipt_hashes: vec![],
+        recursion_depth: 0,
+        receipt_kind: ReceiptKind::Transform,
     };
     let response = app
         .clone()

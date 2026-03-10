@@ -1,5 +1,8 @@
 use crate::attestation::verify_attestation;
-use lsdc_common::crypto::{sign_bytes, verify_signature, ProofOfForgetting, Sha256Hash};
+use lsdc_common::crypto::{
+    sign_bytes, verify_signature, ErasureMode, EvidenceClass, KeyErasureEvidence,
+    ProofOfForgetting, Sha256Hash,
+};
 use lsdc_common::error::{LsdcError, Result};
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -37,6 +40,32 @@ pub fn verify_proof_of_forgetting(proof: &ProofOfForgetting) -> Result<bool> {
     Ok(attestation_valid
         && proof.proof_hash == Sha256Hash::digest_bytes(&payload)
         && verify_signature(&forgetting_secret()?, &payload, &proof.signature_hex))
+}
+
+pub fn build_key_erasure_evidence(
+    session_id: &str,
+    attestation_result_hash: &Sha256Hash,
+    teardown_timestamp: chrono::DateTime<chrono::Utc>,
+    evidence_class: EvidenceClass,
+) -> Result<KeyErasureEvidence> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "session_id": session_id,
+        "attestation_result_hash": attestation_result_hash.to_hex(),
+        "teardown_timestamp": teardown_timestamp.to_rfc3339(),
+        "evidence_class": evidence_class,
+    }))
+    .map_err(LsdcError::from)?;
+    let evidence_hash = Sha256Hash::digest_bytes(&payload);
+
+    Ok(KeyErasureEvidence {
+        session_id: session_id.to_string(),
+        attestation_result_hash: attestation_result_hash.clone(),
+        released_key_id: format!("local-key-{session_id}"),
+        erasure_mode: ErasureMode::SessionTeardown,
+        teardown_timestamp,
+        evidence_class,
+        evidence_hash,
+    })
 }
 
 pub(crate) fn forgetting_secret() -> Result<String> {

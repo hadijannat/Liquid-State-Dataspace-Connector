@@ -395,6 +395,16 @@ impl PolicyExecutionClassification {
             PolicyClauseStatus::MetadataOnly,
             Some("pricing decisions are advisory-only and do not mutate contracts or ledgers"),
         );
+        classification.push(
+            "overlay.transparency_receipts",
+            PolicyClauseStatus::Executable,
+            Some("the execution overlay can anchor local transparency receipts"),
+        );
+        classification.push(
+            "overlay.truthfulness_modes",
+            PolicyClauseStatus::Executable,
+            Some("permissive and strict overlay truthfulness modes are recognized"),
+        );
         classification
     }
 

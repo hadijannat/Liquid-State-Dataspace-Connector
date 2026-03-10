@@ -10,13 +10,27 @@ use lsdc_service_types::{
 
 pub async fn create_lineage_job(
     State(state): State<ApiState>,
-    Json(request): Json<LineageJobRequest>,
+    Json(mut request): Json<LineageJobRequest>,
 ) -> ApiResult<(StatusCode, Json<LineageJobAccepted>)> {
     let requested_profile = RequestedExecutionProfile::from_agreement(&request.agreement);
+    let execution_overlay = state
+        .execution_overlay_for(&request.agreement)
+        .map_err(ApiError::bad_request)?;
     state
         .store
         .upsert_agreement(&request.agreement, &requested_profile)
         .map_err(ApiError::internal)?;
+    state
+        .store
+        .upsert_agreement_overlay(&request.agreement.agreement_id.0, &execution_overlay)
+        .map_err(ApiError::internal)?;
+    if request.execution_bindings.is_none() {
+        request.execution_bindings = Some(
+            state
+                .build_server_managed_execution_bindings(&request.agreement)
+                .map_err(ApiError::bad_request)?,
+        );
+    }
 
     let now = chrono::Utc::now();
     let job_id = uuid::Uuid::new_v4().to_string();

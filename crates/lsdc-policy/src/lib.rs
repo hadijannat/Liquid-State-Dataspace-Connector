@@ -2,6 +2,7 @@ pub mod error;
 pub mod execution;
 pub mod liquid;
 pub mod odrl;
+pub mod profile;
 
 pub use error::{LsdcError, Result};
 pub use execution::{
@@ -16,3 +17,8 @@ pub use liquid::{
     TransportProtocol,
 };
 pub use odrl::ast::{PolicyAgreement, PolicyId};
+pub use profile::{
+    canonical_policy_json, normalize_policy, ClauseRealization, NormalizedConstraint,
+    NormalizedDuty, NormalizedPermission, NormalizedPolicy, RuntimeCapabilities,
+    TruthfulnessMode, LSDC_PROFILE_OPERANDS,
+};

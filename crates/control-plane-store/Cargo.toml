@@ -11,3 +11,6 @@ chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+[dev-dependencies]
+uuid = { workspace = true }

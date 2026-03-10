@@ -47,6 +47,7 @@ impl LineageJobRunner {
             current_price,
             metrics,
             prior_receipt,
+            execution_bindings,
         } = request;
 
         let iface = iface.unwrap_or_else(|| self.state.default_interface.clone());
@@ -62,11 +63,15 @@ impl LineageJobRunner {
                 current_price,
                 metrics,
                 prior_receipt,
+                execution_bindings: execution_bindings.clone(),
             })
             .await;
 
         match job {
-            Ok(result) => self.persist_success(job_id, agreement, result).await,
+            Ok(result) => {
+                self.persist_success(job_id, agreement, execution_bindings, result)
+                    .await
+            }
             Err(err) => {
                 if let Err(store_err) = self.state.store.set_job_error(&job_id, &err.to_string()) {
                     tracing::error!(
@@ -84,6 +89,7 @@ impl LineageJobRunner {
         &self,
         job_id: String,
         agreement: ContractAgreement,
+        execution_bindings: Option<lsdc_ports::ExecutionBindings>,
         result: control_plane::orchestrator::BatchLineageResult,
     ) {
         let handle = result.enforcement_handle;
@@ -112,7 +118,7 @@ impl LineageJobRunner {
             }
         };
 
-        let record = LineageJobResult {
+        let mut record = LineageJobResult {
             agreement_id: agreement.agreement_id.0.clone(),
             actual_execution_profile: self
                 .state
@@ -124,11 +130,62 @@ impl LineageJobRunner {
             enforcement_runtime,
             transformed_csv_utf8,
             proof_bundle: result.proof_bundle,
+            session_id: execution_bindings
+                .as_ref()
+                .map(|bindings| bindings.session.session_id.to_string()),
+            evidence_root_hash: None,
+            transparency_receipt_hash: None,
             price_decision: result.price_decision,
             sanction_proposal: result.sanction_proposal,
             settlement_allowed: result.settlement_allowed,
             completed_at: chrono::Utc::now(),
         };
+
+        if let Some(bindings) = execution_bindings.as_ref() {
+            if self
+                .state
+                .register_attestation_result(
+                    &bindings.session.session_id.to_string(),
+                    &result.execution_evidence.attestation_result,
+                )
+                .is_err()
+            {
+                tracing::warn!(job_id, "failed to persist attestation result for execution session");
+            }
+
+            let execution_overlay = match self.state.execution_overlay_for(&agreement) {
+                Ok(overlay) => overlay,
+                Err(err) => {
+                    tracing::error!(job_id, error = %err, "failed to derive execution overlay");
+                    return;
+                }
+            };
+            let (dag, transparency_receipt) = match self.state.build_evidence_dag_for_lineage(
+                &job_id,
+                &agreement,
+                &execution_overlay,
+                bindings,
+                &result.execution_evidence,
+                &record.price_decision,
+            ) {
+                Ok(value) => value,
+                Err(err) => {
+                    tracing::error!(job_id, error = %err, "failed to build evidence dag");
+                    return;
+                }
+            };
+            let transparency_receipt_hash = match transparency_receipt.canonical_hash() {
+                Ok(hash) => hash,
+                Err(err) => {
+                    tracing::error!(job_id, error = %err, "failed to hash transparency receipt");
+                    return;
+                }
+            };
+            record.evidence_root_hash = Some(dag.root_hash.clone());
+            record.transparency_receipt_hash = Some(transparency_receipt_hash.clone());
+            record.proof_bundle.evidence_root_hash = Some(dag.root_hash);
+            record.proof_bundle.transparency_receipt_hash = Some(transparency_receipt_hash);
+        }
 
         if let Err(err) =
             self.state

@@ -17,6 +17,7 @@ lsdc-ports = { path = "../lsdc-ports" }
 lsdc-service-types = { path = "../lsdc-service-types" }
 proof-plane-core = { path = "../proof-plane/core" }
 proof-plane-host = { path = "../proof-plane/host" }
+receipt-log = { path = "../receipt-log" }
 tee-orchestrator = { path = "../tee-orchestrator" }
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -26,3 +27,4 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
+hex = { workspace = true }

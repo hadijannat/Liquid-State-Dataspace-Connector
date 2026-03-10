@@ -1,13 +1,20 @@
 use chrono::{DateTime, Utc};
-use lsdc_common::crypto::{PriceDecision, ProofBundle, ProvenanceReceipt, SanctionProposal};
+use lsdc_common::crypto::{
+    AttestationResult, PriceDecision, ProofBundle, ProvenanceReceipt, SanctionProposal, Sha256Hash,
+};
 use lsdc_common::dsp::{ContractAgreement, ContractOffer, TransferStart};
 use lsdc_common::execution::{
     ActualExecutionProfile, PolicyExecutionClassification, RequestedExecutionProfile,
 };
+use lsdc_common::execution_overlay::{
+    ExecutionCapabilityDescriptor, ExecutionSession, ExecutionSessionChallenge,
+    ExecutionStatement, TransparencyReceipt,
+};
 use lsdc_common::liquid::CsvTransformManifest;
+use lsdc_common::runtime_model::EvidenceDag;
 use lsdc_ports::{
-    EnforcementHandle, EnforcementRuntimeStatus, EnforcementStatus, ResolvedTransportGuard,
-    TrainingMetrics,
+    EnforcementHandle, EnforcementRuntimeStatus, EnforcementStatus, ExecutionBindings,
+    ResolvedTransportGuard, TrainingMetrics,
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +24,85 @@ pub struct FinalizeContractResponse {
     pub requested_profile: RequestedExecutionProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_execution: Option<PolicyExecutionClassification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_overlay: Option<ExecutionOverlaySummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionOverlaySummary {
+    pub capability_descriptor: ExecutionCapabilityDescriptor,
+    pub capability_descriptor_hash: Sha256Hash,
+    pub agreement_commitment_hash: Sha256Hash,
+    pub truthfulness_mode: lsdc_common::profile::TruthfulnessMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionCapabilitiesResponse {
+    pub capability_descriptor: ExecutionCapabilityDescriptor,
+    pub capability_descriptor_hash: Sha256Hash,
+    pub strict_mode_supported: bool,
+    pub dev_backends_allowed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateExecutionSessionRequest {
+    pub agreement_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector_hash: Option<Sha256Hash>,
+    #[serde(default)]
+    pub requester_ephemeral_pubkey: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateExecutionSessionResponse {
+    pub session: ExecutionSession,
+    pub execution_overlay: ExecutionOverlaySummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueExecutionChallengeResponse {
+    pub session: ExecutionSession,
+    pub challenge: ExecutionSessionChallenge,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterAttestationResultRequest {
+    pub session_id: String,
+    pub attestation_result: AttestationResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterAttestationResultResponse {
+    pub session: ExecutionSession,
+    pub attestation_result_hash: Sha256Hash,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterEvidenceStatementRequest {
+    pub statement: ExecutionStatement,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterEvidenceStatementResponse {
+    pub statement: ExecutionStatement,
+    pub receipt: TransparencyReceipt,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyEvidenceDagRequest {
+    pub dag: EvidenceDag,
+    #[serde(default)]
+    pub receipts: Vec<TransparencyReceipt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyEvidenceDagResponse {
+    pub valid: bool,
+    pub checked_statement_count: usize,
+    pub checked_receipt_count: usize,
+    pub evidence_root_hash: Sha256Hash,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +126,8 @@ pub struct LineageJobRequest {
     pub current_price: f64,
     pub metrics: TrainingMetrics,
     pub prior_receipt: Option<ProvenanceReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_bindings: Option<ExecutionBindings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +159,12 @@ pub struct LineageJobResult {
     pub enforcement_runtime: Option<EnforcementRuntimeStatus>,
     pub transformed_csv_utf8: String,
     pub proof_bundle: ProofBundle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_root_hash: Option<Sha256Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transparency_receipt_hash: Option<Sha256Hash>,
     pub price_decision: PriceDecision,
     pub sanction_proposal: Option<SanctionProposal>,
     pub settlement_allowed: bool,
@@ -116,6 +210,12 @@ pub struct SettlementDecision {
     pub price_decision: Option<PriceDecision>,
     pub sanction_proposal: Option<SanctionProposal>,
     pub proof_bundle: Option<ProofBundle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_root_hash: Option<Sha256Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transparency_receipt_hash: Option<Sha256Hash>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

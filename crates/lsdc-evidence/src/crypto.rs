@@ -93,12 +93,40 @@ pub struct ProvenanceReceipt {
     pub policy_hash: Sha256Hash,
     pub transform_manifest_hash: Sha256Hash,
     pub prior_receipt_hash: Option<Sha256Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agreement_commitment_hash: Option<Sha256Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub challenge_nonce_hash: Option<Sha256Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector_hash: Option<Sha256Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_result_hash: Option<Sha256Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_commitment_hash: Option<Sha256Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transparency_statement_hash: Option<Sha256Hash>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parent_receipt_hashes: Vec<Sha256Hash>,
+    #[serde(default)]
+    pub recursion_depth: u32,
+    #[serde(default)]
+    pub receipt_kind: ReceiptKind,
     pub receipt_hash: Sha256Hash,
     pub proof_backend: ProofBackend,
     pub receipt_format_version: String,
     pub proof_method_id: String,
     pub receipt_bytes: Vec<u8>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptKind {
+    #[default]
+    Transform,
+    Composition,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,11 +142,68 @@ pub struct AttestationDocument {
     pub platform: String,
     pub binary_hash: Sha256Hash,
     pub measurements: AttestationMeasurements,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_data_hash: Option<Sha256Hash>,
     pub document_hash: Sha256Hash,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub raw_attestation_document: Vec<u8>,
     pub certificate_chain_pem: Vec<String>,
     pub signature_hex: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppraisalStatus {
+    Accepted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttestationResult {
+    pub profile: String,
+    pub doc_hash: Sha256Hash,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
+    pub image_sha384: String,
+    pub pcrs: BTreeMap<u8, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_data_hash: Option<Sha256Hash>,
+    pub cert_chain_verified: bool,
+    pub freshness_ok: bool,
+    pub appraisal: AppraisalStatus,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ErasureMode {
+    SessionTeardown,
+    KeyRevocation,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceClass {
+    Dev,
+    Attested,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyErasureEvidence {
+    pub session_id: String,
+    pub attestation_result_hash: Sha256Hash,
+    pub released_key_id: String,
+    pub erasure_mode: ErasureMode,
+    pub teardown_timestamp: chrono::DateTime<chrono::Utc>,
+    pub evidence_class: EvidenceClass,
+    pub evidence_hash: Sha256Hash,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,7 +225,55 @@ pub struct ProofBundle {
     pub provenance_receipt: ProvenanceReceipt,
     pub attestation: AttestationDocument,
     pub proof_of_forgetting: ProofOfForgetting,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_result: Option<AttestationResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_erasure_evidence: Option<KeyErasureEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_root_hash: Option<Sha256Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transparency_receipt_hash: Option<Sha256Hash>,
     pub job_audit_hash: Sha256Hash,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionEvidenceBundle {
+    pub provenance_receipt: ProvenanceReceipt,
+    pub attestation_document: AttestationDocument,
+    pub attestation_result: AttestationResult,
+    pub key_erasure_evidence: KeyErasureEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transparency_receipt_hash: Option<Sha256Hash>,
+    pub evidence_root_hash: Sha256Hash,
+    pub job_audit_hash: Sha256Hash,
+}
+
+impl ExecutionEvidenceBundle {
+    pub fn into_legacy_proof_bundle(self) -> ProofBundle {
+        let proof_of_forgetting = ProofOfForgetting {
+            attestation: self.attestation_document.clone(),
+            destruction_timestamp: self.key_erasure_evidence.teardown_timestamp,
+            data_hash: self.provenance_receipt.input_hash.clone(),
+            proof_hash: self.key_erasure_evidence.evidence_hash.clone(),
+            signature_hex: self.key_erasure_evidence.evidence_hash.to_hex(),
+        };
+
+        ProofBundle {
+            proof_backend: self.provenance_receipt.proof_backend,
+            receipt_format_version: self.provenance_receipt.receipt_format_version.clone(),
+            proof_method_id: self.provenance_receipt.proof_method_id.clone(),
+            prior_receipt_hash: self.provenance_receipt.prior_receipt_hash.clone(),
+            raw_receipt_bytes: self.provenance_receipt.receipt_bytes.clone(),
+            provenance_receipt: self.provenance_receipt,
+            attestation: self.attestation_document,
+            proof_of_forgetting,
+            attestation_result: Some(self.attestation_result),
+            key_erasure_evidence: Some(self.key_erasure_evidence),
+            evidence_root_hash: Some(self.evidence_root_hash),
+            transparency_receipt_hash: self.transparency_receipt_hash,
+            job_audit_hash: self.job_audit_hash,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
