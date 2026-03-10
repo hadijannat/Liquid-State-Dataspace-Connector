@@ -10,40 +10,40 @@ The Liquid-State Dataspace Connector (LSDC) is a Rust-first dataspace prototype 
 
 ```mermaid
 flowchart LR
-    Client(["External DSP\n+ ODRL Clients"])
+    Client(["External DSP<br/>+ ODRL Clients"])
 
     subgraph CP["Control Plane"]
         direction TB
-        API["control-plane-api\nHTTP API"]
-        Orch["Negotiation + Policy Lowering\ncrates/control-plane"]
-        Store[("SQLite Persistence\ncrates/control-plane-store")]
+        API["control-plane-api<br/>HTTP API"]
+        Orch["Negotiation + Policy Lowering<br/>crates/control-plane"]
+        Store[("SQLite Persistence<br/>crates/control-plane-store")]
         API --> Orch
         Orch <--> Store
     end
 
     subgraph DP["Liquid Data Plane"]
         direction TB
-        AgentGrpc["gRPC Coordination\nliquid-agent-grpc"]
-        Agent["liquid-agent\nDaemon"]
-        Enforce["Transport Enforcement\nSim / Aya/XDP"]
+        AgentGrpc["gRPC Coordination<br/>liquid-agent-grpc"]
+        Agent["liquid-agent<br/>Daemon"]
+        Enforce["Transport Enforcement<br/>Sim / Aya/XDP"]
         AgentGrpc --> Agent --> Enforce
     end
 
     subgraph PP["Proof Plane"]
         direction TB
-        ProofHost["Proof Host\ncrates/proof-plane/host"]
-        Kernel["Transform Kernel\nCSV Lineage Execution"]
-        Evidence["Receipt Proofs +\nForgetting Artifacts"]
+        ProofHost["Proof Host<br/>crates/proof-plane/host"]
+        Kernel["Transform Kernel<br/>CSV Lineage Execution"]
+        Evidence["Receipt Proofs +<br/>Forgetting Artifacts"]
         ProofHost --> Kernel --> Evidence
     end
 
     subgraph AT["Attestation + Pricing"]
         direction TB
-        TEE["TEE Orchestrator\nAttestation-Aware Execution"]
-        Pricing["Pricing Oracle\nAdvisory gRPC Decisions"]
+        TEE["TEE Orchestrator<br/>Attestation-Aware Execution"]
+        Pricing["Pricing Oracle<br/>Advisory gRPC Decisions"]
     end
 
-    Surfaces(["Transfer · Lineage\nEvidence · Settlement"])
+    Surfaces(["Transfer · Lineage<br/>Evidence · Settlement"])
 
     Client --> API
     Orch --> AgentGrpc
