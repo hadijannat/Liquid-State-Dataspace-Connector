@@ -66,6 +66,8 @@ pub struct RuntimeCapabilities {
     pub transparency_supported: bool,
     pub strict_mode_supported: bool,
     pub dev_backends_allowed: bool,
+    pub attested_key_release_supported: bool,
+    pub attested_teardown_supported: bool,
 }
 
 impl RuntimeCapabilities {
@@ -115,7 +117,19 @@ impl RuntimeCapabilities {
                             .then(|| "tee_backend_missing".into()),
                     },
                     "keyReleaseProfile" => {
-                        let executable = self.tee_backend == TeeBackend::NitroDev;
+                        let executable = self.tee_backend == TeeBackend::NitroLive
+                            && self.attested_key_release_supported
+                            && constraint.right_operand.as_str() == Some("kms-attested");
+                        let reason_code = match constraint.right_operand.as_str() {
+                            Some("kms-attested") if self.tee_backend != TeeBackend::NitroLive => {
+                                Some("nitro_live_required".into())
+                            }
+                            Some("kms-attested") if !self.attested_key_release_supported => {
+                                Some("attested_key_release_unavailable".into())
+                            }
+                            Some("kms-attested") => None,
+                            _ => Some("unsupported_key_release_profile".into()),
+                        };
                         ClauseRealization {
                             clause_id: constraint.clause_id.clone(),
                             status: if executable {
@@ -125,12 +139,31 @@ impl RuntimeCapabilities {
                             },
                             required_primitives: vec!["key_broker".into()],
                             required_evidence: vec!["key_erasure_evidence".into()],
-                            reason_code: (!executable).then(|| "key_release_profile_stub".into()),
+                            reason_code: (!executable).then_some(reason_code).flatten(),
                         }
                     }
                     "deletionMode" => {
-                        let executable = self.dev_backends_allowed
-                            && constraint.right_operand.as_str() == Some("dev_deletion");
+                        let executable = match constraint.right_operand.as_str() {
+                            Some("dev_deletion") => self.dev_backends_allowed,
+                            Some("kms_erasure") => {
+                                self.tee_backend == TeeBackend::NitroLive
+                                    && self.attested_teardown_supported
+                            }
+                            _ => false,
+                        };
+                        let reason_code = match constraint.right_operand.as_str() {
+                            Some("dev_deletion") if !self.dev_backends_allowed => {
+                                Some("dev_teardown_unavailable".into())
+                            }
+                            Some("kms_erasure") if self.tee_backend != TeeBackend::NitroLive => {
+                                Some("nitro_live_required".into())
+                            }
+                            Some("kms_erasure") if !self.attested_teardown_supported => {
+                                Some("attested_teardown_unavailable".into())
+                            }
+                            Some("dev_deletion" | "kms_erasure") => None,
+                            _ => Some("unsupported_teardown_mode".into()),
+                        };
                         ClauseRealization {
                             clause_id: constraint.clause_id.clone(),
                             status: if executable {
@@ -140,7 +173,7 @@ impl RuntimeCapabilities {
                             },
                             required_primitives: vec!["teardown.evidence".into()],
                             required_evidence: vec!["teardown_evidence".into()],
-                            reason_code: (!executable).then(|| "teardown_mode_unavailable".into()),
+                            reason_code: (!executable).then_some(reason_code).flatten(),
                         }
                     }
                     _ => ClauseRealization {

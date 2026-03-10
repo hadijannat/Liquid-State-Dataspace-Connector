@@ -178,6 +178,8 @@ impl ApiState {
             transparency_supported: true,
             strict_mode_supported: true,
             dev_backends_allowed: allow_dev_defaults(),
+            attested_key_release_supported: false,
+            attested_teardown_supported: false,
         }
     }
 
@@ -196,9 +198,17 @@ impl ApiState {
                 },
             ),
             (
-                "attestation.nitro_live_measurement".into(),
+                "attestation.nitro_live_verified".into(),
                 if self.actual_tee_backend == TeeBackend::NitroLive {
                     Experimental
+                } else {
+                    Unsupported
+                },
+            ),
+            (
+                "key_release.kms_attested".into(),
+                if self.actual_tee_backend == TeeBackend::NitroLive {
+                    ModeledOnly
                 } else {
                     Unsupported
                 },
@@ -229,7 +239,14 @@ impl ApiState {
                     Experimental
                 },
             ),
-            ("teardown.key_erasure".into(), ModeledOnly),
+            (
+                "teardown.kms_erasure".into(),
+                if self.actual_tee_backend == TeeBackend::NitroLive {
+                    ModeledOnly
+                } else {
+                    Unsupported
+                },
+            ),
         ])
     }
 
@@ -254,7 +271,7 @@ impl ApiState {
             advertised_profiles: AdvertisedProfiles {
                 attestation_profile: match self.actual_tee_backend {
                     TeeBackend::NitroDev => "nitro-dev-attestation-result-v1",
-                    TeeBackend::NitroLive => "nitro-live-measurement-check-v1",
+                    TeeBackend::NitroLive => "nitro-live-attestation-result-v1",
                     TeeBackend::None => "none",
                 }
                 .into(),
@@ -265,7 +282,12 @@ impl ApiState {
                 }
                 .into(),
                 transparency_profile: LOCAL_TRANSPARENCY_PROFILE.into(),
-                teardown_profile: "dev-deletion-v1".into(),
+                teardown_profile: if self.actual_tee_backend == TeeBackend::NitroLive {
+                    "kms-key-erasure-v1"
+                } else {
+                    "dev-deletion-v1"
+                }
+                .into(),
             },
             support: self.capability_support_summary(),
         })

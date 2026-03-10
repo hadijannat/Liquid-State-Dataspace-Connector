@@ -55,6 +55,8 @@ fn capability_solver_is_permissive_when_dev_teardown_is_unavailable() {
         transparency_supported: true,
         strict_mode_supported: true,
         dev_backends_allowed: false,
+        attested_key_release_supported: false,
+        attested_teardown_supported: false,
     };
 
     let realizations = capabilities.clause_realizations(&normalized, &[]);
@@ -63,9 +65,13 @@ fn capability_solver_is_permissive_when_dev_teardown_is_unavailable() {
     assert_eq!(realizations[0].status, PolicyClauseStatus::MetadataOnly);
     assert_eq!(
         realizations[0].reason_code.as_deref(),
-        Some("teardown_mode_unavailable")
+        Some("dev_teardown_unavailable")
     );
     assert_eq!(realizations[1].status, PolicyClauseStatus::MetadataOnly);
+    assert_eq!(
+        realizations[1].reason_code.as_deref(),
+        Some("attested_key_release_unavailable")
+    );
 }
 
 #[test]
@@ -88,6 +94,8 @@ fn capability_solver_rejects_metadata_only_overlay_clauses_in_strict_mode() {
         transparency_supported: true,
         strict_mode_supported: true,
         dev_backends_allowed: false,
+        attested_key_release_supported: false,
+        attested_teardown_supported: false,
     };
 
     let realizations =
@@ -103,4 +111,43 @@ fn capability_solver_rejects_metadata_only_overlay_clauses_in_strict_mode() {
 
     assert_eq!(deletion.status, PolicyClauseStatus::Rejected);
     assert_eq!(key_release.status, PolicyClauseStatus::Rejected);
+}
+
+#[test]
+fn capability_solver_executes_live_kms_operands_when_attested_support_is_available() {
+    let policy = serde_json::json!({
+        "permission": [{
+            "action": "read",
+            "constraint": [
+                {"leftOperand": "deletionMode", "operator": "eq", "rightOperand": "kms_erasure"},
+                {"leftOperand": "keyReleaseProfile", "operator": "eq", "rightOperand": "kms-attested"}
+            ]
+        }]
+    });
+    let normalized = normalize_policy(&policy).expect("policy should normalize");
+    let capabilities = RuntimeCapabilities {
+        transport_backend: TransportBackend::Simulated,
+        proof_backend: ProofBackend::RiscZero,
+        tee_backend: TeeBackend::NitroLive,
+        transparency_supported: true,
+        strict_mode_supported: true,
+        dev_backends_allowed: false,
+        attested_key_release_supported: true,
+        attested_teardown_supported: true,
+    };
+
+    let realizations = capabilities.clause_realizations(&normalized, &[]);
+    let deletion = realizations
+        .iter()
+        .find(|item| item.clause_id == "deletionMode")
+        .expect("deletion clause");
+    let key_release = realizations
+        .iter()
+        .find(|item| item.clause_id == "keyReleaseProfile")
+        .expect("key release clause");
+
+    assert_eq!(deletion.status, PolicyClauseStatus::Executable);
+    assert_eq!(deletion.reason_code, None);
+    assert_eq!(key_release.status, PolicyClauseStatus::Executable);
+    assert_eq!(key_release.reason_code, None);
 }
