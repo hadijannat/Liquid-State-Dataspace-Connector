@@ -16,7 +16,7 @@ use lsdc_common::dsp::{
 };
 use lsdc_common::execution::{PricingMode, ProofBackend, TeeBackend, TransportBackend};
 use lsdc_common::execution_overlay::{
-    ExecutionSessionState, ExecutionStatement, ExecutionStatementKind,
+    CapabilitySupportLevel, ExecutionSessionState, ExecutionStatement, ExecutionStatementKind,
     LSDC_EXECUTION_PROTOCOL_VERSION,
 };
 use lsdc_common::liquid::{
@@ -25,6 +25,7 @@ use lsdc_common::liquid::{
 };
 use lsdc_common::odrl::ast::PolicyId;
 use lsdc_common::runtime_model::{EvidenceDag, EvidenceNode, NodeStatus};
+use lsdc_config::KeyBrokerBackend;
 use lsdc_ports::{
     DataPlane, EnforcementIdentity, PricingOracle, ResolvedTransportGuard, TrainingMetrics,
 };
@@ -54,6 +55,7 @@ fn ensure_test_env() {
         std::env::set_var("LSDC_PROOF_SECRET", "test-proof-secret");
         std::env::set_var("LSDC_FORGETTING_SECRET", "test-forgetting-secret");
         std::env::set_var("LSDC_ATTESTATION_SECRET", TEST_ATTESTATION_SECRET);
+        std::env::set_var("AWS_EC2_METADATA_DISABLED", "true");
     });
 }
 
@@ -728,6 +730,10 @@ async fn test_state_from_config_rejects_transport_backend_mismatch() {
         tee_backend: TeeBackend::NitroDev,
         pricing_endpoint: "http://127.0.0.1:50051".into(),
         default_interface: "lo".into(),
+        key_broker_backend: KeyBrokerBackend::None,
+        aws_region: None,
+        kms_key_id: None,
+        nitro_trust_bundle_path: None,
         nitro_live_attestation_path: None,
     };
 
@@ -742,7 +748,7 @@ async fn test_state_from_config_rejects_transport_backend_mismatch() {
 }
 
 #[tokio::test]
-async fn test_state_from_config_rejects_missing_nitro_live_material() {
+async fn test_state_from_config_rejects_missing_nitro_live_kms_config() {
     ensure_test_env();
     let agent_endpoint = start_simulated_agent().await;
     let config = ControlPlaneApiConfig {
@@ -755,16 +761,113 @@ async fn test_state_from_config_rejects_missing_nitro_live_material() {
         tee_backend: TeeBackend::NitroLive,
         pricing_endpoint: "http://127.0.0.1:50051".into(),
         default_interface: "lo".into(),
+        key_broker_backend: KeyBrokerBackend::None,
+        aws_region: None,
+        kms_key_id: None,
+        nitro_trust_bundle_path: None,
         nitro_live_attestation_path: None,
     };
 
     let err = match control_plane_api::state_from_config(&config).await {
-        Ok(_) => panic!("expected missing nitro_live_attestation_path to fail startup"),
+        Ok(_) => panic!("expected missing nitro_live AWS configuration to fail startup"),
         Err(err) => err,
     };
     assert!(
-        err.to_string().contains("nitro_live_attestation_path"),
+        err.to_string().contains("key_broker_backend"),
         "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_state_from_config_allows_nitro_live_without_fixture_path() {
+    ensure_test_env();
+    let agent_endpoint = start_simulated_agent().await;
+    let config = ControlPlaneApiConfig {
+        node_name: "nitro-live-node".into(),
+        listen_addr: "127.0.0.1:0".into(),
+        database_path: ":memory:".into(),
+        liquid_agent_endpoint: agent_endpoint,
+        transport_backend: TransportBackend::Simulated,
+        proof_backend: ProofBackend::DevReceipt,
+        tee_backend: TeeBackend::NitroLive,
+        pricing_endpoint: "http://127.0.0.1:50051".into(),
+        default_interface: "lo".into(),
+        key_broker_backend: KeyBrokerBackend::AwsKms,
+        aws_region: Some("eu-central-1".into()),
+        kms_key_id: Some("arn:aws:kms:eu-central-1:123:key/test".into()),
+        nitro_trust_bundle_path: None,
+        nitro_live_attestation_path: None,
+    };
+
+    let state = control_plane_api::state_from_config(&config)
+        .await
+        .expect("nitro_live should not require a startup fixture path");
+
+    assert_eq!(
+        state.actual_backends_summary().tee_backend,
+        TeeBackend::NitroLive
+    );
+}
+
+#[tokio::test]
+async fn test_nitro_live_capabilities_endpoint_reports_attested_support() {
+    ensure_test_env();
+    let agent_endpoint = start_simulated_agent().await;
+    let config = ControlPlaneApiConfig {
+        node_name: "nitro-live-node".into(),
+        listen_addr: "127.0.0.1:0".into(),
+        database_path: ":memory:".into(),
+        liquid_agent_endpoint: agent_endpoint,
+        transport_backend: TransportBackend::Simulated,
+        proof_backend: ProofBackend::DevReceipt,
+        tee_backend: TeeBackend::NitroLive,
+        pricing_endpoint: "http://127.0.0.1:50051".into(),
+        default_interface: "lo".into(),
+        key_broker_backend: KeyBrokerBackend::AwsKms,
+        aws_region: Some("eu-central-1".into()),
+        kms_key_id: Some("arn:aws:kms:eu-central-1:123:key/test".into()),
+        nitro_trust_bundle_path: None,
+        nitro_live_attestation_path: None,
+    };
+    let state = control_plane_api::state_from_config(&config)
+        .await
+        .expect("nitro_live should start with AWS KMS configuration");
+    let app = router(state);
+
+    let capabilities: ExecutionCapabilitiesResponse = get_json(
+        &app,
+        Method::GET,
+        "/lsdc/v1/capabilities",
+        None::<serde_json::Value>,
+        StatusCode::OK,
+    )
+    .await;
+
+    assert_eq!(
+        capabilities
+            .capability_descriptor
+            .advertised_profiles
+            .attestation_profile,
+        "nitro-live-attestation-result-v1"
+    );
+    assert_eq!(
+        capabilities
+            .capability_descriptor
+            .advertised_profiles
+            .teardown_profile,
+        "kms-key-erasure-v1"
+    );
+    assert_eq!(
+        capabilities.capability_descriptor.support["attestation.nitro_live_verified"],
+        CapabilitySupportLevel::Experimental
+    );
+    assert_eq!(
+        capabilities.capability_descriptor.support["key_release.kms_attested"],
+        CapabilitySupportLevel::Experimental
+    );
+    assert_eq!(
+        capabilities.capability_descriptor.support["teardown.kms_erasure"],
+        CapabilitySupportLevel::Experimental
     );
 }
 
@@ -822,7 +925,13 @@ async fn build_test_app(agent_endpoint: String) -> axum::Router {
 fn build_test_state(agent_endpoint: String, store: control_plane_api::store::Store) -> ApiState {
     ensure_test_env();
     let proof_engine = Arc::new(DevReceiptProofEngine::new().unwrap());
-    let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()).unwrap());
+    let enclave_manager = Arc::new(
+        NitroEnclaveManager::new_dev(
+            proof_engine.clone(),
+            Arc::new(LocalAttestationVerifier::new()),
+        )
+        .unwrap(),
+    );
     let attestation_verifier = Arc::new(LocalAttestationVerifier::new());
     let pricing_oracle = Arc::new(MockPricingOracle);
     let liquid_agent = Arc::new(LiquidAgentGrpcClient::new(agent_endpoint));
@@ -920,16 +1029,6 @@ fn sample_bound_attestation_evidence(
     )
 }
 
-fn sample_invalid_attestation_evidence(nonce: Option<String>) -> AttestationEvidence {
-    let mut evidence = sample_valid_attestation_evidence(
-        nonce,
-        Some(vec![9, 9, 9]),
-        Some(Sha256Hash::digest_bytes(b"user-data")),
-    );
-    evidence.document.signature_hex = "deadbeef".into();
-    evidence
-}
-
 #[tokio::test]
 async fn test_submit_attestation_evidence_rejects_invalid_and_replayed_submissions() {
     ensure_test_env();
@@ -956,22 +1055,14 @@ async fn test_submit_attestation_evidence_rejects_invalid_and_replayed_submissio
         )
         .expect("execution challenge");
 
+    let mut invalid_evidence = sample_bound_attestation_evidence(&challenged.challenge);
+    invalid_evidence.document.signature_hex = "deadbeef".into();
     let invalid_err = state
-        .submit_attestation_evidence(
-            &created.session.session_id.to_string(),
-            &sample_invalid_attestation_evidence(Some(
-                challenged.challenge.challenge_nonce_hex.clone(),
-            )),
-        )
+        .submit_attestation_evidence(&created.session.session_id.to_string(), &invalid_evidence)
         .unwrap_err();
-    assert!(
-        invalid_err
-            .to_string()
-            .contains("requester key binding mismatch")
-            || invalid_err
-                .to_string()
-                .contains("attestation evidence appraisal rejected")
-    );
+    assert!(invalid_err
+        .to_string()
+        .contains("attestation evidence appraisal rejected"));
 
     let registered = state
         .submit_attestation_evidence(
@@ -991,6 +1082,49 @@ async fn test_submit_attestation_evidence_rejects_invalid_and_replayed_submissio
         )
         .unwrap_err();
     assert!(replay_err.to_string().contains("already been consumed"));
+}
+
+#[tokio::test]
+async fn test_submit_attestation_evidence_rejects_requester_key_mismatch() {
+    ensure_test_env();
+    let agent_endpoint = start_simulated_agent().await;
+    let store = control_plane_api::store::Store::new(":memory:").unwrap();
+    let state = build_test_state(agent_endpoint, store);
+    let app = router(state.clone());
+    let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
+    let finalized = finalize_offer(&app, &offer).await;
+
+    let created = state
+        .create_execution_session(CreateExecutionSessionRequest {
+            agreement_id: finalized.agreement.agreement_id.0.clone(),
+            requester_ephemeral_pubkey: vec![1, 2, 3],
+            expires_in_seconds: Some(120),
+        })
+        .expect("execution session");
+    let challenged = state
+        .issue_execution_challenge(
+            &created.session.session_id.to_string(),
+            &IssueExecutionChallengeRequest {
+                resolved_transport: sample_resolved_transport(&finalized.agreement.agreement_id.0),
+            },
+        )
+        .expect("execution challenge");
+
+    let mismatched_evidence = sample_valid_attestation_evidence(
+        Some(challenged.challenge.challenge_nonce_hex.clone()),
+        Some(vec![9, 8, 7, 6]),
+        Some(challenged.challenge.resolved_selector_hash.clone()),
+    );
+    let err = state
+        .submit_attestation_evidence(
+            &created.session.session_id.to_string(),
+            &mismatched_evidence,
+        )
+        .unwrap_err();
+
+    assert!(err
+        .to_string()
+        .contains("requester public key binding mismatch"));
 }
 
 async fn start_simulated_agent() -> String {

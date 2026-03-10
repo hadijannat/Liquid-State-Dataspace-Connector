@@ -11,6 +11,14 @@ pub struct ControlPlaneApiArgs {
     pub config: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyBrokerBackend {
+    #[default]
+    None,
+    AwsKms,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlPlaneApiConfig {
     pub node_name: String,
@@ -22,6 +30,15 @@ pub struct ControlPlaneApiConfig {
     pub tee_backend: TeeBackend,
     pub pricing_endpoint: String,
     pub default_interface: String,
+    #[serde(default)]
+    pub key_broker_backend: KeyBrokerBackend,
+    #[serde(default)]
+    pub aws_region: Option<String>,
+    #[serde(default)]
+    pub kms_key_id: Option<String>,
+    #[serde(default)]
+    pub nitro_trust_bundle_path: Option<String>,
+    #[serde(default)]
     pub nitro_live_attestation_path: Option<String>,
 }
 

@@ -1,5 +1,6 @@
 use crate::state::ApiState;
 use control_plane::orchestrator::BatchLineageRequest;
+use lsdc_common::crypto::AttestationEvidence;
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::Result;
 use lsdc_ports::DataPlane;
@@ -29,6 +30,37 @@ impl LineageJobRunner {
         });
     }
 
+    async fn get_latest_attestation_evidence(
+        &self,
+        session_id: String,
+    ) -> Option<AttestationEvidence> {
+        let store = self.state.store.clone();
+        let lookup_session_id = session_id.clone();
+        match tokio::task::spawn_blocking(move || {
+            store.get_latest_attestation_evidence(&lookup_session_id)
+        })
+        .await
+        {
+            Ok(Ok(evidence)) => evidence,
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    session_id,
+                    error = %err,
+                    "failed to load attestation evidence from store"
+                );
+                None
+            }
+            Err(err) => {
+                tracing::warn!(
+                    session_id,
+                    error = %err,
+                    "attestation evidence lookup task failed"
+                );
+                None
+            }
+        }
+    }
+
     async fn run(self, job_id: String, request: LineageJobRequest) {
         if let Err(err) = self
             .state
@@ -51,6 +83,12 @@ impl LineageJobRunner {
         } = request;
 
         let iface = iface.unwrap_or_else(|| self.state.default_interface.clone());
+        let attestation_evidence = if let Some(bindings) = execution_bindings.as_ref() {
+            self.get_latest_attestation_evidence(bindings.session.session_id.to_string())
+                .await
+        } else {
+            None
+        };
 
         let job = self
             .state
@@ -63,6 +101,7 @@ impl LineageJobRunner {
                 current_price,
                 metrics,
                 prior_receipt,
+                attestation_evidence,
                 execution_bindings: execution_bindings.clone(),
             })
             .await;
@@ -155,17 +194,23 @@ impl LineageJobRunner {
             .or(requested_execution_bindings.as_ref());
 
         if let Some(bindings) = execution_bindings {
+            let session_id = bindings.session.session_id.to_string();
             self.state
                 .store
                 .upsert_execution_session(&bindings.session, bindings.challenge.as_ref())
                 .ok();
-            if self
-                .state
-                .submit_attestation_evidence(
-                    &bindings.session.session_id.to_string(),
-                    &execution_evidence.attestation_evidence,
-                )
-                .is_err()
+            let attestation_already_persisted = self
+                .get_latest_attestation_evidence(session_id.clone())
+                .await
+                .is_some();
+            if !attestation_already_persisted
+                && self
+                    .state
+                    .submit_attestation_evidence(
+                        &session_id,
+                        &execution_evidence.attestation_evidence,
+                    )
+                    .is_err()
             {
                 tracing::warn!(
                     job_id,

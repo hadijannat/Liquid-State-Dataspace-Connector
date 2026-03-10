@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use lsdc_common::crypto::{
-    AttestationDocument, AttestationEvidence, AttestationResult, ExecutionEvidenceBundle,
-    KeyErasureEvidence, PriceDecision, PricingAuditContext, ProofBundle, ProvenanceReceipt,
-    Sha256Hash, ShapleyValue, TeardownEvidence,
+    AttestationDocument, AttestationEvidence, AttestationResult, EvidenceClass,
+    ExecutionEvidenceBundle, KeyErasureEvidence, PriceDecision, PricingAuditContext, ProofBundle,
+    ProvenanceReceipt, Sha256Hash, ShapleyValue, TeardownEvidence,
 };
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::execution::{ProofBackend, TeeBackend, TransportBackend, TransportSelector};
@@ -206,6 +206,8 @@ pub struct EnclaveJobRequest {
     pub input_csv: Vec<u8>,
     pub manifest: CsvTransformManifest,
     pub prior_receipt: Option<ProvenanceReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_evidence: Option<AttestationEvidence>,
     pub execution_bindings: Option<ExecutionBindings>,
 }
 
@@ -271,6 +273,15 @@ pub trait EnclaveSessionManager: Send + Sync {
 #[async_trait]
 pub trait EnclaveManager: Send + Sync {
     fn tee_backend(&self) -> TeeBackend;
+    fn attested_key_release_supported(&self) -> bool {
+        false
+    }
+    fn attested_teardown_supported(&self) -> bool {
+        false
+    }
+    fn default_requester_ephemeral_pubkey(&self) -> Vec<u8> {
+        Vec::new()
+    }
     async fn run_csv_job(&self, request: EnclaveJobRequest) -> Result<EnclaveJobResult>;
 }
 
@@ -309,13 +320,31 @@ pub struct EphemeralDataKey {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EphemeralKeyHandle {
     pub key_id: String,
+    pub session_id: String,
+    pub attestation_result_hash: Sha256Hash,
+    pub evidence_class: EvidenceClass,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KeyReleasePolicy {
+    pub profile: Option<String>,
+    pub deletion_mode: Option<String>,
+    pub requires_attestation: bool,
+    pub requires_teardown_evidence: bool,
+    pub agreement_id: String,
+    pub agreement_commitment_hash: Sha256Hash,
+    pub capability_descriptor_hash: Sha256Hash,
+    pub resolved_selector_hash: Sha256Hash,
+    pub challenge_nonce_hash: Sha256Hash,
+}
+
+#[async_trait]
 pub trait KeyBroker: Send + Sync {
-    fn release_key(
+    async fn release_key(
         &self,
-        policy: &str,
-        attestation: &AttestationResult,
+        policy: &KeyReleasePolicy,
+        attestation_evidence: &AttestationEvidence,
+        attestation_result: &AttestationResult,
         session: &ExecutionSessionChallenge,
     ) -> Result<EphemeralDataKey>;
 

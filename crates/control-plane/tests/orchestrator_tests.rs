@@ -11,6 +11,7 @@ use lsdc_ports::{DataPlane, PricingOracle, ProofEngine, TrainingMetrics};
 use proof_plane_host::DevReceiptProofEngine;
 use std::sync::Arc;
 use std::sync::Once;
+use tee_orchestrator::attestation::LocalAttestationVerifier;
 use tee_orchestrator::enclave::NitroEnclaveManager;
 
 fn ensure_test_env() {
@@ -139,7 +140,13 @@ async fn test_two_hop_batch_lineage_flow() {
         .unwrap();
 
     let proof_engine = Arc::new(DevReceiptProofEngine::new().unwrap());
-    let enclave = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()).unwrap());
+    let enclave = Arc::new(
+        NitroEnclaveManager::new_dev(
+            proof_engine.clone(),
+            Arc::new(LocalAttestationVerifier::new()),
+        )
+        .unwrap(),
+    );
     let data_plane = Arc::new(LiquidDataPlane::new_simulated());
     let orch = Orchestrator::with_full_stack(data_plane, enclave, Arc::new(MockPricingOracle));
 
@@ -165,6 +172,7 @@ async fn test_two_hop_batch_lineage_flow() {
                 metrics_window_ended_at: chrono::Utc::now(),
             },
             prior_receipt: None,
+            attestation_evidence: None,
             execution_bindings: None,
         })
         .await
@@ -200,6 +208,7 @@ async fn test_two_hop_batch_lineage_flow() {
                 metrics_window_ended_at: chrono::Utc::now(),
             },
             prior_receipt: Some(first.proof_bundle.provenance_receipt.clone()),
+            attestation_evidence: None,
             execution_bindings: None,
         })
         .await

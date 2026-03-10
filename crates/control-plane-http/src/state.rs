@@ -76,6 +76,9 @@ pub struct ApiState {
     pub(crate) configured_backends: BackendSummary,
     pub(crate) actual_transport_backend: TransportBackend,
     pub(crate) actual_tee_backend: TeeBackend,
+    pub(crate) attested_key_release_supported: bool,
+    pub(crate) attested_teardown_supported: bool,
+    pub(crate) default_requester_ephemeral_pubkey: Vec<u8>,
     pub(crate) transparency_log: Arc<LocalTransparencyLog>,
 }
 
@@ -96,6 +99,10 @@ impl ApiState {
             actual_transport_backend,
         } = init;
         let actual_tee_backend = enclave_manager.tee_backend();
+        let attested_key_release_supported = enclave_manager.attested_key_release_supported();
+        let attested_teardown_supported = enclave_manager.attested_teardown_supported();
+        let default_requester_ephemeral_pubkey =
+            enclave_manager.default_requester_ephemeral_pubkey();
         let data_plane: Arc<dyn DataPlane> = liquid_agent.clone();
         let orchestrator = Arc::new(Orchestrator::with_full_stack(
             data_plane,
@@ -118,6 +125,9 @@ impl ApiState {
             configured_backends,
             actual_transport_backend,
             actual_tee_backend,
+            attested_key_release_supported,
+            attested_teardown_supported,
+            default_requester_ephemeral_pubkey,
             transparency_log,
         }
     }
@@ -178,6 +188,8 @@ impl ApiState {
             transparency_supported: true,
             strict_mode_supported: true,
             dev_backends_allowed: allow_dev_defaults(),
+            attested_key_release_supported: self.attested_key_release_supported,
+            attested_teardown_supported: self.attested_teardown_supported,
         }
     }
 
@@ -196,9 +208,19 @@ impl ApiState {
                 },
             ),
             (
-                "attestation.nitro_live_measurement".into(),
+                "attestation.nitro_live_verified".into(),
                 if self.actual_tee_backend == TeeBackend::NitroLive {
                     Experimental
+                } else {
+                    Unsupported
+                },
+            ),
+            (
+                "key_release.kms_attested".into(),
+                if self.attested_key_release_supported {
+                    Experimental
+                } else if self.actual_tee_backend == TeeBackend::NitroLive {
+                    ModeledOnly
                 } else {
                     Unsupported
                 },
@@ -229,7 +251,16 @@ impl ApiState {
                     Experimental
                 },
             ),
-            ("teardown.key_erasure".into(), ModeledOnly),
+            (
+                "teardown.kms_erasure".into(),
+                if self.attested_teardown_supported {
+                    Experimental
+                } else if self.actual_tee_backend == TeeBackend::NitroLive {
+                    ModeledOnly
+                } else {
+                    Unsupported
+                },
+            ),
         ])
     }
 
@@ -254,7 +285,7 @@ impl ApiState {
             advertised_profiles: AdvertisedProfiles {
                 attestation_profile: match self.actual_tee_backend {
                     TeeBackend::NitroDev => "nitro-dev-attestation-result-v1",
-                    TeeBackend::NitroLive => "nitro-live-measurement-check-v1",
+                    TeeBackend::NitroLive => "nitro-live-attestation-result-v1",
                     TeeBackend::None => "none",
                 }
                 .into(),
@@ -265,7 +296,12 @@ impl ApiState {
                 }
                 .into(),
                 transparency_profile: LOCAL_TRANSPARENCY_PROFILE.into(),
-                teardown_profile: "dev-deletion-v1".into(),
+                teardown_profile: if self.actual_tee_backend == TeeBackend::NitroLive {
+                    "kms-key-erasure-v1"
+                } else {
+                    "dev-deletion-v1"
+                }
+                .into(),
             },
             support: self.capability_support_summary(),
         })
@@ -452,12 +488,11 @@ impl ApiState {
                 "attestation result nonce mismatch".into(),
             ));
         }
-        if !challenge.requester_ephemeral_pubkey.is_empty()
-            && attestation_result.public_key.as_deref()
-                != Some(challenge.requester_ephemeral_pubkey.as_slice())
+        if attestation_result.public_key.as_deref()
+            != Some(session.requester_ephemeral_pubkey.as_slice())
         {
             return Err(lsdc_common::error::LsdcError::PolicyCompile(
-                "attestation result requester key binding mismatch".into(),
+                "attestation result requester public key binding mismatch".into(),
             ));
         }
         if attestation_result.user_data_hash.as_ref() != Some(&challenge.resolved_selector_hash) {
@@ -465,6 +500,11 @@ impl ApiState {
                 "attestation result resolved transport binding mismatch".into(),
             ));
         }
+        let (agreement, _) = self
+            .store
+            .get_agreement(&session.agreement_id)?
+            .ok_or_else(|| lsdc_common::error::LsdcError::Database("agreement not found".into()))?;
+        validate_live_attestation_policy(&agreement, self.actual_tee_backend, &attestation_result)?;
         if attestation_result.appraisal != AppraisalStatus::Accepted {
             return Err(lsdc_common::error::LsdcError::PolicyCompile(
                 "attestation evidence appraisal rejected".into(),
@@ -574,7 +614,11 @@ impl ApiState {
         let overlay_commitment = self.execution_overlay_commitment_for(agreement)?;
         let created = self.create_execution_session(CreateExecutionSessionRequest {
             agreement_id: agreement.agreement_id.0.clone(),
-            requester_ephemeral_pubkey: Vec::new(),
+            requester_ephemeral_pubkey: if self.actual_tee_backend == TeeBackend::NitroLive {
+                Vec::new()
+            } else {
+                self.default_requester_ephemeral_pubkey.clone()
+            },
             expires_in_seconds: Some(900),
         })?;
 
@@ -883,4 +927,35 @@ fn resolved_transport_hash(
         )
         .map_err(lsdc_common::error::LsdcError::from)?],
     ))
+}
+
+fn validate_live_attestation_policy(
+    agreement: &ContractAgreement,
+    tee_backend: TeeBackend,
+    attestation_result: &lsdc_common::crypto::AttestationResult,
+) -> lsdc_common::error::Result<()> {
+    if tee_backend != TeeBackend::NitroLive {
+        return Ok(());
+    }
+
+    let normalized = normalize_policy(&agreement.odrl_policy)?;
+    for permission in &normalized.permissions {
+        for constraint in &permission.constraints {
+            if constraint.clause_id != "teeImageSha384" {
+                continue;
+            }
+            let expected = constraint.right_operand.as_str().ok_or_else(|| {
+                lsdc_common::error::LsdcError::PolicyCompile(
+                    "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
+                )
+            })?;
+            if !expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
+                return Err(lsdc_common::error::LsdcError::PolicyCompile(
+                    "attestation result image hash does not satisfy teeImageSha384 policy".into(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }

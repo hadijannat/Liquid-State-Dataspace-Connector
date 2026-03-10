@@ -259,6 +259,27 @@ impl Store {
         .transpose()
     }
 
+    pub fn get_latest_attestation_evidence(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<AttestationEvidence>> {
+        let row = self
+            .lock()?
+            .query_row(
+                "SELECT evidence_json
+                 FROM attestation_evidence
+                 WHERE session_id = ?1
+                 ORDER BY rowid DESC
+                 LIMIT 1",
+                params![session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+
+        row.as_deref().map(from_json).transpose()
+    }
+
     pub fn persist_evidence_dag(
         &self,
         job_id: &str,

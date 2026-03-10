@@ -7,6 +7,8 @@ edition.workspace = true
 lsdc-common = { path = "../lsdc-common" }
 lsdc-evidence = { path = "../lsdc-evidence" }
 lsdc-ports = { path = "../lsdc-ports" }
+aws-sdk-kms = "=1.56.0"
+aws-nitro-enclaves-nsm-api = { version = "0.4", default-features = false }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
@@ -15,4 +17,16 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 hex = { workspace = true }
+base64 = "0.22"
+coset = "0.3"
+ring = "0.17"
+time = "0.3"
+x509-parser = { version = "0.16", features = ["validate", "verify"] }
 zeroize = "1"
+
+[dev-dependencies]
+aws-nitro-enclaves-cose = { version = "0.5.2", features = ["openssl"] }
+nitro_attest = { version = "0.2.0", features = ["builder"] }
+openssl = "0.10"
+rcgen = "0.13"
+tempfile = "3"
