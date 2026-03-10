@@ -1,12 +1,25 @@
-use lsdc_common::crypto::Sha256Hash;
+use lsdc_common::crypto::{ReceiptKind, Sha256Hash};
 use lsdc_common::liquid::{CsvTransformManifest, CsvTransformOp};
-use lsdc_common::proof::CsvTransformProofJournal;
+use lsdc_common::proof::CsvTransformProofJournal as LegacyCsvTransformProofJournal;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Risc0ReceiptMethod {
+    LegacyTransform,
+    RecursiveTransform,
+    Composition,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiptAssumptionWitness {
+    pub method: Risc0ReceiptMethod,
     pub image_id: [u32; 8],
+    pub journal_bytes: Vec<u8>,
     pub receipt_bytes: Vec<u8>,
+    pub receipt_hash: Sha256Hash,
+    pub receipt_kind: ReceiptKind,
+    pub recursion_depth: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,7 +144,51 @@ pub struct ReceiptCompositionProofInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecursiveCsvTransformProofJournal {
+    pub agreement_id: String,
+    pub input_hash: Sha256Hash,
+    pub output_hash: Sha256Hash,
+    pub policy_hash: Sha256Hash,
+    pub transform_manifest_hash: Sha256Hash,
+    pub prior_receipt_hash: Option<Sha256Hash>,
+    pub agreement_commitment_hash: Option<Sha256Hash>,
+    pub session_id: Option<String>,
+    pub challenge_nonce_hash: Option<Sha256Hash>,
+    pub selector_hash: Option<Sha256Hash>,
+    pub attestation_result_hash: Option<Sha256Hash>,
+    pub capability_commitment_hash: Option<Sha256Hash>,
+    pub transparency_statement_hash: Option<Sha256Hash>,
+    pub parent_receipt_hashes: Vec<Sha256Hash>,
+    pub recursion_depth: u32,
+    pub receipt_kind: ReceiptKind,
+}
+
+impl From<LegacyCsvTransformProofJournal> for RecursiveCsvTransformProofJournal {
+    fn from(value: LegacyCsvTransformProofJournal) -> Self {
+        Self {
+            agreement_id: value.agreement_id,
+            input_hash: value.input_hash,
+            output_hash: value.output_hash,
+            policy_hash: value.policy_hash,
+            transform_manifest_hash: value.transform_manifest_hash,
+            prior_receipt_hash: None,
+            agreement_commitment_hash: value.agreement_commitment_hash,
+            session_id: value.session_id,
+            challenge_nonce_hash: value.challenge_nonce_hash,
+            selector_hash: value.selector_hash,
+            attestation_result_hash: value.attestation_result_hash,
+            capability_commitment_hash: value.capability_commitment_hash,
+            transparency_statement_hash: value.transparency_statement_hash,
+            parent_receipt_hashes: value.parent_receipt_hashes,
+            recursion_depth: value.recursion_depth,
+            receipt_kind: value.receipt_kind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecodedWitnessReceipt {
-    pub journal: CsvTransformProofJournal,
+    pub method: Risc0ReceiptMethod,
+    pub journal: RecursiveCsvTransformProofJournal,
     pub receipt_hash: Sha256Hash,
 }

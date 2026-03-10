@@ -198,6 +198,8 @@ impl ApiState {
         &self,
     ) -> std::collections::BTreeMap<String, CapabilitySupportLevel> {
         use CapabilitySupportLevel::{Experimental, Implemented, ModeledOnly, Unsupported};
+        let risc0_recursive_supported =
+            cfg!(feature = "risc0") && self.proof_engine.proof_backend() == ProofBackend::RiscZero;
 
         std::collections::BTreeMap::from([
             (
@@ -236,16 +238,16 @@ impl ApiState {
             ),
             (
                 "proof.risc0_single_hop".into(),
-                if self.proof_engine.proof_backend() == ProofBackend::RiscZero {
-                    Experimental
+                if risc0_recursive_supported {
+                    Implemented
                 } else {
                     Unsupported
                 },
             ),
             (
                 "proof.risc0_recursive".into(),
-                if self.proof_engine.proof_backend() == ProofBackend::RiscZero {
-                    Experimental
+                if risc0_recursive_supported {
+                    Implemented
                 } else {
                     Unsupported
                 },
@@ -279,7 +281,7 @@ impl ApiState {
             transparency_registration_mode: TransparencyMode::Required,
             proof_composition_mode: match self.proof_engine.proof_backend() {
                 ProofBackend::DevReceipt => ProofCompositionMode::Dag,
-                ProofBackend::RiscZero => ProofCompositionMode::Dag,
+                ProofBackend::RiscZero => ProofCompositionMode::Recursive,
                 ProofBackend::None => ProofCompositionMode::None,
             },
         }

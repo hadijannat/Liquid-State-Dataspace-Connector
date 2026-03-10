@@ -87,8 +87,8 @@ That layering is implemented as an additive change: the new `/lsdc/v1/*` overlay
   - `proof-plane-dev` re-exports the dev receipt engine
   - `proof-plane-risc0` is present in the workspace but the real backend is enabled only with the `risc0` feature and the external guest toolchain
   - session-bound receipts now carry agreement and challenge commitments
-  - the default local stack still uses the dev receipt backend, but the `risc0` feature now enables recursive transform chaining and receipt-composition proofs for the `RISC Zero` backend
-  - recursive verification is DAG-native for the recursive proof path while the legacy chain endpoint remains available for linear compatibility
+  - the default local stack still uses the dev receipt backend, but the `risc0` feature now enables versioned recursive transform chaining and receipt-composition proofs for the `RISC Zero` backend while preserving verification of legacy `risc0.csv_transform.v1` receipts
+  - recursive verification is DAG-native on `/lsdc/v1/evidence/verify` while the legacy chain endpoint remains a strictly linear compatibility path
 - TEE plane:
   - deterministic `nitro-dev`
   - pinned-measurement `nitro-live` validation with shared fixture coverage
@@ -139,7 +139,7 @@ The repo now keeps reusable workload artifacts in `fixtures/`:
 - Python oracle: `python -m pytest python/pricing-oracle/tests`
 - Local reference stack: `./scripts/run-phase3-demo.sh`
 - Linux XDP: `cargo xtask build-ebpf` and `cargo test -p liquid-agent --test linux_agent_tests -- --ignored` on a privileged Linux runner
-- `RISC Zero`: install the guest toolchain first with `rzup install rust`, then run `cargo test -p proof-plane-risc0 --features risc0` or `cargo test -p control-plane-api --features risc0 --test risc0_http_tests`
+- `RISC Zero`: install the guest toolchain first with `rzup install rust`, then run `cargo test -p proof-plane-host --features risc0` or `cargo test -p control-plane-api --features risc0 --test risc0_http_tests`
 
 For the current delivery sequence, use [roadmap.md](roadmap.md).
 

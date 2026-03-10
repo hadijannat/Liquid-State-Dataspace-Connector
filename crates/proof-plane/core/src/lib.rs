@@ -5,7 +5,7 @@ pub use lsdc_evidence::{
     ChainVerification, EvidenceEnvelope, PricingEvidenceV1, ReceiptEnvelopeV1, VerifiedClaims,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub fn verify_receipt_links(chain: &[ReceiptEnvelopeV1]) -> ChainVerification {
     let mut valid = true;
@@ -40,16 +40,33 @@ pub struct ReceiptDagVerification {
 }
 
 pub fn verify_provenance_receipt_chain(chain: &[ProvenanceReceipt]) -> ReceiptDagVerification {
-    let mut receipts_by_hash = HashMap::new();
     let mut valid = true;
     let mut recursion_used = false;
 
-    for receipt in chain {
+    for (index, receipt) in chain.iter().enumerate() {
         recursion_used |= receipt.prior_receipt_hash.is_some() || receipt.recursion_depth > 0;
-        if !validate_receipt_structure(receipt, &receipts_by_hash, None) {
+        if receipt.receipt_kind != ReceiptKind::Transform {
+            valid = false;
+            continue;
+        }
+
+        if index == 0 {
+            if receipt.prior_receipt_hash.is_some()
+                || !receipt.parent_receipt_hashes.is_empty()
+                || receipt.recursion_depth != 0
+            {
+                valid = false;
+            }
+            continue;
+        }
+
+        let parent = &chain[index - 1];
+        if receipt.prior_receipt_hash.as_ref() != Some(&parent.receipt_hash)
+            || receipt.parent_receipt_hashes != vec![parent.receipt_hash.clone()]
+            || receipt.recursion_depth != parent.recursion_depth + 1
+        {
             valid = false;
         }
-        receipts_by_hash.insert(receipt.receipt_hash.clone(), receipt.clone());
     }
 
     ReceiptDagVerification {
@@ -106,7 +123,7 @@ pub fn verify_provenance_receipt_dag(
             .iter()
             .filter(|edge| edge.to_node_id == *node_id)
             .map(|edge| edge.from_node_id.clone())
-            .collect::<HashSet<_>>();
+            .collect::<Vec<_>>();
         if !validate_receipt_structure(receipt, &receipts_by_hash, Some((&incoming, &proof_nodes)))
         {
             valid = false;
@@ -123,7 +140,7 @@ pub fn verify_provenance_receipt_dag(
 fn validate_receipt_structure(
     receipt: &ProvenanceReceipt,
     receipts_by_hash: &HashMap<Sha256Hash, ProvenanceReceipt>,
-    dag: Option<(&HashSet<String>, &HashMap<String, ProvenanceReceipt>)>,
+    dag: Option<(&Vec<String>, &HashMap<String, ProvenanceReceipt>)>,
 ) -> bool {
     match receipt.receipt_kind {
         ReceiptKind::Transform => validate_transform_receipt(receipt, receipts_by_hash, dag),
@@ -134,7 +151,7 @@ fn validate_receipt_structure(
 fn validate_transform_receipt(
     receipt: &ProvenanceReceipt,
     receipts_by_hash: &HashMap<Sha256Hash, ProvenanceReceipt>,
-    dag: Option<(&HashSet<String>, &HashMap<String, ProvenanceReceipt>)>,
+    dag: Option<(&Vec<String>, &HashMap<String, ProvenanceReceipt>)>,
 ) -> bool {
     match receipt.prior_receipt_hash.as_ref() {
         Some(prior_hash) => {
@@ -160,7 +177,7 @@ fn validate_transform_receipt(
 fn validate_composition_receipt(
     receipt: &ProvenanceReceipt,
     receipts_by_hash: &HashMap<Sha256Hash, ProvenanceReceipt>,
-    dag: Option<(&HashSet<String>, &HashMap<String, ProvenanceReceipt>)>,
+    dag: Option<(&Vec<String>, &HashMap<String, ProvenanceReceipt>)>,
 ) -> bool {
     if receipt.prior_receipt_hash.is_some() || receipt.parent_receipt_hashes.is_empty() {
         return false;
@@ -192,7 +209,7 @@ fn validate_composition_receipt(
 
 fn has_exact_dag_parents(
     receipt: &ProvenanceReceipt,
-    dag: Option<(&HashSet<String>, &HashMap<String, ProvenanceReceipt>)>,
+    dag: Option<(&Vec<String>, &HashMap<String, ProvenanceReceipt>)>,
 ) -> bool {
     let Some((incoming, nodes)) = dag else {
         return true;
@@ -201,13 +218,14 @@ fn has_exact_dag_parents(
         return false;
     }
 
-    receipt.parent_receipt_hashes.iter().all(|hash| {
-        incoming.iter().any(|parent_node_id| {
+    incoming
+        .iter()
+        .zip(receipt.parent_receipt_hashes.iter())
+        .all(|(parent_node_id, expected_hash)| {
             nodes
                 .get(parent_node_id)
-                .is_some_and(|parent| parent.receipt_hash == *hash)
+                .is_some_and(|parent| parent.receipt_hash == *expected_hash)
         })
-    })
 }
 
 fn hash_hex_list<'a>(items: impl Iterator<Item = &'a Sha256Hash>) -> Sha256Hash {

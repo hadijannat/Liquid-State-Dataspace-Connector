@@ -49,10 +49,6 @@ pub fn router(state: ApiState) -> Router {
             "/lsdc/v1/evidence/verify",
             post(execution::verify_evidence_dag),
         )
-        .route(
-            "/lsdc/v1/evidence/verify-dag",
-            post(execution::verify_evidence_dag),
-        )
         .route("/lsdc/lineage/jobs", post(lineage::create_lineage_job))
         .route("/lsdc/lineage/jobs/:job_id", get(lineage::get_lineage_job))
         .route(

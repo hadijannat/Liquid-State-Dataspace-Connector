@@ -1,8 +1,7 @@
 #![no_main]
 
-use lsdc_common::crypto::{ReceiptKind, Sha256Hash};
-use lsdc_common::proof::CsvTransformProofJournal;
-use proof_plane_risc0_model::ReceiptCompositionProofInput;
+use lsdc_common::crypto::ReceiptKind;
+use proof_plane_risc0_model::{ReceiptCompositionProofInput, RecursiveCsvTransformProofJournal};
 use risc0_zkvm::guest::env;
 
 mod shared;
@@ -22,6 +21,20 @@ fn main() {
         .map(shared::verify_receipt_witness)
         .collect::<Vec<_>>();
 
+    for child in &children {
+        assert_eq!(child.journal.agreement_id, input.context.agreement_id);
+        assert_eq!(
+            child.journal.agreement_commitment_hash,
+            input.context.agreement_commitment_hash
+        );
+        assert_eq!(child.journal.session_id, input.context.session_id);
+        assert_eq!(child.journal.selector_hash, input.context.selector_hash);
+        assert_eq!(
+            child.journal.capability_commitment_hash,
+            input.context.capability_commitment_hash
+        );
+    }
+
     let parent_receipt_hashes = children
         .iter()
         .map(|child| child.receipt_hash.clone())
@@ -33,7 +46,7 @@ fn main() {
         .unwrap_or(0)
         + 1;
 
-    let journal = CsvTransformProofJournal {
+    let journal = RecursiveCsvTransformProofJournal {
         agreement_id: input.context.agreement_id,
         input_hash: shared::hash_hex_list(children.iter().map(|child| &child.journal.input_hash)),
         output_hash: shared::hash_hex_list(children.iter().map(|child| &child.journal.output_hash)),

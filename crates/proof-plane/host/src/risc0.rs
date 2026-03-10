@@ -1,19 +1,20 @@
 use async_trait::async_trait;
-use lsdc_common::crypto::{hash_json, ProvenanceReceipt, Sha256Hash};
+use lsdc_common::crypto::{hash_json, ProvenanceReceipt, ReceiptKind, Sha256Hash};
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::ProofBackend;
 use lsdc_common::liquid::{validate_transform_manifest, CsvTransformManifest};
-use lsdc_common::proof::CsvTransformProofJournal;
+use lsdc_common::proof::CsvTransformProofJournal as LegacyCsvTransformProofJournal;
 use lsdc_common::runtime_model::EvidenceDag;
 use lsdc_ports::{CompositionContext, ExecutionBindings, ProofEngine, ProofExecutionResult};
 use proof_plane_core::{verify_provenance_receipt_chain, verify_provenance_receipt_dag};
 use proof_plane_risc0_model::{
     ReceiptAssumptionWitness, ReceiptCompositionContext, ReceiptCompositionProofInput,
-    RecursiveCsvTransformProofInput, Risc0CsvTransformManifest,
+    RecursiveCsvTransformProofInput, RecursiveCsvTransformProofJournal, Risc0CsvTransformManifest,
+    Risc0ReceiptMethod,
 };
 use proof_transform_kernel::apply_manifest;
-use risc0_zkvm::{default_prover, ExecutorEnv, Prover, ProverOpts, Receipt};
+use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts, Receipt};
 use serde::Serialize;
 
 #[allow(dead_code)]
@@ -22,7 +23,8 @@ mod methods {
 }
 
 const RISC0_RECEIPT_FORMAT_VERSION: &str = "lsdc.risc0.receipt.v1";
-const RISC0_TRANSFORM_METHOD_ID: &str = "risc0.csv_transform.v1";
+const RISC0_LEGACY_TRANSFORM_METHOD_ID: &str = "risc0.csv_transform.v1";
+const RISC0_RECURSIVE_TRANSFORM_METHOD_ID: &str = "risc0.csv_transform_recursive.v1";
 const RISC0_COMPOSITION_METHOD_ID: &str = "risc0.receipt_composition.v1";
 const RISC0_RECURSION_BACKEND_MISMATCH: &str =
     "risc0 recursive proving only supports prior and child receipts produced by the risc0 backend";
@@ -31,29 +33,41 @@ const RISC0_INVALID_RECURSIVE_PARENT: &str =
 
 #[derive(Clone, Copy)]
 enum Risc0GuestMethod {
-    Transform,
+    LegacyTransform,
+    RecursiveTransform,
     Composition,
 }
 
 impl Risc0GuestMethod {
     fn elf(self) -> &'static [u8] {
         match self {
-            Self::Transform => methods::CSV_TRANSFORM_ELF,
+            Self::LegacyTransform => methods::CSV_TRANSFORM_ELF,
+            Self::RecursiveTransform => methods::CSV_TRANSFORM_RECURSIVE_ELF,
             Self::Composition => methods::RECEIPT_COMPOSITION_ELF,
         }
     }
 
     fn image_id(self) -> [u32; 8] {
         match self {
-            Self::Transform => methods::CSV_TRANSFORM_ID,
+            Self::LegacyTransform => methods::CSV_TRANSFORM_ID,
+            Self::RecursiveTransform => methods::CSV_TRANSFORM_RECURSIVE_ID,
             Self::Composition => methods::RECEIPT_COMPOSITION_ID,
         }
     }
 
     fn proof_method_id(self) -> &'static str {
         match self {
-            Self::Transform => RISC0_TRANSFORM_METHOD_ID,
+            Self::LegacyTransform => RISC0_LEGACY_TRANSFORM_METHOD_ID,
+            Self::RecursiveTransform => RISC0_RECURSIVE_TRANSFORM_METHOD_ID,
             Self::Composition => RISC0_COMPOSITION_METHOD_ID,
+        }
+    }
+
+    fn receipt_method(self) -> Risc0ReceiptMethod {
+        match self {
+            Self::LegacyTransform => Risc0ReceiptMethod::LegacyTransform,
+            Self::RecursiveTransform => Risc0ReceiptMethod::RecursiveTransform,
+            Self::Composition => Risc0ReceiptMethod::Composition,
         }
     }
 }
@@ -68,7 +82,8 @@ impl Risc0ProofEngine {
 
     fn method_for_proof_method_id(proof_method_id: &str) -> Option<Risc0GuestMethod> {
         match proof_method_id {
-            RISC0_TRANSFORM_METHOD_ID => Some(Risc0GuestMethod::Transform),
+            RISC0_LEGACY_TRANSFORM_METHOD_ID => Some(Risc0GuestMethod::LegacyTransform),
+            RISC0_RECURSIVE_TRANSFORM_METHOD_ID => Some(Risc0GuestMethod::RecursiveTransform),
             RISC0_COMPOSITION_METHOD_ID => Some(Risc0GuestMethod::Composition),
             _ => None,
         }
@@ -77,13 +92,29 @@ impl Risc0ProofEngine {
     fn verify_receipt_inner(
         receipt: &Receipt,
         method: Risc0GuestMethod,
-    ) -> Result<CsvTransformProofJournal> {
+    ) -> Result<RecursiveCsvTransformProofJournal> {
         receipt.verify(method.image_id()).map_err(|err| {
             LsdcError::ProofGeneration(format!("risc0 receipt verification failed: {err}"))
         })?;
-        receipt.journal.decode().map_err(|err| {
-            LsdcError::ProofGeneration(format!("failed to decode risc0 receipt journal: {err}"))
-        })
+
+        match method {
+            Risc0GuestMethod::LegacyTransform => {
+                let journal: LegacyCsvTransformProofJournal =
+                    receipt.journal.decode().map_err(|err| {
+                        LsdcError::ProofGeneration(format!(
+                            "failed to decode legacy risc0 receipt journal: {err}"
+                        ))
+                    })?;
+                Ok(journal.into())
+            }
+            Risc0GuestMethod::RecursiveTransform | Risc0GuestMethod::Composition => {
+                receipt.journal.decode().map_err(|err| {
+                    LsdcError::ProofGeneration(format!(
+                        "failed to decode recursive risc0 receipt journal: {err}"
+                    ))
+                })
+            }
+        }
     }
 
     fn decode_receipt_bytes(receipt_bytes: &[u8]) -> Result<Receipt> {
@@ -95,15 +126,23 @@ impl Risc0ProofEngine {
     fn assumption_witness(receipt: &ProvenanceReceipt) -> Result<ReceiptAssumptionWitness> {
         let method = Self::method_for_proof_method_id(&receipt.proof_method_id)
             .ok_or_else(|| LsdcError::ProofGeneration("unsupported risc0 proof method".into()))?;
+        let decoded = Self::decode_receipt_bytes(&receipt.receipt_bytes)?;
+        let journal = Self::verify_receipt_inner(&decoded, method)?;
+
         Ok(ReceiptAssumptionWitness {
+            method: method.receipt_method(),
             image_id: method.image_id(),
+            journal_bytes: decoded.journal.bytes.clone(),
             receipt_bytes: receipt.receipt_bytes.clone(),
+            receipt_hash: receipt.receipt_hash.clone(),
+            receipt_kind: journal.receipt_kind,
+            recursion_depth: journal.recursion_depth,
         })
     }
 
     fn receipt_from_verified_journal(
         receipt: Receipt,
-        journal: CsvTransformProofJournal,
+        journal: RecursiveCsvTransformProofJournal,
         method: Risc0GuestMethod,
     ) -> Result<ProvenanceReceipt> {
         let receipt_bytes = bincode::serialize(&receipt).map_err(|err| {
@@ -160,7 +199,7 @@ impl Risc0ProofEngine {
         method: Risc0GuestMethod,
         input: &T,
         assumptions: &[ReceiptAssumptionWitness],
-    ) -> Result<(Receipt, CsvTransformProofJournal)> {
+    ) -> Result<(Receipt, RecursiveCsvTransformProofJournal)> {
         let mut builder = ExecutorEnv::builder();
         builder.write(input).map_err(|err| {
             LsdcError::ProofGeneration(format!("failed to encode risc0 proof input: {err}"))
@@ -233,10 +272,16 @@ impl ProofEngine for Risc0ProofEngine {
             prior_receipt: prior_witness.clone(),
         };
         let assumptions = prior_witness.into_iter().collect::<Vec<_>>();
-        let (receipt, journal) =
-            Self::prove_with_assumptions(Risc0GuestMethod::Transform, &proof_input, &assumptions)?;
-        let receipt =
-            Self::receipt_from_verified_journal(receipt, journal, Risc0GuestMethod::Transform)?;
+        let (receipt, journal) = Self::prove_with_assumptions(
+            Risc0GuestMethod::RecursiveTransform,
+            &proof_input,
+            &assumptions,
+        )?;
+        let receipt = Self::receipt_from_verified_journal(
+            receipt,
+            journal,
+            Risc0GuestMethod::RecursiveTransform,
+        )?;
 
         Ok(ProofExecutionResult {
             output_csv,
@@ -257,9 +302,17 @@ impl ProofEngine for Risc0ProofEngine {
         };
         let decoded = Self::decode_receipt_bytes(&receipt.receipt_bytes)?;
         let journal = Self::verify_receipt_inner(&decoded, method)?;
+        let expected_kind = match method {
+            Risc0GuestMethod::Composition => ReceiptKind::Composition,
+            Risc0GuestMethod::LegacyTransform | Risc0GuestMethod::RecursiveTransform => {
+                ReceiptKind::Transform
+            }
+        };
 
         Ok(
             receipt.receipt_hash == Sha256Hash::digest_bytes(&receipt.receipt_bytes)
+                && receipt.proof_method_id == method.proof_method_id()
+                && receipt.receipt_kind == expected_kind
                 && journal.agreement_id == receipt.agreement_id
                 && journal.input_hash == receipt.input_hash
                 && journal.output_hash == receipt.output_hash
@@ -275,7 +328,19 @@ impl ProofEngine for Risc0ProofEngine {
                 && journal.transparency_statement_hash == receipt.transparency_statement_hash
                 && journal.parent_receipt_hashes == receipt.parent_receipt_hashes
                 && journal.recursion_depth == receipt.recursion_depth
-                && journal.receipt_kind == receipt.receipt_kind,
+                && journal.receipt_kind == receipt.receipt_kind
+                && match receipt.receipt_kind {
+                    ReceiptKind::Transform => match receipt.prior_receipt_hash.as_ref() {
+                        Some(prior_hash) => {
+                            receipt.parent_receipt_hashes.as_slice() == [prior_hash.clone()]
+                        }
+                        None => receipt.parent_receipt_hashes.is_empty(),
+                    },
+                    ReceiptKind::Composition => {
+                        receipt.prior_receipt_hash.is_none()
+                            && !receipt.parent_receipt_hashes.is_empty()
+                    }
+                },
         )
     }
 

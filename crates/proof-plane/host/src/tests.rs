@@ -210,6 +210,10 @@ async fn assert_risc0_single_hop_proves_and_verifies_transform() {
         .unwrap();
 
     assert_eq!(result.output_csv, expected);
+    assert_eq!(
+        result.receipt.proof_method_id,
+        "risc0.csv_transform_recursive.v1"
+    );
     assert!(engine.verify_receipt(&result.receipt).await.unwrap());
 }
 
@@ -222,7 +226,6 @@ fn test_risc0_single_hop_proves_and_verifies_transform() {
     );
 }
 
-#[cfg(feature = "risc0")]
 async fn assert_risc0_matches_dev_receipt_output_for_same_manifest() {
     let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
     let agreement = agreement();
@@ -274,10 +277,23 @@ async fn assert_risc0_recursive_transform_succeeds() {
         .await
         .unwrap();
 
+    assert_eq!(
+        first.receipt.proof_method_id,
+        "risc0.csv_transform_recursive.v1"
+    );
+    assert_eq!(
+        second.receipt.proof_method_id,
+        "risc0.csv_transform_recursive.v1"
+    );
+    assert_eq!(
+        second.receipt.prior_receipt_hash,
+        Some(first.receipt.receipt_hash.clone())
+    );
     assert!(engine
-        .verify_chain(&[first.receipt, second.receipt])
+        .verify_chain(&[first.receipt.clone(), second.receipt.clone()])
         .await
         .unwrap());
+    assert!(engine.verify_receipt(&second.receipt).await.unwrap());
 }
 
 #[cfg(feature = "risc0")]
@@ -334,6 +350,59 @@ fn test_risc0_rejects_dev_receipt_as_recursive_parent() {
 }
 
 #[cfg(feature = "risc0")]
+async fn assert_risc0_rejects_tampered_recursive_receipts() {
+    let engine = Risc0ProofEngine::new();
+    let agreement = agreement();
+    let manifest = manifest();
+    let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
+
+    let first = engine
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
+        .await
+        .unwrap();
+    let second = engine
+        .execute_csv_transform(
+            &agreement,
+            &first.output_csv,
+            &manifest,
+            Some(&first.receipt),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut tampered_parent = second.receipt.clone();
+    tampered_parent.parent_receipt_hashes[0] = Sha256Hash::digest_bytes(b"bad-parent");
+    match engine.verify_receipt(&tampered_parent).await {
+        Ok(valid) => assert!(!valid),
+        Err(_) => {}
+    }
+
+    let mut tampered_depth = second.receipt.clone();
+    tampered_depth.recursion_depth += 1;
+    match engine.verify_receipt(&tampered_depth).await {
+        Ok(valid) => assert!(!valid),
+        Err(_) => {}
+    }
+
+    let mut tampered_method = second.receipt.clone();
+    tampered_method.proof_method_id = "risc0.csv_transform.v1".into();
+    match engine.verify_receipt(&tampered_method).await {
+        Ok(valid) => assert!(!valid),
+        Err(_) => {}
+    }
+}
+
+#[cfg(feature = "risc0")]
+#[test]
+fn test_risc0_rejects_tampered_recursive_receipts() {
+    run_risc0_test(
+        "risc0-tampered-recursive",
+        assert_risc0_rejects_tampered_recursive_receipts(),
+    );
+}
+
+#[cfg(feature = "risc0")]
 async fn assert_risc0_composes_receipts_and_rejects_tampered_dag_node() {
     let engine = Risc0ProofEngine::new();
     let agreement = agreement();
@@ -365,6 +434,7 @@ async fn assert_risc0_composes_receipts_and_rejects_tampered_dag_node() {
         .unwrap();
 
     assert_eq!(composed.receipt_kind, ReceiptKind::Composition);
+    assert_eq!(composed.proof_method_id, "risc0.receipt_composition.v1");
     assert_eq!(composed.recursion_depth, 1);
     assert_eq!(
         composed.parent_receipt_hashes,
@@ -444,6 +514,10 @@ async fn assert_risc0_multi_hop_composition_can_be_parent() {
         .execute_csv_transform(&agreement, input.as_slice(), &manifest, None, None)
         .await
         .unwrap();
+    let third = engine
+        .execute_csv_transform(&agreement, input.as_slice(), &manifest, None, None)
+        .await
+        .unwrap();
     let composed = engine
         .compose_receipts(
             &[first.receipt.clone(), second.receipt.clone()],
@@ -458,20 +532,29 @@ async fn assert_risc0_multi_hop_composition_can_be_parent() {
         .await
         .unwrap();
     let recursive = engine
-        .execute_csv_transform(
-            &agreement,
-            &first.output_csv,
-            &manifest,
-            Some(&composed),
-            None,
+        .compose_receipts(
+            &[composed.clone(), third.receipt.clone()],
+            CompositionContext {
+                agreement_id: agreement.agreement_id.0.clone(),
+                agreement_commitment_hash: None,
+                session_id: None,
+                selector_hash: None,
+                capability_commitment_hash: None,
+            },
         )
         .await
         .unwrap();
 
-    assert!(engine
-        .verify_chain(&[first.receipt, second.receipt, composed, recursive.receipt])
-        .await
-        .unwrap());
+    assert_eq!(recursive.proof_method_id, "risc0.receipt_composition.v1");
+    assert_eq!(
+        recursive.parent_receipt_hashes,
+        vec![
+            composed.receipt_hash.clone(),
+            third.receipt.receipt_hash.clone()
+        ]
+    );
+    assert_eq!(recursive.recursion_depth, 2);
+    assert!(engine.verify_receipt(&recursive).await.unwrap());
 }
 
 #[cfg(feature = "risc0")]
@@ -480,5 +563,48 @@ fn test_risc0_multi_hop_composition_can_be_parent() {
     run_risc0_test(
         "risc0-multi-hop",
         assert_risc0_multi_hop_composition_can_be_parent(),
+    );
+}
+
+#[cfg(feature = "risc0")]
+async fn assert_risc0_verify_chain_rejects_composition_nodes() {
+    let engine = Risc0ProofEngine::new();
+    let agreement = agreement();
+    let manifest = manifest();
+    let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
+    let first = engine
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
+        .await
+        .unwrap();
+    let second = engine
+        .execute_csv_transform(&agreement, input.as_slice(), &manifest, None, None)
+        .await
+        .unwrap();
+    let composed = engine
+        .compose_receipts(
+            &[first.receipt.clone(), second.receipt.clone()],
+            CompositionContext {
+                agreement_id: agreement.agreement_id.0.clone(),
+                agreement_commitment_hash: None,
+                session_id: None,
+                selector_hash: None,
+                capability_commitment_hash: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(!engine
+        .verify_chain(&[first.receipt, composed])
+        .await
+        .unwrap());
+}
+
+#[cfg(feature = "risc0")]
+#[test]
+fn test_risc0_verify_chain_rejects_composition_nodes() {
+    run_risc0_test(
+        "risc0-chain-rejects-composition",
+        assert_risc0_verify_chain_rejects_composition_nodes(),
     );
 }

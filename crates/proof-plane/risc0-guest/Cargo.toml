@@ -10,6 +10,10 @@ name = "csv_transform"
 path = "src/main.rs"
 
 [[bin]]
+name = "csv_transform_recursive"
+path = "src/recursive_transform.rs"
+
+[[bin]]
 name = "receipt_composition"
 path = "src/receipt_composition.rs"
 

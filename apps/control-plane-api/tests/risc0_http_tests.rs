@@ -101,7 +101,7 @@ impl PricingOracle for MockPricingOracle {
     }
 }
 
-async fn build_risc0_app() -> axum::Router {
+async fn build_risc0_state_and_app() -> (ApiState, control_plane_api::store::Store, axum::Router) {
     ensure_test_env();
     let agent_endpoint = start_simulated_agent().await;
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
@@ -111,8 +111,8 @@ async fn build_risc0_app() -> axum::Router {
         NitroEnclaveManager::new_dev(proof_engine.clone(), attestation_verifier.clone()).unwrap(),
     );
 
-    router(ApiState::new(ApiStateInit {
-        store,
+    let state = ApiState::new(ApiStateInit {
+        store: store.clone(),
         node_name: "test-risc0-node".into(),
         liquid_agent: Arc::new(LiquidAgentGrpcClient::new(agent_endpoint)),
         proof_engine,
@@ -128,7 +128,15 @@ async fn build_risc0_app() -> axum::Router {
             tee_backend: TeeBackend::NitroDev,
         },
         actual_transport_backend: TransportBackend::Simulated,
-    }))
+    });
+    let app = router(state.clone());
+
+    (state, store, app)
+}
+
+async fn build_risc0_app() -> axum::Router {
+    let (_, _, app) = build_risc0_state_and_app().await;
+    app
 }
 
 fn proof_node(node_id: &str, receipt: &lsdc_common::crypto::ProvenanceReceipt) -> EvidenceNode {
@@ -152,7 +160,7 @@ fn recursive_manifest() -> CsvTransformManifest {
     manifest
 }
 
-async fn assert_risc0_capabilities_advertise_recursive_dag_support() {
+async fn assert_risc0_capabilities_advertise_recursive_support() {
     let app = build_risc0_app().await;
     let capabilities: ExecutionCapabilitiesResponse = get_json(
         &app,
@@ -165,7 +173,7 @@ async fn assert_risc0_capabilities_advertise_recursive_dag_support() {
 
     assert_eq!(
         capabilities.evidence_requirements.proof_composition_mode,
-        ProofCompositionMode::Dag
+        ProofCompositionMode::Recursive
     );
     assert_eq!(
         capabilities
@@ -176,15 +184,15 @@ async fn assert_risc0_capabilities_advertise_recursive_dag_support() {
     );
     assert_eq!(
         capabilities.capability_descriptor.support["proof.risc0_recursive"],
-        CapabilitySupportLevel::Experimental
+        CapabilitySupportLevel::Implemented
     );
 }
 
 #[test]
-fn test_risc0_capabilities_advertise_recursive_dag_support() {
+fn test_risc0_capabilities_advertise_recursive_support() {
     run_risc0_http_test(
         "risc0-http-capabilities",
-        assert_risc0_capabilities_advertise_recursive_dag_support(),
+        assert_risc0_capabilities_advertise_recursive_support(),
     );
 }
 
@@ -320,7 +328,7 @@ fn test_risc0_node_verifies_valid_dev_receipt_chain() {
 }
 
 async fn assert_recursive_risc0_two_hop_lineage_via_http_api() {
-    let app = build_risc0_app().await;
+    let (state, store, app) = build_risc0_state_and_app().await;
 
     let offer: ContractOffer = post_json(
         &app,
@@ -344,7 +352,7 @@ async fn assert_recursive_risc0_two_hop_lineage_via_http_api() {
     let finalized: FinalizeContractResponse =
         post_json(&app, "/dsp/contracts/finalize", offer, StatusCode::OK).await;
 
-    let first: LineageJobAccepted = post_json(
+    let discovery: LineageJobAccepted = post_json(
         &app,
         "/lsdc/lineage/jobs",
         LineageJobRequest {
@@ -371,10 +379,28 @@ async fn assert_recursive_risc0_two_hop_lineage_via_http_api() {
         StatusCode::ACCEPTED,
     )
     .await;
-    let first_record = wait_for_job(&app, &first.job_id).await;
-    let first_result = first_record
+    let discovery_record = wait_for_job(&app, &discovery.job_id).await;
+    let discovery_result = discovery_record
         .result
-        .expect("expected first RISC Zero result");
+        .expect("expected discovery RISC Zero result");
+    let session_id = discovery_result
+        .session_id
+        .clone()
+        .expect("expected persisted execution session");
+    let (session, challenge, _) = store
+        .get_execution_session(&session_id)
+        .unwrap()
+        .expect("expected stored execution session");
+    let first_result = discovery_result;
+    let execution_bindings = lsdc_ports::ExecutionBindings {
+        overlay_commitment: state
+            .execution_overlay_commitment_for(&finalized.agreement)
+            .unwrap(),
+        session,
+        challenge,
+        resolved_transport: first_result.resolved_transport.clone(),
+        attestation_result_hash: None,
+    };
 
     let second: LineageJobAccepted = post_json(
         &app,
@@ -395,7 +421,7 @@ async fn assert_recursive_risc0_two_hop_lineage_via_http_api() {
                 metrics_window_ended_at: chrono::Utc::now(),
             },
             prior_receipt: Some(first_result.proof_bundle.provenance_receipt.clone()),
-            execution_bindings: None,
+            execution_bindings: Some(execution_bindings),
         },
         StatusCode::ACCEPTED,
     )
@@ -494,7 +520,7 @@ async fn assert_verify_evidence_dag_accepts_valid_recursive_risc0_subgraph() {
 
     let verification: VerifyEvidenceDagResponse = post_json(
         &app,
-        "/lsdc/v1/evidence/verify-dag",
+        "/lsdc/v1/evidence/verify",
         VerifyEvidenceDagRequest {
             dag: dag.clone(),
             receipts: Vec::new(),
@@ -528,7 +554,7 @@ async fn assert_verify_evidence_dag_accepts_valid_recursive_risc0_subgraph() {
     .unwrap();
     let tampered_verification: VerifyEvidenceDagResponse = post_json(
         &app,
-        "/lsdc/v1/evidence/verify-dag",
+        "/lsdc/v1/evidence/verify",
         VerifyEvidenceDagRequest {
             dag: tampered_dag,
             receipts: Vec::new(),
@@ -544,6 +570,69 @@ fn test_verify_evidence_dag_accepts_valid_recursive_risc0_subgraph() {
     run_risc0_http_test(
         "risc0-http-dag",
         assert_verify_evidence_dag_accepts_valid_recursive_risc0_subgraph(),
+    );
+}
+
+async fn assert_verify_chain_rejects_composition_nodes() {
+    let app = build_risc0_app().await;
+    let engine = Risc0ProofEngine::new();
+    let agreement = lsdc_common::dsp::ContractAgreement {
+        agreement_id: lsdc_common::odrl::ast::PolicyId("agreement-risc0-chain".into()),
+        asset_id: "asset-risc0".into(),
+        provider_id: "did:web:risc0-provider".into(),
+        consumer_id: "did:web:risc0-consumer".into(),
+        odrl_policy: lsdc_common::fixtures::read_json("odrl/supported_policy.json").unwrap(),
+        policy_hash: "policy-hash".into(),
+        evidence_requirements: vec![EvidenceRequirement::ProvenanceReceipt],
+        liquid_policy: lsdc_common::odrl::parser::lower_policy(
+            &lsdc_common::fixtures::read_json("odrl/supported_policy.json").unwrap(),
+            &[EvidenceRequirement::ProvenanceReceipt],
+        )
+        .unwrap(),
+    };
+    let manifest: CsvTransformManifest =
+        lsdc_common::fixtures::read_json("liquid/analytics_manifest.json").unwrap();
+    let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
+    let first = engine
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
+        .await
+        .unwrap();
+    let second = engine
+        .execute_csv_transform(&agreement, input.as_slice(), &manifest, None, None)
+        .await
+        .unwrap();
+    let composed = engine
+        .compose_receipts(
+            &[first.receipt.clone(), second.receipt.clone()],
+            lsdc_ports::CompositionContext {
+                agreement_id: agreement.agreement_id.0.clone(),
+                agreement_commitment_hash: None,
+                session_id: None,
+                selector_hash: None,
+                capability_commitment_hash: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let verification: EvidenceVerificationResult = post_json(
+        &app,
+        "/lsdc/evidence/verify-chain",
+        EvidenceVerificationRequest {
+            receipts: vec![first.receipt, composed],
+        },
+        StatusCode::OK,
+    )
+    .await;
+
+    assert!(!verification.valid);
+}
+
+#[test]
+fn test_verify_chain_rejects_composition_nodes() {
+    run_risc0_http_test(
+        "risc0-http-chain-rejects-composition",
+        assert_verify_chain_rejects_composition_nodes(),
     );
 }
 
