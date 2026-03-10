@@ -22,6 +22,7 @@ pub struct BatchLineageRequest {
     pub current_price: f64,
     pub metrics: TrainingMetrics,
     pub prior_receipt: Option<lsdc_common::crypto::ProvenanceReceipt>,
+    pub attestation_evidence: Option<lsdc_common::crypto::AttestationEvidence>,
     pub execution_bindings: Option<ExecutionBindings>,
 }
 
@@ -79,6 +80,7 @@ impl ExecutionPipeline {
             current_price,
             metrics,
             prior_receipt,
+            attestation_evidence,
             execution_bindings,
         } = request;
         let handle = self.activate_agreement(&agreement, &iface).await?;
@@ -94,6 +96,7 @@ impl ExecutionPipeline {
                     input_csv,
                     manifest,
                     prior_receipt,
+                    attestation_evidence,
                     execution_bindings: execution_bindings.clone(),
                 })
                 .await?;

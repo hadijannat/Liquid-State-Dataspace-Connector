@@ -1,18 +1,23 @@
 use crate::state::{ApiState, ApiStateInit, BackendSummary};
 use anyhow::{anyhow, Result as AnyhowResult};
 use axum::http::Uri;
+use base64::Engine;
 use control_plane::pricing::GrpcPricingOracle;
 use control_plane_store::Store;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use lsdc_common::execution::ProofBackend;
-use lsdc_config::ControlPlaneApiConfig;
-use lsdc_ports::{EnclaveManager, PricingOracle, ProofEngine};
+use lsdc_config::{ControlPlaneApiConfig, KeyBrokerBackend};
+use lsdc_ports::{AttestationVerifier, EnclaveManager, KeyBroker, PricingOracle, ProofEngine};
 use proof_plane_host::DevReceiptProofEngine;
 #[cfg(feature = "risc0")]
 use proof_plane_host::Risc0ProofEngine;
 use std::sync::Arc;
-use tee_orchestrator::attestation::LocalAttestationVerifier;
+use tee_orchestrator::attestation::{
+    build_aws_nitro_attestation_document_from_bundle, AwsNitroAttestationVerifier,
+    LocalAttestationVerifier,
+};
 use tee_orchestrator::enclave::{NitroEnclaveManager, NitroLiveAttestationMaterial};
+use tee_orchestrator::key_release::{AwsKmsKeyBroker, AwsSdkKmsDataKeyClient};
 
 const API_BEARER_TOKEN_ENV: &str = "LSDC_API_BEARER_TOKEN";
 const ALLOW_DEV_DEFAULTS_ENV: &str = "LSDC_ALLOW_DEV_DEFAULTS";
@@ -40,7 +45,10 @@ pub async fn state_from_config(config: &ControlPlaneApiConfig) -> AnyhowResult<A
         configured_backends.proof_backend,
         proof_engine.proof_backend(),
     )?;
-    let enclave_manager = build_enclave_manager(config.tee_backend, proof_engine.clone(), config)?;
+    let attestation_verifier = build_attestation_verifier(config)?;
+    let enclave_manager =
+        build_enclave_manager(config.tee_backend, proof_engine.clone(), attestation_verifier.clone(), config)
+            .await?;
     validate_backend_intent(
         "tee",
         configured_backends.tee_backend,
@@ -51,7 +59,6 @@ pub async fn state_from_config(config: &ControlPlaneApiConfig) -> AnyhowResult<A
         Arc::new(GrpcPricingOracle::new(config.pricing_endpoint.clone()));
     let store = Store::new(&config.database_path)?;
     let api_bearer_token = required_api_bearer_token()?;
-    let attestation_verifier = Arc::new(LocalAttestationVerifier::new());
 
     Ok(ApiState::new(ApiStateInit {
         store,
@@ -105,23 +112,54 @@ fn build_dev_receipt_verifier(
     Ok(Arc::new(DevReceiptProofEngine::new()?))
 }
 
-fn build_enclave_manager(
-    tee_backend: lsdc_common::execution::TeeBackend,
-    proof_engine: Arc<dyn ProofEngine>,
+fn build_attestation_verifier(
     config: &ControlPlaneApiConfig,
-) -> AnyhowResult<Arc<dyn EnclaveManager>> {
-    match tee_backend {
+) -> AnyhowResult<Arc<dyn AttestationVerifier>> {
+    match config.tee_backend {
         lsdc_common::execution::TeeBackend::NitroDev => {
-            Ok(Arc::new(NitroEnclaveManager::new_dev(proof_engine)?))
+            Ok(Arc::new(LocalAttestationVerifier::new()))
         }
         lsdc_common::execution::TeeBackend::NitroLive => {
             let path = config
                 .nitro_live_attestation_path
                 .as_ref()
                 .ok_or_else(|| anyhow!("nitro_live requires `nitro_live_attestation_path`"))?;
+            let fixture = load_live_attestation_fixture(path)?;
+            Ok(Arc::new(AwsNitroAttestationVerifier::new(
+                fixture.expected_image_hash_hex,
+                config.nitro_trust_bundle_path.as_deref(),
+            )?))
+        }
+        lsdc_common::execution::TeeBackend::None => {
+            Err(anyhow!("tee backend `none` is not valid for Phase 3"))
+        }
+    }
+}
+
+async fn build_enclave_manager(
+    tee_backend: lsdc_common::execution::TeeBackend,
+    proof_engine: Arc<dyn ProofEngine>,
+    attestation_verifier: Arc<dyn AttestationVerifier>,
+    config: &ControlPlaneApiConfig,
+) -> AnyhowResult<Arc<dyn EnclaveManager>> {
+    match tee_backend {
+        lsdc_common::execution::TeeBackend::NitroDev => {
+            Ok(Arc::new(NitroEnclaveManager::new_dev(
+                proof_engine,
+                attestation_verifier,
+            )?))
+        }
+        lsdc_common::execution::TeeBackend::NitroLive => {
+            let path = config
+                .nitro_live_attestation_path
+                .as_ref()
+                .ok_or_else(|| anyhow!("nitro_live requires `nitro_live_attestation_path`"))?;
+            let key_broker = build_key_broker(config).await?;
             Ok(Arc::new(NitroEnclaveManager::new_live(
                 proof_engine,
-                load_live_attestation_material(path)?,
+                attestation_verifier,
+                load_live_attestation_material(path, config.nitro_trust_bundle_path.as_deref())?,
+                key_broker,
             )?))
         }
         lsdc_common::execution::TeeBackend::None => {
@@ -204,54 +242,132 @@ fn is_loopback_host(host: &str) -> bool {
         .is_ok_and(|address| address.is_loopback())
 }
 
-fn load_live_attestation_material(path: &str) -> AnyhowResult<NitroLiveAttestationMaterial> {
-    #[derive(serde::Deserialize)]
-    struct FixtureMeasurements {
-        image_hash_hex: String,
-        pcrs: std::collections::BTreeMap<u16, String>,
-        debug: bool,
-    }
+#[derive(serde::Deserialize)]
+struct NitroLiveAttestationFixture {
+    expected_image_hash_hex: String,
+    raw_attestation_document_base64: Option<String>,
+    raw_attestation_document_utf8: Option<String>,
+}
 
-    #[derive(serde::Deserialize)]
-    struct FixtureMaterial {
-        enclave_id: String,
-        expected_image_hash_hex: String,
-        measurements: FixtureMeasurements,
-        raw_attestation_document_utf8: String,
-        certificate_chain_pem: Vec<String>,
-        timestamp: String,
-    }
-
+fn load_live_attestation_fixture(path: &str) -> AnyhowResult<NitroLiveAttestationFixture> {
     let raw = std::fs::read_to_string(path)?;
-    let fixture: FixtureMaterial = serde_json::from_str(&raw)?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
+fn load_live_attestation_material(
+    path: &str,
+    trust_bundle_path: Option<&str>,
+) -> AnyhowResult<NitroLiveAttestationMaterial> {
+    let fixture = load_live_attestation_fixture(path)?;
+    let raw_attestation_document = match (
+        fixture.raw_attestation_document_base64,
+        fixture.raw_attestation_document_utf8,
+    ) {
+        (Some(base64), _) => base64::engine::general_purpose::STANDARD.decode(base64)?,
+        (None, Some(raw_utf8)) => raw_utf8.into_bytes(),
+        (None, None) => {
+            return Err(anyhow!(
+                "nitro live attestation fixture must include raw_attestation_document_base64 or raw_attestation_document_utf8"
+            ))
+        }
+    };
     Ok(NitroLiveAttestationMaterial {
-        enclave_id: fixture.enclave_id,
-        expected_image_hash: lsdc_common::crypto::Sha256Hash::from_hex(
+        document: build_aws_nitro_attestation_document_from_bundle(
             &fixture.expected_image_hash_hex,
-        )
-        .map_err(|err| anyhow!(err))?,
-        measurements: lsdc_common::crypto::AttestationMeasurements {
-            image_hash: lsdc_common::crypto::Sha256Hash::from_hex(
-                &fixture.measurements.image_hash_hex,
-            )
-            .map_err(|err| anyhow!(err))?,
-            pcrs: fixture.measurements.pcrs,
-            debug: fixture.measurements.debug,
-        },
-        raw_attestation_document: fixture.raw_attestation_document_utf8.into_bytes(),
-        certificate_chain_pem: fixture.certificate_chain_pem,
-        timestamp: chrono::DateTime::parse_from_rfc3339(&fixture.timestamp)?
-            .with_timezone(&chrono::Utc),
+            &raw_attestation_document,
+            trust_bundle_path,
+        )?,
     })
+}
+
+async fn build_key_broker(config: &ControlPlaneApiConfig) -> AnyhowResult<Arc<dyn KeyBroker>> {
+    if config.tee_backend != lsdc_common::execution::TeeBackend::NitroLive {
+        return Err(anyhow!(
+            "aws kms key broker is only valid when tee_backend = nitro_live"
+        ));
+    }
+    if config.key_broker_backend != KeyBrokerBackend::AwsKms {
+        return Err(anyhow!(
+            "nitro_live requires `key_broker_backend = aws_kms`"
+        ));
+    }
+    let aws_region = config
+        .aws_region
+        .as_ref()
+        .ok_or_else(|| anyhow!("nitro_live requires `aws_region`"))?;
+    let kms_key_id = config
+        .kms_key_id
+        .as_ref()
+        .ok_or_else(|| anyhow!("nitro_live requires `kms_key_id`"))?;
+    let shared_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(aws_sdk_kms::config::Region::new(aws_region.clone()))
+        .load()
+        .await;
+    let client = aws_sdk_kms::Client::new(&shared_config);
+
+    Ok(Arc::new(AwsKmsKeyBroker::new(
+        kms_key_id.clone(),
+        Arc::new(AwsSdkKmsDataKeyClient::new(client)),
+    )))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::validate_pricing_endpoint_with_policy;
+    use super::{build_key_broker, validate_pricing_endpoint_with_policy};
+    use lsdc_common::execution::{ProofBackend, TeeBackend, TransportBackend};
+    use lsdc_config::{ControlPlaneApiConfig, KeyBrokerBackend};
+
+    fn sample_nitro_live_config() -> ControlPlaneApiConfig {
+        ControlPlaneApiConfig {
+            node_name: "nitro-live-node".into(),
+            listen_addr: "127.0.0.1:0".into(),
+            database_path: ":memory:".into(),
+            liquid_agent_endpoint: "http://127.0.0.1:50051".into(),
+            transport_backend: TransportBackend::Simulated,
+            proof_backend: ProofBackend::DevReceipt,
+            tee_backend: TeeBackend::NitroLive,
+            pricing_endpoint: "http://127.0.0.1:50052".into(),
+            default_interface: "lo".into(),
+            key_broker_backend: KeyBrokerBackend::AwsKms,
+            aws_region: Some("eu-central-1".into()),
+            kms_key_id: Some("arn:aws:kms:eu-central-1:123:key/test".into()),
+            nitro_trust_bundle_path: None,
+            nitro_live_attestation_path: Some(
+                "/Users/aeroshariati/Liquid-State-Dataspace-Connector/fixtures/nitro/live_attestation_material.json"
+                    .into(),
+            ),
+        }
+    }
 
     #[test]
     fn test_validate_pricing_endpoint_rejects_insecure_non_loopback_host() {
         let err = validate_pricing_endpoint_with_policy("http://0.0.0.0:50051", true).unwrap_err();
         assert!(err.to_string().contains("must use a loopback host"));
+    }
+
+    #[tokio::test]
+    async fn test_build_key_broker_requires_aws_region() {
+        let mut config = sample_nitro_live_config();
+        config.aws_region = None;
+
+        let err = match build_key_broker(&config).await {
+            Ok(_) => panic!("expected missing aws_region to fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("aws_region"));
+    }
+
+    #[tokio::test]
+    async fn test_build_key_broker_requires_kms_key_id() {
+        let mut config = sample_nitro_live_config();
+        config.kms_key_id = None;
+
+        let err = match build_key_broker(&config).await {
+            Ok(_) => panic!("expected missing kms_key_id to fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("kms_key_id"));
     }
 }

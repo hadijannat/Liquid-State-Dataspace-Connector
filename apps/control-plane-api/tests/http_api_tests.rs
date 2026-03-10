@@ -28,6 +28,7 @@ use lsdc_common::runtime_model::{EvidenceDag, EvidenceNode, NodeStatus};
 use lsdc_ports::{
     DataPlane, EnforcementIdentity, PricingOracle, ResolvedTransportGuard, TrainingMetrics,
 };
+use lsdc_config::KeyBrokerBackend;
 use lsdc_service_types::{
     CreateExecutionSessionRequest, CreateExecutionSessionResponse, EvidenceVerificationRequest,
     ExecutionCapabilitiesResponse, FinalizeContractResponse, IssueExecutionChallengeRequest,
@@ -728,6 +729,10 @@ async fn test_state_from_config_rejects_transport_backend_mismatch() {
         tee_backend: TeeBackend::NitroDev,
         pricing_endpoint: "http://127.0.0.1:50051".into(),
         default_interface: "lo".into(),
+        key_broker_backend: KeyBrokerBackend::None,
+        aws_region: None,
+        kms_key_id: None,
+        nitro_trust_bundle_path: None,
         nitro_live_attestation_path: None,
     };
 
@@ -742,7 +747,7 @@ async fn test_state_from_config_rejects_transport_backend_mismatch() {
 }
 
 #[tokio::test]
-async fn test_state_from_config_rejects_missing_nitro_live_material() {
+async fn test_state_from_config_rejects_missing_nitro_live_kms_config() {
     ensure_test_env();
     let agent_endpoint = start_simulated_agent().await;
     let config = ControlPlaneApiConfig {
@@ -755,15 +760,22 @@ async fn test_state_from_config_rejects_missing_nitro_live_material() {
         tee_backend: TeeBackend::NitroLive,
         pricing_endpoint: "http://127.0.0.1:50051".into(),
         default_interface: "lo".into(),
-        nitro_live_attestation_path: None,
+        key_broker_backend: KeyBrokerBackend::None,
+        aws_region: None,
+        kms_key_id: None,
+        nitro_trust_bundle_path: None,
+        nitro_live_attestation_path: Some(
+            "/Users/aeroshariati/Liquid-State-Dataspace-Connector/fixtures/nitro/live_attestation_material.json"
+                .into(),
+        ),
     };
 
     let err = match control_plane_api::state_from_config(&config).await {
-        Ok(_) => panic!("expected missing nitro_live_attestation_path to fail startup"),
+        Ok(_) => panic!("expected missing nitro_live AWS configuration to fail startup"),
         Err(err) => err,
     };
     assert!(
-        err.to_string().contains("nitro_live_attestation_path"),
+        err.to_string().contains("key_broker_backend"),
         "unexpected error: {err}"
     );
 }
@@ -822,7 +834,13 @@ async fn build_test_app(agent_endpoint: String) -> axum::Router {
 fn build_test_state(agent_endpoint: String, store: control_plane_api::store::Store) -> ApiState {
     ensure_test_env();
     let proof_engine = Arc::new(DevReceiptProofEngine::new().unwrap());
-    let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()).unwrap());
+    let enclave_manager = Arc::new(
+        NitroEnclaveManager::new_dev(
+            proof_engine.clone(),
+            Arc::new(LocalAttestationVerifier::new()),
+        )
+        .unwrap(),
+    );
     let attestation_verifier = Arc::new(LocalAttestationVerifier::new());
     let pricing_oracle = Arc::new(MockPricingOracle);
     let liquid_agent = Arc::new(LiquidAgentGrpcClient::new(agent_endpoint));

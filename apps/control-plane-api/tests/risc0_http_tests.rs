@@ -18,6 +18,7 @@ use lsdc_service_types::{
 use proof_plane_host::Risc0ProofEngine;
 use std::sync::Arc;
 use std::sync::Once;
+use tee_orchestrator::attestation::LocalAttestationVerifier;
 use tee_orchestrator::enclave::NitroEnclaveManager;
 use tower::ServiceExt;
 
@@ -78,7 +79,13 @@ async fn test_single_hop_risc0_lineage_via_http_api() {
     let agent_endpoint = start_simulated_agent().await;
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
     let proof_engine = Arc::new(Risc0ProofEngine::new());
-    let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()).unwrap());
+    let enclave_manager = Arc::new(
+        NitroEnclaveManager::new_dev(
+            proof_engine.clone(),
+            Arc::new(LocalAttestationVerifier::new()),
+        )
+        .unwrap(),
+    );
     let app = router(ApiState::new(ApiStateInit {
         store,
         node_name: "test-risc0-node".into(),
@@ -162,7 +169,13 @@ async fn test_risc0_node_verifies_valid_dev_receipt_chain() {
     let agent_endpoint = start_simulated_agent().await;
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
     let proof_engine = Arc::new(Risc0ProofEngine::new());
-    let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()).unwrap());
+    let enclave_manager = Arc::new(
+        NitroEnclaveManager::new_dev(
+            proof_engine.clone(),
+            Arc::new(LocalAttestationVerifier::new()),
+        )
+        .unwrap(),
+    );
     let app = router(ApiState::new(ApiStateInit {
         store,
         node_name: "test-risc0-node".into(),

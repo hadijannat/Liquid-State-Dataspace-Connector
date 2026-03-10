@@ -76,6 +76,9 @@ pub struct ApiState {
     pub(crate) configured_backends: BackendSummary,
     pub(crate) actual_transport_backend: TransportBackend,
     pub(crate) actual_tee_backend: TeeBackend,
+    pub(crate) attested_key_release_supported: bool,
+    pub(crate) attested_teardown_supported: bool,
+    pub(crate) default_requester_ephemeral_pubkey: Vec<u8>,
     pub(crate) transparency_log: Arc<LocalTransparencyLog>,
 }
 
@@ -96,6 +99,10 @@ impl ApiState {
             actual_transport_backend,
         } = init;
         let actual_tee_backend = enclave_manager.tee_backend();
+        let attested_key_release_supported = enclave_manager.attested_key_release_supported();
+        let attested_teardown_supported = enclave_manager.attested_teardown_supported();
+        let default_requester_ephemeral_pubkey =
+            enclave_manager.default_requester_ephemeral_pubkey();
         let data_plane: Arc<dyn DataPlane> = liquid_agent.clone();
         let orchestrator = Arc::new(Orchestrator::with_full_stack(
             data_plane,
@@ -118,6 +125,9 @@ impl ApiState {
             configured_backends,
             actual_transport_backend,
             actual_tee_backend,
+            attested_key_release_supported,
+            attested_teardown_supported,
+            default_requester_ephemeral_pubkey,
             transparency_log,
         }
     }
@@ -178,8 +188,8 @@ impl ApiState {
             transparency_supported: true,
             strict_mode_supported: true,
             dev_backends_allowed: allow_dev_defaults(),
-            attested_key_release_supported: false,
-            attested_teardown_supported: false,
+            attested_key_release_supported: self.attested_key_release_supported,
+            attested_teardown_supported: self.attested_teardown_supported,
         }
     }
 
@@ -207,7 +217,9 @@ impl ApiState {
             ),
             (
                 "key_release.kms_attested".into(),
-                if self.actual_tee_backend == TeeBackend::NitroLive {
+                if self.attested_key_release_supported {
+                    Experimental
+                } else if self.actual_tee_backend == TeeBackend::NitroLive {
                     ModeledOnly
                 } else {
                     Unsupported
@@ -241,7 +253,9 @@ impl ApiState {
             ),
             (
                 "teardown.kms_erasure".into(),
-                if self.actual_tee_backend == TeeBackend::NitroLive {
+                if self.attested_teardown_supported {
+                    Experimental
+                } else if self.actual_tee_backend == TeeBackend::NitroLive {
                     ModeledOnly
                 } else {
                     Unsupported
@@ -596,7 +610,7 @@ impl ApiState {
         let overlay_commitment = self.execution_overlay_commitment_for(agreement)?;
         let created = self.create_execution_session(CreateExecutionSessionRequest {
             agreement_id: agreement.agreement_id.0.clone(),
-            requester_ephemeral_pubkey: Vec::new(),
+            requester_ephemeral_pubkey: self.default_requester_ephemeral_pubkey.clone(),
             expires_in_seconds: Some(900),
         })?;
 

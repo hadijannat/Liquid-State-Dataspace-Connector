@@ -1,13 +1,36 @@
+use aws_nitro_enclaves_nsm_api::api::AttestationDoc as RawNitroAttestationDoc;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
+use coset::{CborSerializable, CoseSign1};
 use lsdc_common::crypto::{
     sign_bytes, verify_signature, AppraisalStatus, AttestationDocument, AttestationEvidence,
     AttestationMeasurements, AttestationResult, Sha256Hash,
 };
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_ports::AttestationVerifier;
+use ring::{
+    digest::{self, SHA256},
+    signature::{UnparsedPublicKey, ECDSA_P384_SHA384_FIXED},
+};
 use std::collections::BTreeMap;
+use std::iter::once;
+use std::path::Path;
+use ::time::OffsetDateTime;
+use x509_parser::{
+    certificate::X509Certificate,
+    oid_registry::OID_SIG_ECDSA_WITH_SHA384,
+    pem::parse_x509_pem,
+    prelude::*,
+    validate::{VecLogger, X509StructureValidator},
+};
 
 pub(crate) const DEFAULT_ATTESTATION_SECRET: &str = "lsdc-attestation-dev-secret";
 const NITRO_PLATFORM_DEV: &str = "aws-nitro-dev";
+const NITRO_PLATFORM_LIVE: &str = "aws-nitro-live";
+const AWS_NITRO_ROOT_FINGERPRINT_HEX: &str =
+    "641a0321a3e244efe456463195d606317ed7cdcc3c1756e09893f3c68f79bb5b";
+const MAX_ATTESTATION_AGE_SECONDS: i64 = 300;
+const MAX_ATTESTATION_FUTURE_SKEW_SECONDS: i64 = 30;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AttestationBinding<'a> {
@@ -25,6 +48,135 @@ struct AttestationPayload<'a> {
     public_key: Option<&'a [u8]>,
     user_data_hash: Option<&'a Sha256Hash>,
     timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AwsNitroAttestationVerifier {
+    expected_image_sha384_hex: String,
+    trusted_root_fingerprints: Vec<Vec<u8>>,
+}
+
+impl AwsNitroAttestationVerifier {
+    pub fn new(
+        expected_image_sha384_hex: impl Into<String>,
+        trust_bundle_path: Option<&str>,
+    ) -> Result<Self> {
+        Ok(Self {
+            expected_image_sha384_hex: expected_image_sha384_hex.into(),
+            trusted_root_fingerprints: load_trusted_root_fingerprints(trust_bundle_path)?,
+        })
+    }
+
+    pub fn expected_image_sha384_hex(&self) -> &str {
+        &self.expected_image_sha384_hex
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ParsedCert<'a> {
+    der: &'a [u8],
+    idx: usize,
+    x509: X509Certificate<'a>,
+}
+
+impl<'a> ParsedCert<'a> {
+    fn parse(der: &'a [u8], idx: usize) -> Result<Self> {
+        let (_, x509) = X509Certificate::from_der(der).map_err(|err| {
+            LsdcError::Attestation(format!("nitro certificate {idx} failed to parse: {err}"))
+        })?;
+        let mut logger = VecLogger::default();
+        if !X509StructureValidator.validate(&x509, &mut logger) {
+            return Err(LsdcError::Attestation(format!(
+                "nitro certificate {idx} has malformed structure: {logger:?}"
+            )));
+        }
+
+        Ok(Self { der, idx, x509 })
+    }
+
+    fn cn(&'a self) -> Result<&'a str> {
+        self.x509
+            .subject()
+            .iter_common_name()
+            .next()
+            .ok_or_else(|| {
+                LsdcError::Attestation(format!(
+                    "nitro certificate {} is missing a common name",
+                    self.idx
+                ))
+            })?
+            .as_str()
+            .map_err(|err| LsdcError::Attestation(format!("nitro common name malformed: {err}")))
+    }
+
+    fn fingerprint(&self) -> Vec<u8> {
+        digest::digest(&SHA256, self.der).as_ref().to_vec()
+    }
+
+    fn verify(self, parent: Option<&ParsedCert<'_>>, trusted_roots: &[Vec<u8>]) -> Result<Self> {
+        let cn = self.cn()?.to_string();
+        let algorithm = self.x509.signature_algorithm.oid();
+        if algorithm != &OID_SIG_ECDSA_WITH_SHA384 {
+            return Err(LsdcError::Attestation(format!(
+                "nitro certificate {} ({cn}) has unexpected signature algorithm {algorithm}",
+                self.idx
+            )));
+        }
+
+        match parent {
+            Some(parent) => self
+                .x509
+                .verify_signature(Some(parent.x509.public_key()))
+                .map_err(|err| {
+                    LsdcError::Attestation(format!(
+                        "nitro certificate {} ({cn}) signature verification failed: {err}",
+                        self.idx
+                    ))
+                })?,
+            None => {
+                let fingerprint = self.fingerprint();
+                if !trusted_roots.iter().any(|root| root == &fingerprint) {
+                    return Err(LsdcError::Attestation(format!(
+                        "nitro root certificate fingerprint {} is not trusted",
+                        hex::encode(fingerprint)
+                    )));
+                }
+            }
+        }
+
+        Ok(self)
+    }
+
+    fn validate_at(self, now: OffsetDateTime) -> Result<Self> {
+        let cn = self.cn()?.to_string();
+        let not_before = self.x509.validity().not_before.to_datetime();
+        let not_after = self.x509.validity().not_after.to_datetime();
+        if now < not_before {
+            return Err(LsdcError::Attestation(format!(
+                "nitro certificate {} ({cn}) is not valid before {not_before}",
+                self.idx
+            )));
+        }
+        if now > not_after {
+            return Err(LsdcError::Attestation(format!(
+                "nitro certificate {} ({cn}) expired at {not_after}",
+                self.idx
+            )));
+        }
+
+        Ok(self)
+    }
+}
+
+#[derive(Debug)]
+struct ParsedNitroDocument {
+    module_id: String,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    pcrs: BTreeMap<u16, Vec<u8>>,
+    public_key: Option<Vec<u8>>,
+    user_data: Option<Vec<u8>>,
+    nonce: Option<Vec<u8>>,
+    certificate_chain_pem: Vec<String>,
 }
 
 pub(crate) fn build_attestation_document(
@@ -94,7 +246,82 @@ pub(crate) fn build_attestation_document_with_binding(
     })
 }
 
+pub(crate) fn build_aws_nitro_attestation_document(
+    expected_image_sha384_hex: &str,
+    raw_attestation_document: &[u8],
+    trusted_root_fingerprints: &[Vec<u8>],
+) -> Result<AttestationDocument> {
+    let parsed = parse_and_verify_nitro_document(raw_attestation_document, trusted_root_fingerprints)?;
+    let image_sha384 = parsed
+        .pcrs
+        .get(&0)
+        .map(|bytes| hex::encode(bytes))
+        .ok_or_else(|| {
+            LsdcError::Attestation(
+                "nitro attestation document is missing PCR0/image measurement".into(),
+            )
+        })?;
+    let zero_pcrs = [0_u16, 1_u16, 2_u16]
+        .into_iter()
+        .all(|pcr| parsed.pcrs.get(&pcr).is_none_or(|value| is_zero_bytes(value)));
+    if zero_pcrs {
+        return Err(LsdcError::Attestation(
+            "nitro-live attestation rejected debug-mode zero-PCR measurements".into(),
+        ));
+    }
+    if image_sha384 != expected_image_sha384_hex {
+        return Err(LsdcError::Attestation(
+            "nitro-live attestation image hash does not match the pinned EIF measurement".into(),
+        ));
+    }
+
+    let measurements = AttestationMeasurements {
+        image_hash: digest_hex_payload(&image_sha384),
+        pcrs: parsed
+            .pcrs
+            .iter()
+            .map(|(index, value)| (*index, hex::encode(value)))
+            .collect(),
+        debug: zero_pcrs,
+    };
+    let document_hash = Sha256Hash::digest_bytes(raw_attestation_document);
+    let user_data_hash = parsed.user_data.as_ref().map(|value| as_user_data_hash(value));
+
+    Ok(AttestationDocument {
+        enclave_id: parsed.module_id,
+        platform: NITRO_PLATFORM_LIVE.into(),
+        binary_hash: digest_hex_payload(&image_sha384),
+        measurements,
+        nonce: parsed.nonce.as_ref().map(hex::encode),
+        public_key: parsed.public_key,
+        user_data_hash,
+        document_hash,
+        timestamp: parsed.timestamp,
+        raw_attestation_document: raw_attestation_document.to_vec(),
+        certificate_chain_pem: parsed.certificate_chain_pem,
+        signature_hex: String::new(),
+    })
+}
+
+pub fn build_aws_nitro_attestation_document_from_bundle(
+    expected_image_sha384_hex: &str,
+    raw_attestation_document: &[u8],
+    trust_bundle_path: Option<&str>,
+) -> Result<AttestationDocument> {
+    let trusted_roots = load_trusted_root_fingerprints(trust_bundle_path)?;
+    build_aws_nitro_attestation_document(
+        expected_image_sha384_hex,
+        raw_attestation_document,
+        &trusted_roots,
+    )
+}
+
 pub fn verify_attestation(doc: &AttestationDocument) -> Result<bool> {
+    if doc.platform == NITRO_PLATFORM_LIVE {
+        return Ok(!doc.raw_attestation_document.is_empty()
+            && !doc.measurements.debug
+            && doc.measurements.pcrs.contains_key(&0));
+    }
     if !doc.platform.starts_with("aws-nitro") {
         return Ok(false);
     }
@@ -201,12 +428,222 @@ impl AttestationVerifier for LocalAttestationVerifier {
     }
 }
 
+impl AttestationVerifier for AwsNitroAttestationVerifier {
+    fn appraise_attestation_evidence(
+        &self,
+        evidence: &AttestationEvidence,
+        challenge: Option<&lsdc_common::execution_overlay::ExecutionSessionChallenge>,
+    ) -> Result<AttestationResult> {
+        let document = build_aws_nitro_attestation_document(
+            &self.expected_image_sha384_hex,
+            &evidence.document.raw_attestation_document,
+            &self.trusted_root_fingerprints,
+        )?;
+        let image_sha384 = document
+            .measurements
+            .pcrs
+            .get(&0)
+            .cloned()
+            .unwrap_or_else(|| self.expected_image_sha384_hex.clone());
+        let now = chrono::Utc::now();
+        let freshness_ok = match challenge {
+            Some(challenge) => {
+                now <= challenge.expires_at
+                    && document.timestamp <= challenge.expires_at
+                    && document.timestamp + chrono::Duration::seconds(MAX_ATTESTATION_FUTURE_SKEW_SECONDS)
+                        >= challenge.issued_at
+            }
+            None => {
+                let age = now.signed_duration_since(document.timestamp).num_seconds();
+                (-MAX_ATTESTATION_FUTURE_SKEW_SECONDS..=MAX_ATTESTATION_AGE_SECONDS)
+                    .contains(&age)
+            }
+        };
+        let nonce_matches = challenge
+            .map(|challenge| document.nonce.as_deref() == Some(challenge.challenge_nonce_hex.as_str()))
+            .unwrap_or(true);
+        let public_key_matches = challenge
+            .map(|challenge| {
+                challenge.requester_ephemeral_pubkey.is_empty()
+                    || document.public_key.as_deref()
+                        == Some(challenge.requester_ephemeral_pubkey.as_slice())
+            })
+            .unwrap_or(true);
+        let user_data_matches = challenge
+            .map(|challenge| document.user_data_hash.as_ref() == Some(&challenge.resolved_selector_hash))
+            .unwrap_or(true);
+        let cert_chain_verified = !document.measurements.debug;
+        let appraisal = if cert_chain_verified
+            && freshness_ok
+            && nonce_matches
+            && public_key_matches
+            && user_data_matches
+        {
+            AppraisalStatus::Accepted
+        } else {
+            AppraisalStatus::Rejected
+        };
+
+        Ok(AttestationResult {
+            profile: evidence.evidence_profile.clone(),
+            doc_hash: document.document_hash,
+            session_id: challenge.map(|challenge| challenge.session_id.to_string()),
+            nonce: document.nonce,
+            image_sha384,
+            pcrs: document
+                .measurements
+                .pcrs
+                .iter()
+                .map(|(index, value)| (*index as u8, value.clone()))
+                .collect(),
+            public_key: document.public_key,
+            user_data_hash: document.user_data_hash,
+            cert_chain_verified,
+            freshness_ok,
+            appraisal,
+        })
+    }
+}
+
+fn parse_and_verify_nitro_document(
+    raw_attestation_document: &[u8],
+    trusted_root_fingerprints: &[Vec<u8>],
+) -> Result<ParsedNitroDocument> {
+    let document = CoseSign1::from_slice(raw_attestation_document)
+        .map_err(|err| LsdcError::Attestation(format!("nitro attestation COSE malformed: {err}")))?;
+    let payload = document.payload.clone().ok_or_else(|| {
+        LsdcError::Attestation("nitro attestation document payload missing".into())
+    })?;
+    let doc = RawNitroAttestationDoc::from_binary(payload.as_slice())
+        .map_err(|err| LsdcError::Attestation(format!("nitro attestation payload malformed: {err:?}")))?;
+    let timestamp = chrono::DateTime::from_timestamp_millis(doc.timestamp as i64).ok_or_else(|| {
+        LsdcError::Attestation(format!(
+            "nitro attestation timestamp {} is invalid",
+            doc.timestamp
+        ))
+    })?;
+    let validity_time = OffsetDateTime::from_unix_timestamp(timestamp.timestamp())
+        .map_err(|err| LsdcError::Attestation(format!("nitro attestation timestamp invalid: {err}")))?;
+
+    let cert_der = doc.certificate.as_ref().to_vec();
+    let cabundle = doc
+        .cabundle
+        .iter()
+        .map(|item| item.as_ref().to_vec())
+        .collect::<Vec<_>>();
+    let certs = cabundle
+        .iter()
+        .chain(once(&cert_der))
+        .enumerate()
+        .map(|(idx, cert)| ParsedCert::parse(cert.as_slice(), idx))
+        .collect::<Result<Vec<_>>>()?;
+    let leaf = certs
+        .into_iter()
+        .try_fold::<Option<ParsedCert<'_>>, _, Result<_>>(None, |parent, cert| {
+            let cert = cert.verify(parent.as_ref(), trusted_root_fingerprints)?;
+            let cert = cert.validate_at(validity_time)?;
+            Ok(Some(cert))
+        })?
+        .ok_or_else(|| LsdcError::Attestation("nitro certificate chain is empty".into()))?;
+
+    let public_key = leaf.x509.public_key().subject_public_key.as_ref();
+    document
+        .verify_signature(&[], |signature, data| {
+            let key = UnparsedPublicKey::new(&ECDSA_P384_SHA384_FIXED, public_key);
+            key.verify(data, signature)
+                .map_err(|_| LsdcError::Attestation("nitro attestation COSE signature verification failed".into()))
+        })
+        .map_err(|err| LsdcError::Attestation(format!("{err}")))?;
+
+    Ok(ParsedNitroDocument {
+        module_id: doc.module_id,
+        timestamp,
+        pcrs: doc
+            .pcrs
+            .iter()
+            .map(|(index, value)| (*index as u16, value.as_ref().to_vec()))
+            .collect(),
+        public_key: doc.public_key.map(|value| value.as_ref().to_vec()),
+        user_data: doc.user_data.map(|value| value.as_ref().to_vec()),
+        nonce: doc.nonce.map(|value| value.as_ref().to_vec()),
+        certificate_chain_pem: cabundle
+            .iter()
+            .chain(once(&cert_der))
+            .map(|item| der_to_pem(item))
+            .collect(),
+    })
+}
+
+fn load_trusted_root_fingerprints(trust_bundle_path: Option<&str>) -> Result<Vec<Vec<u8>>> {
+    match trust_bundle_path {
+        Some(path) => {
+            let bytes = std::fs::read(Path::new(path))
+                .map_err(|err| LsdcError::Attestation(format!("failed to read nitro trust bundle: {err}")))?;
+            let mut roots = Vec::new();
+            let mut remaining = bytes.as_slice();
+            while let Ok((rest, pem)) = parse_x509_pem(remaining) {
+                roots.push(digest::digest(&SHA256, pem.contents.as_slice()).as_ref().to_vec());
+                if rest.is_empty() {
+                    break;
+                }
+                remaining = rest;
+            }
+            if roots.is_empty() {
+                roots.push(digest::digest(&SHA256, bytes.as_slice()).as_ref().to_vec());
+            }
+            Ok(roots)
+        }
+        None => Ok(vec![hex::decode(AWS_NITRO_ROOT_FINGERPRINT_HEX)
+            .map_err(|err| LsdcError::Attestation(format!("embedded nitro trust bundle invalid: {err}")))?]),
+    }
+}
+
+fn as_user_data_hash(value: &[u8]) -> Sha256Hash {
+    if value.len() == 32 {
+        let mut digest = [0_u8; 32];
+        digest.copy_from_slice(value);
+        Sha256Hash(digest)
+    } else {
+        Sha256Hash::digest_bytes(value)
+    }
+}
+
+fn digest_hex_payload(hex_value: &str) -> Sha256Hash {
+    hex::decode(hex_value)
+        .map(|bytes| Sha256Hash::digest_bytes(&bytes))
+        .unwrap_or_else(|_| Sha256Hash::digest_bytes(hex_value.as_bytes()))
+}
+
+fn is_zero_bytes(value: &[u8]) -> bool {
+    !value.is_empty() && value.iter().all(|byte| *byte == 0)
+}
+
+fn der_to_pem(der: &[u8]) -> String {
+    let body = BASE64_STANDARD.encode(der);
+    let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in body.as_bytes().chunks(64) {
+        pem.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+        pem.push('\n');
+    }
+    pem.push_str("-----END CERTIFICATE-----\n");
+    pem
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aws_nitro_enclaves_cose::{
+        crypto::Openssl, header_map::HeaderMap as AwsHeaderMap, CoseSign1 as AwsCoseSign1,
+    };
+    use aws_nitro_enclaves_nsm_api::api::{AttestationDoc as RawNitroAttestationDoc, Digest};
     use lsdc_common::execution_overlay::{
         ExecutionSession, ExecutionSessionChallenge, ExecutionSessionState,
     };
+    use nitro_attest::builder;
+    use openssl::pkey::PKey;
+    use std::collections::BTreeMap;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     fn sample_challenge(timestamp: chrono::DateTime<chrono::Utc>) -> ExecutionSessionChallenge {
         let session = ExecutionSession {
@@ -223,6 +660,70 @@ mod tests {
         };
 
         ExecutionSessionChallenge::issue(&session, Sha256Hash::digest_bytes(b"selector"), timestamp)
+    }
+
+    fn synthetic_nitro_attestation(
+        challenge: &ExecutionSessionChallenge,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) -> (NamedTempFile, Vec<u8>, String) {
+        let chain = builder::chain();
+        let mut trust_bundle = NamedTempFile::new().unwrap();
+        write!(trust_bundle, "{}", chain[0].cert.pem()).unwrap();
+
+        let image_pcr = vec![0x11; 48];
+        let document = RawNitroAttestationDoc::new(
+            "module-1".into(),
+            Digest::SHA384,
+            timestamp.timestamp_millis() as u64,
+            BTreeMap::from([
+                (0, image_pcr.clone()),
+                (1, vec![0x22; 48]),
+                (2, vec![0x33; 48]),
+            ]),
+            chain[4].cert.der().to_vec(),
+            chain[..4]
+                .iter()
+                .map(|cert| cert.cert.der().to_vec())
+                .collect(),
+            Some(challenge.resolved_selector_hash.0.to_vec()),
+            Some(hex::decode(&challenge.challenge_nonce_hex).unwrap()),
+            Some(challenge.requester_ephemeral_pubkey.clone()),
+        );
+        let payload = document.to_binary();
+        let signing_key = PKey::private_key_from_der(&chain[4].keys.serialize_der()).unwrap();
+        let cose = AwsCoseSign1::new::<Openssl>(&payload, &AwsHeaderMap::new(), &signing_key)
+            .unwrap();
+
+        (
+            trust_bundle,
+            cose.as_bytes(false).unwrap(),
+            hex::encode(image_pcr),
+        )
+    }
+
+    fn placeholder_attestation_evidence(raw_attestation_document: Vec<u8>) -> AttestationEvidence {
+        let placeholder_hash = Sha256Hash::digest_bytes(b"placeholder");
+        AttestationEvidence {
+            evidence_profile: NITRO_PLATFORM_LIVE.into(),
+            document: AttestationDocument {
+                enclave_id: "placeholder".into(),
+                platform: NITRO_PLATFORM_LIVE.into(),
+                binary_hash: placeholder_hash.clone(),
+                measurements: AttestationMeasurements {
+                    image_hash: placeholder_hash.clone(),
+                    pcrs: BTreeMap::new(),
+                    debug: false,
+                },
+                nonce: None,
+                public_key: None,
+                user_data_hash: None,
+                document_hash: Sha256Hash::digest_bytes(&raw_attestation_document),
+                timestamp: chrono::Utc::now(),
+                raw_attestation_document,
+                certificate_chain_pem: Vec::new(),
+                signature_hex: String::new(),
+            },
+        }
     }
 
     #[test]
@@ -308,5 +809,148 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.appraisal, AppraisalStatus::Rejected);
+    }
+
+    #[test]
+    fn test_aws_nitro_verifier_accepts_bound_attestation() {
+        let timestamp = chrono::Utc::now();
+        let challenge = sample_challenge(timestamp);
+        let (trust_bundle, raw_document, expected_image_sha384_hex) =
+            synthetic_nitro_attestation(&challenge, timestamp);
+        let verifier = AwsNitroAttestationVerifier::new(
+            expected_image_sha384_hex,
+            Some(trust_bundle.path().to_str().unwrap()),
+        )
+        .unwrap();
+
+        let result = verifier
+            .appraise_attestation_evidence(
+                &placeholder_attestation_evidence(raw_document),
+                Some(&challenge),
+            )
+            .unwrap();
+
+        assert_eq!(result.appraisal, AppraisalStatus::Accepted);
+        assert!(result.cert_chain_verified);
+        assert!(result.freshness_ok);
+        assert_eq!(
+            result.public_key.as_deref(),
+            Some(challenge.requester_ephemeral_pubkey.as_slice())
+        );
+        assert_eq!(result.user_data_hash, Some(challenge.resolved_selector_hash));
+    }
+
+    #[test]
+    fn test_aws_nitro_verifier_rejects_bad_signature() {
+        let timestamp = chrono::Utc::now();
+        let challenge = sample_challenge(timestamp);
+        let (trust_bundle, mut raw_document, expected_image_sha384_hex) =
+            synthetic_nitro_attestation(&challenge, timestamp);
+        let verifier = AwsNitroAttestationVerifier::new(
+            expected_image_sha384_hex,
+            Some(trust_bundle.path().to_str().unwrap()),
+        )
+        .unwrap();
+        let last = raw_document.len() - 1;
+        raw_document[last] ^= 0x01;
+
+        let err = verifier
+            .appraise_attestation_evidence(
+                &placeholder_attestation_evidence(raw_document),
+                Some(&challenge),
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("signature"));
+    }
+
+    #[test]
+    fn test_aws_nitro_verifier_rejects_wrong_trust_bundle() {
+        let timestamp = chrono::Utc::now();
+        let challenge = sample_challenge(timestamp);
+        let (_trust_bundle, raw_document, expected_image_sha384_hex) =
+            synthetic_nitro_attestation(&challenge, timestamp);
+        let mut wrong_bundle = NamedTempFile::new().unwrap();
+        write!(wrong_bundle, "not a trusted nitro root").unwrap();
+        let verifier = AwsNitroAttestationVerifier::new(
+            expected_image_sha384_hex,
+            Some(wrong_bundle.path().to_str().unwrap()),
+        )
+        .unwrap();
+
+        let err = verifier
+            .appraise_attestation_evidence(
+                &placeholder_attestation_evidence(raw_document),
+                Some(&challenge),
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("not trusted"));
+    }
+
+    #[test]
+    fn test_aws_nitro_verifier_rejects_stale_challenge_binding() {
+        let document_timestamp = chrono::Utc::now() - chrono::Duration::minutes(10);
+        let challenge = sample_challenge(document_timestamp);
+        let (trust_bundle, raw_document, expected_image_sha384_hex) =
+            synthetic_nitro_attestation(&challenge, document_timestamp);
+        let verifier = AwsNitroAttestationVerifier::new(
+            expected_image_sha384_hex,
+            Some(trust_bundle.path().to_str().unwrap()),
+        )
+        .unwrap();
+
+        let result = verifier
+            .appraise_attestation_evidence(
+                &placeholder_attestation_evidence(raw_document),
+                Some(&challenge),
+            )
+            .unwrap();
+
+        assert_eq!(result.appraisal, AppraisalStatus::Rejected);
+        assert!(!result.freshness_ok);
+    }
+
+    #[test]
+    fn test_aws_nitro_verifier_rejects_nonce_public_key_and_selector_mismatch() {
+        let timestamp = chrono::Utc::now();
+        let challenge = sample_challenge(timestamp);
+        let (trust_bundle, raw_document, expected_image_sha384_hex) =
+            synthetic_nitro_attestation(&challenge, timestamp);
+        let verifier = AwsNitroAttestationVerifier::new(
+            expected_image_sha384_hex,
+            Some(trust_bundle.path().to_str().unwrap()),
+        )
+        .unwrap();
+        let mut mismatched_challenge = challenge.clone();
+        mismatched_challenge.challenge_nonce_hex = "00".repeat(8);
+        mismatched_challenge.requester_ephemeral_pubkey = vec![9, 9, 9, 9];
+        mismatched_challenge.resolved_selector_hash = Sha256Hash::digest_bytes(b"wrong-selector");
+
+        let result = verifier
+            .appraise_attestation_evidence(
+                &placeholder_attestation_evidence(raw_document),
+                Some(&mismatched_challenge),
+            )
+            .unwrap();
+
+        assert_eq!(result.appraisal, AppraisalStatus::Rejected);
+    }
+
+    #[test]
+    fn test_build_aws_nitro_attestation_document_rejects_wrong_image_hash() {
+        let timestamp = chrono::Utc::now();
+        let challenge = sample_challenge(timestamp);
+        let (trust_bundle, raw_document, _expected_image_sha384_hex) =
+            synthetic_nitro_attestation(&challenge, timestamp);
+
+        let err = build_aws_nitro_attestation_document_from_bundle(
+            &"ff".repeat(48),
+            &raw_document,
+            Some(trust_bundle.path().to_str().unwrap()),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("pinned EIF measurement"));
     }
 }

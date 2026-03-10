@@ -63,6 +63,17 @@ impl LineageJobRunner {
                 current_price,
                 metrics,
                 prior_receipt,
+                attestation_evidence: execution_bindings
+                    .as_ref()
+                    .and_then(|bindings| {
+                        self.state
+                            .store
+                            .get_latest_attestation_evidence(
+                                &bindings.session.session_id.to_string(),
+                            )
+                            .ok()
+                            .flatten()
+                    }),
                 execution_bindings: execution_bindings.clone(),
             })
             .await;

@@ -19,6 +19,8 @@ proof-plane-core = { path = "../proof-plane/core" }
 proof-plane-host = { path = "../proof-plane/host" }
 receipt-log = { path = "../receipt-log" }
 tee-orchestrator = { path = "../tee-orchestrator" }
+aws-config = { version = "=1.5.0", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-sdk-kms = "=1.56.0"
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
@@ -27,4 +29,5 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
+base64 = "0.22"
 hex = { workspace = true }
