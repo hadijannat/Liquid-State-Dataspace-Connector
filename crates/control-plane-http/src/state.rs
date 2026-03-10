@@ -488,6 +488,13 @@ impl ApiState {
                 "attestation result nonce mismatch".into(),
             ));
         }
+        if attestation_result.public_key.as_deref()
+            != Some(session.requester_ephemeral_pubkey.as_slice())
+        {
+            return Err(lsdc_common::error::LsdcError::PolicyCompile(
+                "attestation result requester public key binding mismatch".into(),
+            ));
+        }
         if attestation_result.user_data_hash.as_ref() != Some(&challenge.resolved_selector_hash) {
             return Err(lsdc_common::error::LsdcError::PolicyCompile(
                 "attestation result resolved transport binding mismatch".into(),

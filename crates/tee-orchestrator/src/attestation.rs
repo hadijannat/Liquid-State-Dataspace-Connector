@@ -342,15 +342,11 @@ pub fn verify_attestation(doc: &AttestationDocument) -> Result<bool> {
 }
 
 fn parse_nitro_measurement_claims(parsed: &ParsedNitroDocument) -> Result<NitroMeasurementClaims> {
-    let image_sha384_hex = parsed
-        .pcrs
-        .get(&0)
-        .map(|bytes| hex::encode(bytes))
-        .ok_or_else(|| {
-            LsdcError::Attestation(
-                "nitro attestation document is missing PCR0/image measurement".into(),
-            )
-        })?;
+    let image_sha384_hex = parsed.pcrs.get(&0).map(hex::encode).ok_or_else(|| {
+        LsdcError::Attestation(
+            "nitro attestation document is missing PCR0/image measurement".into(),
+        )
+    })?;
     let debug = [0_u16, 1_u16, 2_u16].into_iter().all(|pcr| {
         parsed
             .pcrs
@@ -411,10 +407,20 @@ impl AttestationVerifier for LocalAttestationVerifier {
         let nonce_matches = challenge
             .map(|challenge| doc.nonce.as_deref() == Some(challenge.challenge_nonce_hex.as_str()))
             .unwrap_or(true);
+        let public_key_matches = challenge
+            .map(|challenge| {
+                doc.public_key.as_deref() == Some(challenge.requester_ephemeral_pubkey.as_slice())
+            })
+            .unwrap_or(true);
         let user_data_matches = challenge
             .map(|challenge| doc.user_data_hash.as_ref() == Some(&challenge.resolved_selector_hash))
             .unwrap_or(true);
-        let appraisal = if document_valid && freshness_ok && nonce_matches && user_data_matches {
+        let appraisal = if document_valid
+            && freshness_ok
+            && nonce_matches
+            && public_key_matches
+            && user_data_matches
+        {
             AppraisalStatus::Accepted
         } else {
             AppraisalStatus::Rejected
@@ -476,13 +482,23 @@ impl AttestationVerifier for AwsNitroAttestationVerifier {
                 document.nonce.as_deref() == Some(challenge.challenge_nonce_hex.as_str())
             })
             .unwrap_or(true);
+        let public_key_matches = challenge
+            .map(|challenge| {
+                document.public_key.as_deref()
+                    == Some(challenge.requester_ephemeral_pubkey.as_slice())
+            })
+            .unwrap_or(true);
         let user_data_matches = challenge
             .map(|challenge| {
                 document.user_data_hash.as_ref() == Some(&challenge.resolved_selector_hash)
             })
             .unwrap_or(true);
         let cert_chain_verified = !document.measurements.debug;
-        let appraisal = if cert_chain_verified && freshness_ok && nonce_matches && user_data_matches
+        let appraisal = if cert_chain_verified
+            && freshness_ok
+            && nonce_matches
+            && public_key_matches
+            && user_data_matches
         {
             AppraisalStatus::Accepted
         } else {
@@ -690,7 +706,7 @@ mod tests {
         write!(trust_bundle, "{}", chain[0].cert.pem()).unwrap();
 
         let image_pcr = vec![0x11; 48];
-        let recipient_public_key = vec![8, 7, 6, 5];
+        let recipient_public_key = challenge.requester_ephemeral_pubkey.clone();
         let document = RawNitroAttestationDoc::new(
             "module-1".into(),
             Digest::SHA384,
@@ -769,7 +785,7 @@ mod tests {
             timestamp,
             Some(AttestationBinding {
                 challenge_nonce_hex: &challenge.challenge_nonce_hex,
-                public_key: Some(&[9, 9, 9, 9]),
+                public_key: Some(challenge.requester_ephemeral_pubkey.as_slice()),
                 user_data_hash: Some(&challenge.resolved_selector_hash),
             }),
         )
@@ -780,7 +796,10 @@ mod tests {
             doc.nonce.as_deref(),
             Some(challenge.challenge_nonce_hex.as_str())
         );
-        assert_eq!(doc.public_key.as_deref(), Some(&[9, 9, 9, 9][..]));
+        assert_eq!(
+            doc.public_key.as_deref(),
+            Some(challenge.requester_ephemeral_pubkey.as_slice())
+        );
         assert_eq!(
             doc.user_data_hash.as_ref(),
             Some(&challenge.resolved_selector_hash)
@@ -830,6 +849,37 @@ mod tests {
     }
 
     #[test]
+    fn test_appraisal_rejects_requester_public_key_mismatch() {
+        let timestamp = chrono::Utc::now();
+        let challenge = sample_challenge(timestamp);
+        let doc = build_attestation_document_with_binding(
+            "enclave-1",
+            &Sha256Hash::digest_bytes(b"binary"),
+            timestamp,
+            Some(AttestationBinding {
+                challenge_nonce_hex: &challenge.challenge_nonce_hex,
+                public_key: Some(challenge.requester_ephemeral_pubkey.as_slice()),
+                user_data_hash: Some(&challenge.resolved_selector_hash),
+            }),
+        )
+        .unwrap();
+        let mut mismatched_challenge = challenge.clone();
+        mismatched_challenge.requester_ephemeral_pubkey = vec![0, 0, 0, 0];
+
+        let result = LocalAttestationVerifier::new()
+            .appraise_attestation_evidence(
+                &AttestationEvidence {
+                    evidence_profile: "nitro-dev-attestation-evidence-v1".into(),
+                    document: doc,
+                },
+                Some(&mismatched_challenge),
+            )
+            .unwrap();
+
+        assert_eq!(result.appraisal, AppraisalStatus::Rejected);
+    }
+
+    #[test]
     fn test_aws_nitro_verifier_accepts_bound_attestation() {
         let timestamp = chrono::Utc::now();
         let challenge = sample_challenge(timestamp);
@@ -859,6 +909,30 @@ mod tests {
             result.user_data_hash,
             Some(challenge.resolved_selector_hash)
         );
+    }
+
+    #[test]
+    fn test_aws_nitro_verifier_rejects_requester_public_key_mismatch() {
+        let timestamp = chrono::Utc::now();
+        let challenge = sample_challenge(timestamp);
+        let (trust_bundle, raw_document, expected_image_sha384_hex, _) =
+            synthetic_nitro_attestation(&challenge, timestamp);
+        let verifier = AwsNitroAttestationVerifier::new(
+            Some(expected_image_sha384_hex),
+            Some(trust_bundle.path().to_str().unwrap()),
+        )
+        .unwrap();
+        let mut mismatched_challenge = challenge.clone();
+        mismatched_challenge.requester_ephemeral_pubkey = vec![0, 0, 0, 0];
+
+        let result = verifier
+            .appraise_attestation_evidence(
+                &placeholder_attestation_evidence(raw_document),
+                Some(&mismatched_challenge),
+            )
+            .unwrap();
+
+        assert_eq!(result.appraisal, AppraisalStatus::Rejected);
     }
 
     #[test]

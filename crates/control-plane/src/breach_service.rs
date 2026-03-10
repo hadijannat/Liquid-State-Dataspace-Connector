@@ -25,7 +25,7 @@ pub fn assess_evidence(
                 .as_ref()
                 .map(|result| {
                     let payload = serde_json::to_value(result)
-                        .and_then(|value| canonical_json_bytes(&value).map_err(Into::into))
+                        .and_then(|value| canonical_json_bytes(&value))
                         .map_err(lsdc_common::error::LsdcError::from)?;
                     Ok::<Sha256Hash, lsdc_common::error::LsdcError>(Sha256Hash::digest_bytes(
                         &payload,
@@ -217,6 +217,63 @@ mod tests {
     fn test_live_missing_teardown_blocks_settlement() {
         let assessment =
             assess_evidence(&sample_agreement(), &sample_live_proof_bundle(false)).unwrap();
+
+        assert!(!assessment.settlement_allowed);
+        assert!(assessment.sanction_proposal.is_some());
+    }
+
+    #[test]
+    fn test_live_rejected_appraisal_blocks_settlement() {
+        let mut proof_bundle = sample_live_proof_bundle(true);
+        proof_bundle.attestation_result.as_mut().unwrap().appraisal = AppraisalStatus::Rejected;
+
+        let assessment = assess_evidence(&sample_agreement(), &proof_bundle).unwrap();
+
+        assert!(!assessment.settlement_allowed);
+        assert!(assessment.sanction_proposal.is_some());
+    }
+
+    #[test]
+    fn test_live_unverified_cert_chain_blocks_settlement() {
+        let mut proof_bundle = sample_live_proof_bundle(true);
+        proof_bundle
+            .attestation_result
+            .as_mut()
+            .unwrap()
+            .cert_chain_verified = false;
+
+        let assessment = assess_evidence(&sample_agreement(), &proof_bundle).unwrap();
+
+        assert!(!assessment.settlement_allowed);
+        assert!(assessment.sanction_proposal.is_some());
+    }
+
+    #[test]
+    fn test_live_stale_attestation_blocks_settlement() {
+        let mut proof_bundle = sample_live_proof_bundle(true);
+        proof_bundle
+            .attestation_result
+            .as_mut()
+            .unwrap()
+            .freshness_ok = false;
+
+        let assessment = assess_evidence(&sample_agreement(), &proof_bundle).unwrap();
+
+        assert!(!assessment.settlement_allowed);
+        assert!(assessment.sanction_proposal.is_some());
+    }
+
+    #[test]
+    fn test_live_attestation_hash_mismatch_blocks_settlement() {
+        let mut proof_bundle = sample_live_proof_bundle(true);
+        let TeardownEvidence::KeyErasure(evidence) =
+            proof_bundle.teardown_evidence.as_mut().unwrap()
+        else {
+            panic!("expected key erasure teardown evidence");
+        };
+        evidence.attestation_result_hash = Sha256Hash::digest_bytes(b"mismatch");
+
+        let assessment = assess_evidence(&sample_agreement(), &proof_bundle).unwrap();
 
         assert!(!assessment.settlement_allowed);
         assert!(assessment.sanction_proposal.is_some());

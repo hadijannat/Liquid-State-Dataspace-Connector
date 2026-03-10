@@ -11,17 +11,12 @@ pub struct ControlPlaneApiArgs {
     pub config: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyBrokerBackend {
+    #[default]
     None,
     AwsKms,
-}
-
-impl Default for KeyBrokerBackend {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
