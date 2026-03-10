@@ -5,8 +5,8 @@ use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::ProofBackend;
 use lsdc_common::execution_overlay::ExecutionStatementKind;
 use lsdc_common::liquid::{validate_transform_manifest, CsvTransformManifest};
-use lsdc_common::runtime_model::EvidenceDag;
 use lsdc_common::proof::{CsvTransformProofInput, CsvTransformProofJournal};
+use lsdc_common::runtime_model::EvidenceDag;
 use lsdc_ports::{CompositionContext, ExecutionBindings, ProofEngine, ProofExecutionResult};
 use proof_transform_kernel::apply_manifest;
 use risc0_zkvm::{default_prover, ExecutorEnv, Receipt};
@@ -65,8 +65,12 @@ impl ProofEngine for Risc0ProofEngine {
                 odrl_policy: agreement.odrl_policy.clone(),
                 manifest: manifest.clone(),
                 input_csv: input_csv.to_vec(),
-                agreement_commitment_hash: execution_bindings
-                    .map(|bindings| bindings.overlay_commitment.agreement_commitment_hash.clone()),
+                agreement_commitment_hash: execution_bindings.map(|bindings| {
+                    bindings
+                        .overlay_commitment
+                        .agreement_commitment_hash
+                        .clone()
+                }),
                 session_id: execution_bindings
                     .map(|bindings| bindings.session.session_id.to_string()),
                 challenge_nonce_hash: execution_bindings
@@ -77,8 +81,12 @@ impl ProofEngine for Risc0ProofEngine {
                     .map(|challenge| challenge.resolved_selector_hash.clone()),
                 attestation_result_hash: execution_bindings
                     .and_then(|bindings| bindings.attestation_result_hash.clone()),
-                capability_commitment_hash: execution_bindings
-                    .map(|bindings| bindings.overlay_commitment.capability_descriptor_hash.clone()),
+                capability_commitment_hash: execution_bindings.map(|bindings| {
+                    bindings
+                        .overlay_commitment
+                        .capability_descriptor_hash
+                        .clone()
+                }),
                 transparency_statement_hash: None,
                 parent_receipt_hashes: Vec::new(),
                 recursion_depth: 0,

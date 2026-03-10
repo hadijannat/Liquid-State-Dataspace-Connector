@@ -9,6 +9,12 @@ use lsdc_common::runtime_model::{EvidenceDag, EvidenceEdge, EvidenceNode};
 use lsdc_service_types::ExecutionOverlaySummary;
 use rusqlite::{params, OptionalExtension};
 
+type ExecutionSessionRecord = (
+    ExecutionSession,
+    Option<ExecutionSessionChallenge>,
+    Option<AttestationResult>,
+);
+
 impl Store {
     pub fn upsert_agreement_overlay(
         &self,
@@ -218,11 +224,7 @@ impl Store {
     pub fn get_execution_session(
         &self,
         session_id: &str,
-    ) -> Result<Option<(
-        ExecutionSession,
-        Option<ExecutionSessionChallenge>,
-        Option<AttestationResult>,
-    )>> {
+    ) -> Result<Option<ExecutionSessionRecord>> {
         let row = self
             .lock()?
             .query_row(
@@ -331,14 +333,16 @@ impl Store {
             .map_err(sqlite_error)?;
         let mut nodes = Vec::new();
         for row in node_rows {
-            let (node_id, node_kind, node_hash, status, payload_json) = row.map_err(sqlite_error)?;
+            let (node_id, node_kind, node_hash, status, payload_json) =
+                row.map_err(sqlite_error)?;
             nodes.push(EvidenceNode {
                 node_id,
                 kind: from_json(&format!("\"{}\"", node_kind))?,
                 canonical_hash: lsdc_common::crypto::Sha256Hash::from_hex(&node_hash)
                     .map_err(lsdc_common::error::LsdcError::Database)?,
                 status: from_json(&format!("\"{}\"", status))?,
-                payload_json: serde_json::from_str(&payload_json).map_err(lsdc_common::error::LsdcError::from)?,
+                payload_json: serde_json::from_str(&payload_json)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
             });
         }
         if nodes.is_empty() {
@@ -372,7 +376,9 @@ impl Store {
             });
         }
 
-        Ok(Some(EvidenceDag::new(nodes, edges).map_err(lsdc_common::error::LsdcError::from)?))
+        Ok(Some(
+            EvidenceDag::new(nodes, edges).map_err(lsdc_common::error::LsdcError::from)?,
+        ))
     }
 
     pub fn insert_transparency_receipt(
@@ -456,7 +462,8 @@ fn insert_evidence_node(
                 .map_err(lsdc_common::error::LsdcError::from)?
                 .as_str()
                 .unwrap_or_default(),
-            serde_json::to_string(&node.payload_json).map_err(lsdc_common::error::LsdcError::from)?,
+            serde_json::to_string(&node.payload_json)
+                .map_err(lsdc_common::error::LsdcError::from)?,
             now
         ],
     )

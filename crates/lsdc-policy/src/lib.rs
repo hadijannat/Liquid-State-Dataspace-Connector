@@ -19,6 +19,6 @@ pub use liquid::{
 pub use odrl::ast::{PolicyAgreement, PolicyId};
 pub use profile::{
     canonical_policy_json, normalize_policy, ClauseRealization, NormalizedConstraint,
-    NormalizedDuty, NormalizedPermission, NormalizedPolicy, RuntimeCapabilities,
-    TruthfulnessMode, LSDC_PROFILE_OPERANDS,
+    NormalizedDuty, NormalizedPermission, NormalizedPolicy, RuntimeCapabilities, TruthfulnessMode,
+    LSDC_PROFILE_OPERANDS,
 };

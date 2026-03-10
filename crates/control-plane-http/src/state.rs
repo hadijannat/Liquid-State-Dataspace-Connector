@@ -4,7 +4,8 @@ use control_plane::orchestrator::Orchestrator;
 use control_plane_store::Store;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use lsdc_common::crypto::{
-    canonical_json_bytes, AttestationEvidence, PriceDecision, Sha256Hash,
+    canonical_json_bytes, AppraisalStatus, AttestationEvidence, PriceDecision, ProvenanceReceipt,
+    Sha256Hash,
 };
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::execution::{
@@ -12,26 +13,28 @@ use lsdc_common::execution::{
     TransportBackend,
 };
 use lsdc_common::execution_overlay::{
-    AdvertisedProfiles, CapabilitySupportLevel, ExecutionCapabilityDescriptor,
+    domain_hash, AdvertisedProfiles, CapabilitySupportLevel, ExecutionCapabilityDescriptor,
     ExecutionEvidenceRequirements, ExecutionOverlayCommitment, ExecutionSession,
     ExecutionSessionChallenge, ExecutionSessionState, ExecutionStatement, ExecutionStatementKind,
     ProofCompositionMode, TransparencyMode, TransparencyReceipt,
     TruthfulnessMode as OverlayTruthfulnessMode, LOCAL_TRANSPARENCY_PROFILE,
-    LSDC_EXECUTION_PROTOCOL_VERSION, domain_hash,
+    LSDC_EXECUTION_PROTOCOL_VERSION,
 };
-use lsdc_common::profile::{
-    normalize_policy, RuntimeCapabilities, TruthfulnessMode,
+use lsdc_common::profile::{normalize_policy, RuntimeCapabilities, TruthfulnessMode};
+use lsdc_common::runtime_model::{
+    DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus,
 };
-use lsdc_common::runtime_model::{DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus};
 use lsdc_ports::{
     AttestationVerifier, DataPlane, EnclaveManager, PricingOracle, ProofEngine,
     ResolvedTransportGuard,
 };
 use lsdc_service_types::{
     CreateExecutionSessionRequest, CreateExecutionSessionResponse, ExecutionCapabilitiesResponse,
-    ExecutionOverlaySummary, IssueExecutionChallengeResponse, IssueExecutionChallengeRequest,
+    ExecutionOverlaySummary, IssueExecutionChallengeRequest, IssueExecutionChallengeResponse,
     SubmitAttestationEvidenceResponse,
 };
+#[cfg(feature = "risc0")]
+use proof_plane_host::Risc0ProofEngine;
 use receipt_log::LocalTransparencyLog;
 use serde::Serialize;
 use std::sync::Arc;
@@ -242,7 +245,9 @@ impl ApiState {
         }
     }
 
-    pub fn execution_capability_descriptor(&self) -> lsdc_common::error::Result<ExecutionCapabilityDescriptor> {
+    pub fn execution_capability_descriptor(
+        &self,
+    ) -> lsdc_common::error::Result<ExecutionCapabilityDescriptor> {
         Ok(ExecutionCapabilityDescriptor {
             overlay_version: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
             truthfulness_default: OverlayTruthfulnessMode::Permissive,
@@ -295,7 +300,8 @@ impl ApiState {
     ) -> lsdc_common::error::Result<ExecutionOverlayCommitment> {
         let normalized_policy = normalize_policy(&agreement.odrl_policy)?;
         let policy_canonical_bytes = canonical_json_bytes(
-            &serde_json::to_value(&normalized_policy).map_err(lsdc_common::error::LsdcError::from)?,
+            &serde_json::to_value(&normalized_policy)
+                .map_err(lsdc_common::error::LsdcError::from)?,
         )
         .map_err(lsdc_common::error::LsdcError::from)?;
         let policy_canonical_hash = domain_hash("lsdc.policy.v1", &[&policy_canonical_bytes]);
@@ -373,7 +379,9 @@ impl ApiState {
         let (mut session, existing_challenge, _) = self
             .store
             .get_execution_session(session_id)?
-            .ok_or_else(|| lsdc_common::error::LsdcError::Database("execution session not found".into()))?;
+            .ok_or_else(|| {
+                lsdc_common::error::LsdcError::Database("execution session not found".into())
+            })?;
         if existing_challenge.is_some() {
             return Err(lsdc_common::error::LsdcError::PolicyCompile(
                 "execution session already has an active challenge".into(),
@@ -399,12 +407,19 @@ impl ApiState {
         let (mut session, challenge, _) = self
             .store
             .get_execution_session(session_id)?
-            .ok_or_else(|| lsdc_common::error::LsdcError::Database("execution session not found".into()))?;
+            .ok_or_else(|| {
+                lsdc_common::error::LsdcError::Database("execution session not found".into())
+            })?;
         let mut challenge = challenge.ok_or_else(|| {
             lsdc_common::error::LsdcError::PolicyCompile(
                 "execution session has no active challenge".into(),
             )
         })?;
+        if challenge.consumed_at.is_some() {
+            return Err(lsdc_common::error::LsdcError::PolicyCompile(
+                "execution session challenge has already been consumed".into(),
+            ));
+        }
         let now = chrono::Utc::now();
         if challenge.expires_at < now {
             return Err(lsdc_common::error::LsdcError::PolicyCompile(
@@ -416,10 +431,9 @@ impl ApiState {
                 "execution session challenge agreement hash mismatch".into(),
             ));
         }
-        let attestation_result = self.attestation_verifier.appraise_attestation_evidence(
-            attestation_evidence,
-            Some(&challenge),
-        )?;
+        let attestation_result = self
+            .attestation_verifier
+            .appraise_attestation_evidence(attestation_evidence, Some(&challenge))?;
         if attestation_result
             .session_id
             .as_deref()
@@ -438,6 +452,24 @@ impl ApiState {
                 "attestation result nonce mismatch".into(),
             ));
         }
+        if !challenge.requester_ephemeral_pubkey.is_empty()
+            && attestation_result.public_key.as_deref()
+                != Some(challenge.requester_ephemeral_pubkey.as_slice())
+        {
+            return Err(lsdc_common::error::LsdcError::PolicyCompile(
+                "attestation result requester key binding mismatch".into(),
+            ));
+        }
+        if attestation_result.user_data_hash.as_ref() != Some(&challenge.resolved_selector_hash) {
+            return Err(lsdc_common::error::LsdcError::PolicyCompile(
+                "attestation result resolved transport binding mismatch".into(),
+            ));
+        }
+        if attestation_result.appraisal != AppraisalStatus::Accepted {
+            return Err(lsdc_common::error::LsdcError::PolicyCompile(
+                "attestation evidence appraisal rejected".into(),
+            ));
+        }
         let attestation_evidence_hash = Sha256Hash::digest_bytes(
             &canonical_json_bytes(
                 &serde_json::to_value(attestation_evidence)
@@ -450,7 +482,7 @@ impl ApiState {
                 &serde_json::to_value(&attestation_result)
                     .map_err(lsdc_common::error::LsdcError::from)?,
             )
-                .map_err(lsdc_common::error::LsdcError::from)?,
+            .map_err(lsdc_common::error::LsdcError::from)?,
         );
         session.state = ExecutionSessionState::AttestationVerified;
         challenge.consumed_at = Some(now);
@@ -474,7 +506,8 @@ impl ApiState {
         statement: &ExecutionStatement,
     ) -> lsdc_common::error::Result<TransparencyReceipt> {
         let receipt = self.transparency_log.register(statement)?;
-        self.store.insert_transparency_receipt(statement, &receipt)?;
+        self.store
+            .insert_transparency_receipt(statement, &receipt)?;
         Ok(receipt)
     }
 
@@ -483,7 +516,55 @@ impl ApiState {
         statement_hash: &Sha256Hash,
         receipt: &TransparencyReceipt,
     ) -> lsdc_common::error::Result<()> {
-        self.transparency_log.verify_receipt(statement_hash, receipt)
+        self.transparency_log
+            .verify_receipt(statement_hash, receipt)
+    }
+
+    pub async fn verify_evidence_dag(&self, dag: &EvidenceDag) -> lsdc_common::error::Result<bool> {
+        for node in &dag.nodes {
+            if node.kind != ExecutionStatementKind::ProofReceiptRegistered {
+                continue;
+            }
+
+            let receipt: ProvenanceReceipt = serde_json::from_value(node.payload_json.clone())
+                .map_err(lsdc_common::error::LsdcError::from)?;
+            if !self.verify_receipt_for_backend(&receipt).await? {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    async fn verify_receipt_for_backend(
+        &self,
+        receipt: &ProvenanceReceipt,
+    ) -> lsdc_common::error::Result<bool> {
+        match receipt.proof_backend {
+            ProofBackend::DevReceipt => self.dev_receipt_verifier.verify_receipt(receipt).await,
+            ProofBackend::RiscZero => self.verify_risc0_receipt(receipt).await,
+            ProofBackend::None => Ok(false),
+        }
+    }
+
+    #[cfg(feature = "risc0")]
+    async fn verify_risc0_receipt(
+        &self,
+        receipt: &ProvenanceReceipt,
+    ) -> lsdc_common::error::Result<bool> {
+        if self.proof_engine.proof_backend() == ProofBackend::RiscZero {
+            self.proof_engine.verify_receipt(receipt).await
+        } else {
+            Risc0ProofEngine::new().verify_receipt(receipt).await
+        }
+    }
+
+    #[cfg(not(feature = "risc0"))]
+    async fn verify_risc0_receipt(
+        &self,
+        _receipt: &ProvenanceReceipt,
+    ) -> lsdc_common::error::Result<bool> {
+        Ok(false)
     }
 
     pub fn build_server_managed_execution_bindings(
@@ -517,16 +598,24 @@ impl ApiState {
     ) -> lsdc_common::error::Result<(EvidenceDag, TransparencyReceipt)> {
         let now = chrono::Utc::now();
         let overlay_hash = Sha256Hash::digest_bytes(
-            &canonical_json_bytes(&serde_json::to_value(execution_overlay).map_err(lsdc_common::error::LsdcError::from)?)
-                .map_err(lsdc_common::error::LsdcError::from)?,
+            &canonical_json_bytes(
+                &serde_json::to_value(execution_overlay)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
+            )
+            .map_err(lsdc_common::error::LsdcError::from)?,
         );
         let agreement_hash = Sha256Hash::digest_bytes(
-            &canonical_json_bytes(&serde_json::to_value(agreement).map_err(lsdc_common::error::LsdcError::from)?)
-                .map_err(lsdc_common::error::LsdcError::from)?,
+            &canonical_json_bytes(
+                &serde_json::to_value(agreement).map_err(lsdc_common::error::LsdcError::from)?,
+            )
+            .map_err(lsdc_common::error::LsdcError::from)?,
         );
         let session_hash = Sha256Hash::digest_bytes(
-            &canonical_json_bytes(&serde_json::to_value(&execution_bindings.session).map_err(lsdc_common::error::LsdcError::from)?)
-                .map_err(lsdc_common::error::LsdcError::from)?,
+            &canonical_json_bytes(
+                &serde_json::to_value(&execution_bindings.session)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
+            )
+            .map_err(lsdc_common::error::LsdcError::from)?,
         );
         let challenge_hash = match execution_bindings.challenge.as_ref() {
             Some(challenge) => Some(Sha256Hash::digest_bytes(
@@ -553,8 +642,11 @@ impl ApiState {
             .map_err(lsdc_common::error::LsdcError::from)?,
         );
         let price_hash = Sha256Hash::digest_bytes(
-            &canonical_json_bytes(&serde_json::to_value(price_decision).map_err(lsdc_common::error::LsdcError::from)?)
-                .map_err(lsdc_common::error::LsdcError::from)?,
+            &canonical_json_bytes(
+                &serde_json::to_value(price_decision)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
+            )
+            .map_err(lsdc_common::error::LsdcError::from)?,
         );
 
         let mut nodes = vec![
@@ -563,21 +655,24 @@ impl ApiState {
                 kind: ExecutionStatementKind::AgreementCommitted,
                 canonical_hash: agreement_hash.clone(),
                 status: NodeStatus::Verified,
-                payload_json: serde_json::to_value(agreement).map_err(lsdc_common::error::LsdcError::from)?,
+                payload_json: serde_json::to_value(agreement)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
             },
             EvidenceNode {
                 node_id: format!("{job_id}:overlay"),
                 kind: ExecutionStatementKind::SessionCreated,
                 canonical_hash: overlay_hash.clone(),
                 status: NodeStatus::Verified,
-                payload_json: serde_json::to_value(execution_overlay).map_err(lsdc_common::error::LsdcError::from)?,
+                payload_json: serde_json::to_value(execution_overlay)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
             },
             EvidenceNode {
                 node_id: format!("{job_id}:session"),
                 kind: ExecutionStatementKind::SessionCreated,
                 canonical_hash: session_hash.clone(),
                 status: NodeStatus::Realized,
-                payload_json: serde_json::to_value(&execution_bindings.session).map_err(lsdc_common::error::LsdcError::from)?,
+                payload_json: serde_json::to_value(&execution_bindings.session)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
             },
         ];
         if let Some(challenge) = execution_bindings.challenge.as_ref() {
@@ -588,7 +683,8 @@ impl ApiState {
                     .clone()
                     .expect("challenge hash should exist when challenge does"),
                 status: NodeStatus::Verified,
-                payload_json: serde_json::to_value(challenge).map_err(lsdc_common::error::LsdcError::from)?,
+                payload_json: serde_json::to_value(challenge)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
             });
         }
         nodes.extend([
@@ -597,28 +693,32 @@ impl ApiState {
                 kind: ExecutionStatementKind::AttestationEvidenceReceived,
                 canonical_hash: attestation_evidence_hash,
                 status: NodeStatus::Verified,
-                payload_json: serde_json::to_value(&execution_evidence.attestation_evidence).map_err(lsdc_common::error::LsdcError::from)?,
+                payload_json: serde_json::to_value(&execution_evidence.attestation_evidence)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
             },
             EvidenceNode {
                 node_id: format!("{job_id}:attestation-result"),
                 kind: ExecutionStatementKind::AttestationAppraised,
                 canonical_hash: attestation_hash.clone(),
                 status: NodeStatus::Verified,
-                payload_json: serde_json::to_value(&execution_evidence.attestation_result).map_err(lsdc_common::error::LsdcError::from)?,
+                payload_json: serde_json::to_value(&execution_evidence.attestation_result)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
             },
             EvidenceNode {
                 node_id: format!("{job_id}:proof"),
                 kind: ExecutionStatementKind::ProofReceiptRegistered,
                 canonical_hash: execution_evidence.provenance_receipt.receipt_hash.clone(),
                 status: NodeStatus::Verified,
-                payload_json: serde_json::to_value(&execution_evidence.provenance_receipt).map_err(lsdc_common::error::LsdcError::from)?,
+                payload_json: serde_json::to_value(&execution_evidence.provenance_receipt)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
             },
             EvidenceNode {
                 node_id: format!("{job_id}:price"),
                 kind: ExecutionStatementKind::PriceDecisionRecorded,
                 canonical_hash: price_hash,
                 status: NodeStatus::Verified,
-                payload_json: serde_json::to_value(price_decision).map_err(lsdc_common::error::LsdcError::from)?,
+                payload_json: serde_json::to_value(price_decision)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
             },
         ]);
         if let Some(teardown_evidence) = execution_evidence.teardown_evidence.as_ref() {
@@ -634,7 +734,8 @@ impl ApiState {
                 kind: ExecutionStatementKind::TeardownEvidenceRegistered,
                 canonical_hash: teardown_hash,
                 status: NodeStatus::Verified,
-                payload_json: serde_json::to_value(teardown_evidence).map_err(lsdc_common::error::LsdcError::from)?,
+                payload_json: serde_json::to_value(teardown_evidence)
+                    .map_err(lsdc_common::error::LsdcError::from)?,
             });
         }
         let mut edges = vec![
@@ -693,7 +794,10 @@ impl ApiState {
             agreement_id: agreement.agreement_id.0.clone(),
             session_id: Some(execution_bindings.session.session_id),
             payload_hash: base_dag.root_hash.clone(),
-            parent_hashes: nodes.iter().map(|node| node.canonical_hash.clone()).collect(),
+            parent_hashes: nodes
+                .iter()
+                .map(|node| node.canonical_hash.clone())
+                .collect(),
             producer: self.node_name.clone(),
             profile: execution_overlay.overlay_version.clone(),
             created_at: now,
@@ -710,14 +814,16 @@ impl ApiState {
             kind: settlement_statement.statement_kind,
             canonical_hash: settlement_statement.statement_hash.clone(),
             status: NodeStatus::Anchored,
-            payload_json: serde_json::to_value(&settlement_statement).map_err(lsdc_common::error::LsdcError::from)?,
+            payload_json: serde_json::to_value(&settlement_statement)
+                .map_err(lsdc_common::error::LsdcError::from)?,
         });
         nodes.push(EvidenceNode {
             node_id: format!("{job_id}:transparency"),
             kind: ExecutionStatementKind::TransparencyAnchored,
             canonical_hash: transparency_hash,
             status: NodeStatus::Anchored,
-            payload_json: serde_json::to_value(&transparency_receipt).map_err(lsdc_common::error::LsdcError::from)?,
+            payload_json: serde_json::to_value(&transparency_receipt)
+                .map_err(lsdc_common::error::LsdcError::from)?,
         });
         edges.push(EvidenceEdge {
             from_node_id: settlement_statement.statement_id.clone(),
@@ -766,11 +872,14 @@ fn map_truthfulness_mode_back(mode: OverlayTruthfulnessMode) -> TruthfulnessMode
     }
 }
 
-fn resolved_transport_hash(resolved_transport: &ResolvedTransportGuard) -> lsdc_common::error::Result<Sha256Hash> {
+fn resolved_transport_hash(
+    resolved_transport: &ResolvedTransportGuard,
+) -> lsdc_common::error::Result<Sha256Hash> {
     Ok(domain_hash(
         "lsdc.resolved-selector.v1",
         &[&canonical_json_bytes(
-            &serde_json::to_value(resolved_transport).map_err(lsdc_common::error::LsdcError::from)?,
+            &serde_json::to_value(resolved_transport)
+                .map_err(lsdc_common::error::LsdcError::from)?,
         )
         .map_err(lsdc_common::error::LsdcError::from)?],
     ))

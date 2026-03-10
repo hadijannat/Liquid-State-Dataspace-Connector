@@ -1,9 +1,9 @@
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use lsdc_evidence::{canonical_json_bytes, Sha256Hash};
-use lsdc_execution_protocol::{hash_canonical, ExecutionStatement, TransparencyReceipt};
-use lsdc_ports::TransparencyLog;
+use lsdc_execution_protocol::{ExecutionStatement, TransparencyReceipt};
 use lsdc_policy::error::{LsdcError, Result};
+use lsdc_ports::TransparencyLog;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
@@ -34,14 +34,17 @@ impl LocalTransparencyLog {
     pub fn register(&self, statement: &ExecutionStatement) -> Result<TransparencyReceipt> {
         let statement_hash = statement
             .canonical_hash()
-            .map_err(|err| LsdcError::Serialization(err))?;
+            .map_err(LsdcError::Serialization)?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| LsdcError::Database("transparency log mutex poisoned".into()))?;
         state.push((statement.statement_id.clone(), statement_hash.clone()));
         let leaf_index = state.len() as u64 - 1;
-        let leaves = state.iter().map(|(_, hash)| hash.clone()).collect::<Vec<_>>();
+        let leaves = state
+            .iter()
+            .map(|(_, hash)| hash.clone())
+            .collect::<Vec<_>>();
         let inclusion_path = merkle_inclusion_path(&leaves, leaf_index as usize);
         let root_hash = merkle_root(&leaves);
         let signed_at = Utc::now();
@@ -229,5 +232,75 @@ fn merkle_root_from_path(
 }
 
 pub fn statement_hash(statement: &ExecutionStatement) -> Result<Sha256Hash> {
-    hash_canonical(statement).map_err(LsdcError::Serialization)
+    statement.canonical_hash().map_err(LsdcError::Serialization)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lsdc_execution_protocol::{ExecutionStatementKind, LSDC_EXECUTION_PROTOCOL_VERSION};
+
+    fn sample_statement(id: &str) -> ExecutionStatement {
+        ExecutionStatement {
+            statement_id: id.into(),
+            statement_hash: Sha256Hash::digest_bytes(id.as_bytes()),
+            statement_kind: ExecutionStatementKind::SettlementRecorded,
+            agreement_id: "agreement-1".into(),
+            session_id: None,
+            payload_hash: Sha256Hash::digest_bytes(format!("payload:{id}").as_bytes()),
+            parent_hashes: Vec::new(),
+            producer: "receipt-log-test".into(),
+            profile: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
+            created_at: Utc::now(),
+        }
+        .with_computed_hash()
+        .expect("statement hash")
+    }
+
+    #[test]
+    fn test_verify_receipt_handles_multi_leaf_log_and_tampering() {
+        let log = LocalTransparencyLog::new("test-transparency-secret");
+        let first = sample_statement("statement-1");
+        let second = sample_statement("statement-2");
+        let third = sample_statement("statement-3");
+
+        let first_receipt = log.register(&first).expect("first receipt");
+        let second_receipt = log.register(&second).expect("second receipt");
+        let third_receipt = log.register(&third).expect("third receipt");
+
+        assert!(log
+            .verify_receipt(&statement_hash(&first).expect("first hash"), &first_receipt)
+            .is_ok());
+        assert!(log
+            .verify_receipt(
+                &statement_hash(&second).expect("second hash"),
+                &second_receipt
+            )
+            .is_ok());
+        assert!(log
+            .verify_receipt(&statement_hash(&third).expect("third hash"), &third_receipt)
+            .is_ok());
+
+        let mut tampered_signature = second_receipt.clone();
+        tampered_signature.signature_hex = "00".repeat(32);
+        assert!(log
+            .verify_receipt(
+                &statement_hash(&second).expect("second hash"),
+                &tampered_signature
+            )
+            .is_err());
+
+        let mut tampered_path = third_receipt.clone();
+        tampered_path.inclusion_path[0] = Sha256Hash::digest_bytes(b"tampered-sibling");
+        assert!(log
+            .verify_receipt(&statement_hash(&third).expect("third hash"), &tampered_path)
+            .is_err());
+
+        assert!(log
+            .verify_receipt(
+                &Sha256Hash::digest_bytes(b"wrong-statement"),
+                &first_receipt
+            )
+            .is_err());
+    }
 }

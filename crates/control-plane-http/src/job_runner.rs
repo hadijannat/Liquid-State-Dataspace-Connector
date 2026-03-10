@@ -167,7 +167,10 @@ impl LineageJobRunner {
                 )
                 .is_err()
             {
-                tracing::warn!(job_id, "failed to persist attestation evidence for execution session");
+                tracing::warn!(
+                    job_id,
+                    "failed to persist attestation evidence for execution session"
+                );
             }
 
             let execution_overlay = match self.state.execution_overlay_for(&agreement) {

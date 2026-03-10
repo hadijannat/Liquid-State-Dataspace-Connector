@@ -183,7 +183,9 @@ pub fn normalize_policy(policy: &Value) -> Result<NormalizedPolicy> {
     let permissions = policy
         .get("permission")
         .and_then(Value::as_array)
-        .ok_or_else(|| LsdcError::OdrlParse("ODRL policy must contain a permission array".into()))?;
+        .ok_or_else(|| {
+            LsdcError::OdrlParse("ODRL policy must contain a permission array".into())
+        })?;
 
     let truthfulness_mode = match policy
         .get("lsdcTruthfulnessMode")
@@ -256,7 +258,10 @@ fn normalize_duty(duty: &Value) -> Result<NormalizedDuty> {
         .map(|items| items.iter().map(normalize_constraint).collect())
         .transpose()?
         .unwrap_or_default();
-    Ok(NormalizedDuty { action, constraints })
+    Ok(NormalizedDuty {
+        action,
+        constraints,
+    })
 }
 
 fn normalize_constraint(constraint: &Value) -> Result<NormalizedConstraint> {

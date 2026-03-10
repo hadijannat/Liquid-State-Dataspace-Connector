@@ -155,10 +155,8 @@ fn materialize_execution_bindings(
         return Ok(Some(bindings));
     };
     let resolved_selector_hash = Sha256Hash::digest_bytes(
-        &canonical_json_bytes(
-            &serde_json::to_value(&resolved_transport).map_err(LsdcError::from)?,
-        )
-        .map_err(LsdcError::from)?,
+        &canonical_json_bytes(&serde_json::to_value(&resolved_transport).map_err(LsdcError::from)?)
+            .map_err(LsdcError::from)?,
     );
     bindings.resolved_transport = Some(resolved_transport);
     bindings.session.resolved_selector_hash = Some(resolved_selector_hash.clone());

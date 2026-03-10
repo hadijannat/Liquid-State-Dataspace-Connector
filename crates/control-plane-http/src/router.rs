@@ -21,8 +21,14 @@ pub fn router(state: ApiState) -> Router {
             "/dsp/transfers/:transfer_id/complete",
             post(transfers::transfer_complete),
         )
-        .route("/lsdc/v1/capabilities", get(execution::execution_capabilities))
-        .route("/lsdc/v1/sessions", post(execution::create_execution_session))
+        .route(
+            "/lsdc/v1/capabilities",
+            get(execution::execution_capabilities),
+        )
+        .route(
+            "/lsdc/v1/sessions",
+            post(execution::create_execution_session),
+        )
         .route(
             "/lsdc/v1/sessions/:session_id/challenges",
             post(execution::issue_execution_challenge),
@@ -39,7 +45,10 @@ pub fn router(state: ApiState) -> Router {
             "/lsdc/v1/evidence/statements/:statement_id/receipt",
             get(execution::get_transparency_receipt),
         )
-        .route("/lsdc/v1/evidence/verify", post(execution::verify_evidence_dag))
+        .route(
+            "/lsdc/v1/evidence/verify",
+            post(execution::verify_evidence_dag),
+        )
         .route("/lsdc/lineage/jobs", post(lineage::create_lineage_job))
         .route("/lsdc/lineage/jobs/:job_id", get(lineage::get_lineage_job))
         .route(

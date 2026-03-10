@@ -1,13 +1,18 @@
 use crate::DevReceiptProofEngine;
 #[cfg(feature = "risc0")]
 use crate::Risc0ProofEngine;
+use lsdc_common::crypto::{ProvenanceReceipt, ReceiptKind, Sha256Hash};
 use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement};
 #[cfg(feature = "risc0")]
 use lsdc_common::error::LsdcError;
+use lsdc_common::execution_overlay::ExecutionStatementKind;
 use lsdc_common::liquid::CsvTransformManifest;
 use lsdc_common::odrl::ast::PolicyId;
 use lsdc_common::odrl::parser::lower_policy;
-use lsdc_ports::ProofEngine;
+use lsdc_common::runtime_model::{
+    DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus,
+};
+use lsdc_ports::{CompositionContext, ProofEngine};
 use std::sync::Once;
 
 fn ensure_test_env() {
@@ -84,6 +89,85 @@ async fn test_verifies_receipt_chain() {
         .verify_chain(&[first.receipt, second.receipt])
         .await
         .unwrap());
+}
+
+fn proof_node(node_id: &str, receipt: &ProvenanceReceipt) -> EvidenceNode {
+    EvidenceNode {
+        node_id: node_id.into(),
+        kind: ExecutionStatementKind::ProofReceiptRegistered,
+        canonical_hash: receipt.receipt_hash.clone(),
+        status: NodeStatus::Verified,
+        payload_json: serde_json::to_value(receipt).unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn test_composes_receipts_and_rejects_tampered_dag_node() {
+    ensure_test_env();
+    let engine = DevReceiptProofEngine::new().unwrap();
+    let agreement = agreement();
+    let manifest = manifest();
+    let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
+    let first = engine
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
+        .await
+        .unwrap();
+    let second = engine
+        .execute_csv_transform(&agreement, input.as_slice(), &manifest, None, None)
+        .await
+        .unwrap();
+
+    let composed = engine
+        .compose_receipts(
+            &[first.receipt.clone(), second.receipt.clone()],
+            CompositionContext {
+                agreement_id: agreement.agreement_id.0.clone(),
+                agreement_commitment_hash: None,
+                session_id: None,
+                selector_hash: None,
+                capability_commitment_hash: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(composed.receipt_kind, ReceiptKind::Composition);
+    assert_eq!(composed.recursion_depth, 1);
+    assert_eq!(
+        composed.parent_receipt_hashes,
+        vec![
+            first.receipt.receipt_hash.clone(),
+            second.receipt.receipt_hash.clone()
+        ]
+    );
+
+    let dag = EvidenceDag::new(
+        vec![
+            proof_node("proof-1", &first.receipt),
+            proof_node("proof-2", &second.receipt),
+            proof_node("proof-composed", &composed),
+        ],
+        vec![
+            EvidenceEdge {
+                from_node_id: "proof-1".into(),
+                to_node_id: "proof-composed".into(),
+                dependency_type: DependencyType::DerivedFrom,
+            },
+            EvidenceEdge {
+                from_node_id: "proof-2".into(),
+                to_node_id: "proof-composed".into(),
+                dependency_type: DependencyType::DerivedFrom,
+            },
+        ],
+    )
+    .unwrap();
+    assert!(engine.verify_receipt_dag(&dag).await.unwrap());
+
+    let mut tampered = composed.clone();
+    tampered.receipt_hash = Sha256Hash::digest_bytes(b"tampered-receipt");
+    let tampered_dag =
+        EvidenceDag::new(vec![proof_node("proof-tampered", &tampered)], Vec::new()).unwrap();
+    assert!(!engine.verify_receipt_dag(&tampered_dag).await.unwrap());
 }
 
 #[cfg(feature = "risc0")]

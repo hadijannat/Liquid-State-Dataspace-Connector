@@ -7,7 +7,7 @@ use liquid_agent_core::loader::LiquidDataPlane;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use liquid_agent_grpc::server::{serve as serve_agent, LiquidAgentService};
 use lsdc_common::crypto::{
-    AttestationDocument, AttestationEvidence, AttestationMeasurements, PriceDecision,
+    sign_bytes, AttestationDocument, AttestationEvidence, AttestationMeasurements, PriceDecision,
     PricingAuditContext, ProvenanceReceipt, ReceiptKind, Sha256Hash, ShapleyValue,
 };
 use lsdc_common::dsp::{
@@ -30,10 +30,10 @@ use lsdc_ports::{
 };
 use lsdc_service_types::{
     CreateExecutionSessionRequest, CreateExecutionSessionResponse, EvidenceVerificationRequest,
-    ExecutionCapabilitiesResponse, FinalizeContractResponse, IssueExecutionChallengeResponse,
-    IssueExecutionChallengeRequest, LineageJobAccepted, LineageJobRecord, LineageJobRequest,
-    LineageJobState, SubmitAttestationEvidenceRequest, SubmitAttestationEvidenceResponse,
-    RegisterEvidenceStatementRequest, RegisterEvidenceStatementResponse, SettlementDecision,
+    ExecutionCapabilitiesResponse, FinalizeContractResponse, IssueExecutionChallengeRequest,
+    IssueExecutionChallengeResponse, LineageJobAccepted, LineageJobRecord, LineageJobRequest,
+    LineageJobState, RegisterEvidenceStatementRequest, RegisterEvidenceStatementResponse,
+    SettlementDecision, SubmitAttestationEvidenceRequest, SubmitAttestationEvidenceResponse,
     TransferStartResponse, VerifyEvidenceDagRequest, VerifyEvidenceDagResponse,
 };
 use proof_plane_host::DevReceiptProofEngine;
@@ -44,6 +44,7 @@ use tee_orchestrator::enclave::NitroEnclaveManager;
 use tower::ServiceExt;
 
 const TEST_API_TOKEN: &str = "test-api-token";
+const TEST_ATTESTATION_SECRET: &str = "test-attestation-secret";
 
 fn ensure_test_env() {
     static INIT: Once = Once::new();
@@ -52,6 +53,7 @@ fn ensure_test_env() {
         std::env::set_var("LSDC_API_BEARER_TOKEN", TEST_API_TOKEN);
         std::env::set_var("LSDC_PROOF_SECRET", "test-proof-secret");
         std::env::set_var("LSDC_FORGETTING_SECRET", "test-forgetting-secret");
+        std::env::set_var("LSDC_ATTESTATION_SECRET", TEST_ATTESTATION_SECRET);
     });
 }
 
@@ -105,7 +107,10 @@ async fn test_contract_finalize_transfer_and_settlement_surface() {
         .execution_overlay
         .clone()
         .expect("expected execution overlay summary");
-    assert_eq!(execution_overlay.overlay_version, LSDC_EXECUTION_PROTOCOL_VERSION);
+    assert_eq!(
+        execution_overlay.overlay_version,
+        LSDC_EXECUTION_PROTOCOL_VERSION
+    );
     assert!(execution_overlay
         .support_summary
         .contains_key("proof.dev_receipt_dag"));
@@ -242,7 +247,10 @@ async fn test_phase3_three_party_demo_flow() {
     assert!(settlement_b.settlement_allowed);
     assert!(settlement_b.price_decision.is_some());
     assert_eq!(settlement_b.session_id, first_result.session_id);
-    assert_eq!(settlement_b.evidence_root_hash, first_result.evidence_root_hash);
+    assert_eq!(
+        settlement_b.evidence_root_hash,
+        first_result.evidence_root_hash
+    );
     assert_eq!(
         settlement_b.transparency_receipt_hash,
         first_result.transparency_receipt_hash
@@ -262,7 +270,10 @@ async fn test_phase3_three_party_demo_flow() {
     assert!(settlement_c.settlement_allowed);
     assert!(settlement_c.proof_bundle.is_some());
     assert_eq!(settlement_c.session_id, second_result.session_id);
-    assert_eq!(settlement_c.evidence_root_hash, second_result.evidence_root_hash);
+    assert_eq!(
+        settlement_c.evidence_root_hash,
+        second_result.evidence_root_hash
+    );
     assert_eq!(
         settlement_c.transparency_receipt_hash,
         second_result.transparency_receipt_hash
@@ -362,7 +373,10 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
     let challenge: IssueExecutionChallengeResponse = get_json(
         &app,
         Method::POST,
-        &format!("/lsdc/v1/sessions/{}/challenges", created.session.session_id),
+        &format!(
+            "/lsdc/v1/sessions/{}/challenges",
+            created.session.session_id
+        ),
         Some(IssueExecutionChallengeRequest {
             resolved_transport: sample_resolved_transport(&finalized.agreement.agreement_id.0),
         }),
@@ -378,7 +392,10 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
     let duplicate_challenge_error: serde_json::Value = get_json(
         &app,
         Method::POST,
-        &format!("/lsdc/v1/sessions/{}/challenges", created.session.session_id),
+        &format!(
+            "/lsdc/v1/sessions/{}/challenges",
+            created.session.session_id
+        ),
         Some(IssueExecutionChallengeRequest {
             resolved_transport: sample_resolved_transport(&finalized.agreement.agreement_id.0),
         }),
@@ -390,8 +407,7 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
         .unwrap()
         .contains("active challenge"));
 
-    let attestation_evidence =
-        sample_attestation_evidence(Some(challenge.challenge.challenge_nonce_hex.clone()));
+    let attestation_evidence = sample_bound_attestation_evidence(&challenge.challenge);
     let registered_attestation: SubmitAttestationEvidenceResponse = get_json(
         &app,
         Method::POST,
@@ -451,7 +467,10 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
         StatusCode::OK,
     )
     .await;
-    assert_eq!(fetched_receipt.root_hash, registered_statement.receipt.root_hash);
+    assert_eq!(
+        fetched_receipt.root_hash,
+        registered_statement.receipt.root_hash
+    );
 
     let dag = EvidenceDag::new(
         vec![EvidenceNode {
@@ -522,11 +541,7 @@ async fn test_lineage_jobs_persist_evidence_dag_and_verify_via_v1_route() {
     assert_eq!(verification.evidence_root_hash, dag.root_hash);
     assert_eq!(
         result.transparency_receipt_hash,
-        Some(
-            receipt
-                .canonical_hash()
-                .expect("transparency receipt hash")
-        )
+        Some(receipt.canonical_hash().expect("transparency receipt hash"))
     );
 }
 
@@ -568,10 +583,12 @@ async fn test_submit_attestation_evidence_rejects_expired_and_mismatched_challen
         )
         .unwrap();
 
-    let attestation_evidence =
-        sample_attestation_evidence(Some(expired_challenge.challenge_nonce_hex.clone()));
+    let attestation_evidence = sample_bound_attestation_evidence(&expired_challenge);
     let expired_err = state
-        .submit_attestation_evidence(&created.session.session_id.to_string(), &attestation_evidence)
+        .submit_attestation_evidence(
+            &created.session.session_id.to_string(),
+            &attestation_evidence,
+        )
         .unwrap_err();
     assert!(expired_err.to_string().contains("challenge has expired"));
 
@@ -588,17 +605,14 @@ async fn test_submit_attestation_evidence_rejects_expired_and_mismatched_challen
         )
         .unwrap();
 
-    let mismatch_attestation =
-        sample_attestation_evidence(Some(mismatch_challenge.challenge_nonce_hex.clone()));
+    let mismatch_attestation = sample_bound_attestation_evidence(&mismatch_challenge);
     let mismatch_err = state
         .submit_attestation_evidence(
             &created.session.session_id.to_string(),
             &mismatch_attestation,
         )
         .unwrap_err();
-    assert!(mismatch_err
-        .to_string()
-        .contains("agreement hash mismatch"));
+    assert!(mismatch_err.to_string().contains("agreement hash mismatch"));
 }
 
 #[tokio::test]
@@ -849,28 +863,134 @@ fn sample_resolved_transport(agreement_id: &str) -> ResolvedTransportGuard {
     }
 }
 
-fn sample_attestation_evidence(nonce: Option<String>) -> AttestationEvidence {
+fn sample_valid_attestation_evidence(
+    nonce: Option<String>,
+    public_key: Option<Vec<u8>>,
+    user_data_hash: Option<Sha256Hash>,
+) -> AttestationEvidence {
+    fn encode_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    let timestamp = chrono::Utc::now();
+    let binary_hash = Sha256Hash::digest_bytes(b"binary");
+    let measurements = AttestationMeasurements {
+        image_hash: binary_hash.clone(),
+        pcrs: std::collections::BTreeMap::from([(0, binary_hash.to_hex())]),
+        debug: false,
+    };
+    let raw_attestation_document = serde_json::to_vec(&serde_json::json!({
+        "enclave_id": "http-test-enclave",
+        "platform": "aws-nitro-dev",
+        "binary_hash": binary_hash.to_hex(),
+        "measurements": measurements.clone(),
+        "nonce": nonce,
+        "public_key": public_key.as_ref().map(|bytes| encode_hex(bytes)),
+        "user_data_hash": user_data_hash.as_ref().map(Sha256Hash::to_hex),
+        "timestamp": timestamp.to_rfc3339(),
+    }))
+    .unwrap();
+
     AttestationEvidence {
         evidence_profile: "nitro-dev-attestation-evidence-v1".into(),
         document: AttestationDocument {
             enclave_id: "http-test-enclave".into(),
             platform: "aws-nitro-dev".into(),
-            binary_hash: Sha256Hash::digest_bytes(b"binary"),
-            measurements: AttestationMeasurements {
-                image_hash: Sha256Hash::digest_bytes(b"image"),
-                pcrs: std::collections::BTreeMap::from([(0, "pcr0".into())]),
-                debug: false,
-            },
+            binary_hash: binary_hash.clone(),
+            measurements,
             nonce,
-            public_key: Some(vec![9, 9, 9]),
-            user_data_hash: Some(Sha256Hash::digest_bytes(b"user-data")),
-            document_hash: Sha256Hash::digest_bytes(b"document"),
-            timestamp: chrono::Utc::now(),
-            raw_attestation_document: b"document".to_vec(),
-            certificate_chain_pem: vec!["cert".into()],
-            signature_hex: "signature".into(),
+            public_key,
+            user_data_hash,
+            document_hash: Sha256Hash::digest_bytes(&raw_attestation_document),
+            timestamp,
+            raw_attestation_document: raw_attestation_document.clone(),
+            certificate_chain_pem: Vec::new(),
+            signature_hex: sign_bytes(TEST_ATTESTATION_SECRET, &raw_attestation_document),
         },
     }
+}
+
+fn sample_bound_attestation_evidence(
+    challenge: &lsdc_common::execution_overlay::ExecutionSessionChallenge,
+) -> AttestationEvidence {
+    sample_valid_attestation_evidence(
+        Some(challenge.challenge_nonce_hex.clone()),
+        Some(challenge.requester_ephemeral_pubkey.clone()),
+        Some(challenge.resolved_selector_hash.clone()),
+    )
+}
+
+fn sample_invalid_attestation_evidence(nonce: Option<String>) -> AttestationEvidence {
+    let mut evidence = sample_valid_attestation_evidence(
+        nonce,
+        Some(vec![9, 9, 9]),
+        Some(Sha256Hash::digest_bytes(b"user-data")),
+    );
+    evidence.document.signature_hex = "deadbeef".into();
+    evidence
+}
+
+#[tokio::test]
+async fn test_submit_attestation_evidence_rejects_invalid_and_replayed_submissions() {
+    ensure_test_env();
+    let agent_endpoint = start_simulated_agent().await;
+    let store = control_plane_api::store::Store::new(":memory:").unwrap();
+    let state = build_test_state(agent_endpoint, store);
+    let app = router(state.clone());
+    let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
+    let finalized = finalize_offer(&app, &offer).await;
+
+    let created = state
+        .create_execution_session(CreateExecutionSessionRequest {
+            agreement_id: finalized.agreement.agreement_id.0.clone(),
+            requester_ephemeral_pubkey: vec![1, 2, 3],
+            expires_in_seconds: Some(120),
+        })
+        .expect("execution session");
+    let challenged = state
+        .issue_execution_challenge(
+            &created.session.session_id.to_string(),
+            &IssueExecutionChallengeRequest {
+                resolved_transport: sample_resolved_transport(&finalized.agreement.agreement_id.0),
+            },
+        )
+        .expect("execution challenge");
+
+    let invalid_err = state
+        .submit_attestation_evidence(
+            &created.session.session_id.to_string(),
+            &sample_invalid_attestation_evidence(Some(
+                challenged.challenge.challenge_nonce_hex.clone(),
+            )),
+        )
+        .unwrap_err();
+    assert!(
+        invalid_err
+            .to_string()
+            .contains("requester key binding mismatch")
+            || invalid_err
+                .to_string()
+                .contains("attestation evidence appraisal rejected")
+    );
+
+    let registered = state
+        .submit_attestation_evidence(
+            &created.session.session_id.to_string(),
+            &sample_bound_attestation_evidence(&challenged.challenge),
+        )
+        .expect("valid attestation submission");
+    assert_eq!(
+        registered.session.state,
+        ExecutionSessionState::AttestationVerified
+    );
+
+    let replay_err = state
+        .submit_attestation_evidence(
+            &created.session.session_id.to_string(),
+            &sample_bound_attestation_evidence(&challenged.challenge),
+        )
+        .unwrap_err();
+    assert!(replay_err.to_string().contains("already been consumed"));
 }
 
 async fn start_simulated_agent() -> String {

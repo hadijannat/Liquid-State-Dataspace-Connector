@@ -120,12 +120,13 @@ impl ProofEngine for DevReceiptProofEngine {
         let transform_manifest_hash =
             Sha256Hash::digest_bytes(&serde_json::to_vec(manifest).map_err(LsdcError::from)?);
         let prior_receipt_hash = prior_receipt.map(|receipt| receipt.receipt_hash.clone());
-        let parent_receipt_hashes = prior_receipt_hash
-            .clone()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let agreement_commitment_hash = execution_bindings
-            .map(|bindings| bindings.overlay_commitment.agreement_commitment_hash.clone());
+        let parent_receipt_hashes = prior_receipt_hash.clone().into_iter().collect::<Vec<_>>();
+        let agreement_commitment_hash = execution_bindings.map(|bindings| {
+            bindings
+                .overlay_commitment
+                .agreement_commitment_hash
+                .clone()
+        });
         let session_id = execution_bindings.map(|bindings| bindings.session.session_id.to_string());
         let challenge_nonce_hash = execution_bindings
             .and_then(|bindings| bindings.challenge.as_ref())
@@ -133,12 +134,18 @@ impl ProofEngine for DevReceiptProofEngine {
         let selector_hash = execution_bindings
             .and_then(|bindings| bindings.challenge.as_ref())
             .map(|challenge| challenge.resolved_selector_hash.clone());
-        let attestation_result_hash = execution_bindings
-            .and_then(|bindings| bindings.attestation_result_hash.clone());
-        let capability_commitment_hash = execution_bindings
-            .map(|bindings| bindings.overlay_commitment.capability_descriptor_hash.clone());
+        let attestation_result_hash =
+            execution_bindings.and_then(|bindings| bindings.attestation_result_hash.clone());
+        let capability_commitment_hash = execution_bindings.map(|bindings| {
+            bindings
+                .overlay_commitment
+                .capability_descriptor_hash
+                .clone()
+        });
         let transparency_statement_hash = None;
-        let recursion_depth = prior_receipt.map(|receipt| receipt.recursion_depth + 1).unwrap_or(0);
+        let recursion_depth = prior_receipt
+            .map(|receipt| receipt.recursion_depth + 1)
+            .unwrap_or(0);
         let recursion_used = prior_receipt_hash.is_some();
 
         let claims = ProofClaims {
@@ -148,20 +155,19 @@ impl ProofEngine for DevReceiptProofEngine {
             policy_hash: policy_hash.to_hex(),
             transform_manifest_hash: transform_manifest_hash.to_hex(),
             prior_receipt_hash: prior_receipt_hash.as_ref().map(Sha256Hash::to_hex),
-            agreement_commitment_hash: agreement_commitment_hash
-                .as_ref()
-                .map(Sha256Hash::to_hex),
+            agreement_commitment_hash: agreement_commitment_hash.as_ref().map(Sha256Hash::to_hex),
             session_id: session_id.clone(),
             challenge_nonce_hash: challenge_nonce_hash.as_ref().map(Sha256Hash::to_hex),
             selector_hash: selector_hash.as_ref().map(Sha256Hash::to_hex),
             attestation_result_hash: attestation_result_hash.as_ref().map(Sha256Hash::to_hex),
-            capability_commitment_hash: capability_commitment_hash
-                .as_ref()
-                .map(Sha256Hash::to_hex),
+            capability_commitment_hash: capability_commitment_hash.as_ref().map(Sha256Hash::to_hex),
             transparency_statement_hash: transparency_statement_hash
                 .as_ref()
                 .map(Sha256Hash::to_hex),
-            parent_receipt_hashes: parent_receipt_hashes.iter().map(Sha256Hash::to_hex).collect(),
+            parent_receipt_hashes: parent_receipt_hashes
+                .iter()
+                .map(Sha256Hash::to_hex)
+                .collect(),
             recursion_depth,
             receipt_kind: ReceiptKind::Transform,
             recursion_used,
@@ -233,14 +239,23 @@ impl ProofEngine for DevReceiptProofEngine {
                 && envelope.claims.prior_receipt_hash
                     == receipt.prior_receipt_hash.as_ref().map(Sha256Hash::to_hex)
                 && envelope.claims.agreement_commitment_hash
-                    == receipt.agreement_commitment_hash.as_ref().map(Sha256Hash::to_hex)
+                    == receipt
+                        .agreement_commitment_hash
+                        .as_ref()
+                        .map(Sha256Hash::to_hex)
                 && envelope.claims.session_id == receipt.session_id
                 && envelope.claims.challenge_nonce_hash
-                    == receipt.challenge_nonce_hash.as_ref().map(Sha256Hash::to_hex)
+                    == receipt
+                        .challenge_nonce_hash
+                        .as_ref()
+                        .map(Sha256Hash::to_hex)
                 && envelope.claims.selector_hash
                     == receipt.selector_hash.as_ref().map(Sha256Hash::to_hex)
                 && envelope.claims.attestation_result_hash
-                    == receipt.attestation_result_hash.as_ref().map(Sha256Hash::to_hex)
+                    == receipt
+                        .attestation_result_hash
+                        .as_ref()
+                        .map(Sha256Hash::to_hex)
                 && envelope.claims.capability_commitment_hash
                     == receipt
                         .capability_commitment_hash
@@ -367,7 +382,10 @@ impl ProofEngine for DevReceiptProofEngine {
                 .as_ref()
                 .map(Sha256Hash::to_hex),
             transparency_statement_hash: None,
-            parent_receipt_hashes: parent_receipt_hashes.iter().map(Sha256Hash::to_hex).collect(),
+            parent_receipt_hashes: parent_receipt_hashes
+                .iter()
+                .map(Sha256Hash::to_hex)
+                .collect(),
             recursion_depth,
             receipt_kind: ReceiptKind::Composition,
             recursion_used: true,

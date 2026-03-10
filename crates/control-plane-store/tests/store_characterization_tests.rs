@@ -3,8 +3,7 @@ use control_plane_store::Store;
 use lsdc_common::crypto::{
     AppraisalStatus, AttestationDocument, AttestationEvidence, AttestationMeasurements,
     AttestationResult, MetricsWindow, PriceDecision, PricingAuditContext, ProofBundle,
-    ProofOfForgetting, ProvenanceReceipt, ReceiptKind, SanctionProposal, Sha256Hash,
-    ShapleyValue,
+    ProofOfForgetting, ProvenanceReceipt, ReceiptKind, SanctionProposal, Sha256Hash, ShapleyValue,
 };
 use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement};
 use lsdc_common::execution::{
@@ -23,14 +22,15 @@ use lsdc_common::liquid::{
     TransformGuard, TransportGuard, TransportProtocol,
 };
 use lsdc_common::odrl::ast::PolicyId;
-use lsdc_common::runtime_model::{DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus};
+use lsdc_common::runtime_model::{
+    DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus,
+};
 use lsdc_ports::{
     EnforcementHandle, EnforcementIdentity, EnforcementRuntimeStatus, EnforcementStatus,
     ResolvedTransportGuard, TrainingMetrics,
 };
 use lsdc_service_types::{
-    ExecutionOverlaySummary, LineageJobRecord, LineageJobRequest, LineageJobResult,
-    LineageJobState,
+    ExecutionOverlaySummary, LineageJobRecord, LineageJobRequest, LineageJobResult, LineageJobState,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -707,10 +707,7 @@ fn sample_evidence_dag() -> EvidenceDag {
     EvidenceDag::new(nodes, edges).unwrap()
 }
 
-fn sample_execution_statement(
-    session: &ExecutionSession,
-    dag: &EvidenceDag,
-) -> ExecutionStatement {
+fn sample_execution_statement(session: &ExecutionSession, dag: &EvidenceDag) -> ExecutionStatement {
     ExecutionStatement {
         statement_id: "statement-2".into(),
         statement_hash: Sha256Hash::digest_bytes(b"statement-2"),
@@ -718,7 +715,11 @@ fn sample_execution_statement(
         session_id: Some(session.session_id),
         statement_kind: ExecutionStatementKind::SettlementRecorded,
         payload_hash: dag.root_hash.clone(),
-        parent_hashes: dag.nodes.iter().map(|node| node.canonical_hash.clone()).collect(),
+        parent_hashes: dag
+            .nodes
+            .iter()
+            .map(|node| node.canonical_hash.clone())
+            .collect(),
         producer: "store-test".into(),
         profile: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
         created_at: Utc::now(),

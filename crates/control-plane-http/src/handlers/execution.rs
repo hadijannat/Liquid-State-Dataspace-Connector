@@ -3,14 +3,14 @@ use crate::state::ApiState;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use lsdc_common::crypto::Sha256Hash;
 use lsdc_service_types::{
     CreateExecutionSessionRequest, CreateExecutionSessionResponse, ExecutionCapabilitiesResponse,
     IssueExecutionChallengeRequest, IssueExecutionChallengeResponse,
-    RegisterEvidenceStatementRequest,
-    RegisterEvidenceStatementResponse, VerifyEvidenceDagRequest, VerifyEvidenceDagResponse,
-    SubmitAttestationEvidenceRequest, SubmitAttestationEvidenceResponse,
+    RegisterEvidenceStatementRequest, RegisterEvidenceStatementResponse,
+    SubmitAttestationEvidenceRequest, SubmitAttestationEvidenceResponse, VerifyEvidenceDagRequest,
+    VerifyEvidenceDagResponse,
 };
+use std::collections::HashMap;
 
 pub async fn execution_capabilities(
     State(state): State<ApiState>,
@@ -93,17 +93,27 @@ pub async fn verify_evidence_dag(
     Json(request): Json<VerifyEvidenceDagRequest>,
 ) -> ApiResult<Json<VerifyEvidenceDagResponse>> {
     let proof_valid = state
-        .proof_engine
-        .verify_receipt_dag(&request.dag)
+        .verify_evidence_dag(&request.dag)
         .await
         .map_err(ApiError::internal)?;
     let mut receipt_valid = true;
+    let statement_hashes = request
+        .dag
+        .nodes
+        .iter()
+        .map(|node| (node.node_id.as_str(), node.canonical_hash.clone()))
+        .collect::<HashMap<_, _>>();
 
     for receipt in &request.receipts {
-        let statement_hash = find_statement_hash(&request.dag, &receipt.statement_id)
-            .ok_or_else(|| ApiError::bad_request(lsdc_common::error::LsdcError::Database(
-                format!("statement `{}` not found in DAG", receipt.statement_id),
-            )))?;
+        let statement_hash = statement_hashes
+            .get(receipt.statement_id.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                ApiError::bad_request(lsdc_common::error::LsdcError::Database(format!(
+                    "statement `{}` not found in DAG",
+                    receipt.statement_id
+                )))
+            })?;
         if state
             .verify_transparency_receipt(&statement_hash, receipt)
             .is_err()
@@ -119,14 +129,4 @@ pub async fn verify_evidence_dag(
         checked_receipt_count: request.receipts.len(),
         evidence_root_hash: request.dag.root_hash,
     }))
-}
-
-fn find_statement_hash(
-    dag: &lsdc_common::runtime_model::EvidenceDag,
-    statement_id: &str,
-) -> Option<Sha256Hash> {
-    dag.nodes
-        .iter()
-        .find(|node| node.node_id == statement_id)
-        .map(|node| node.canonical_hash.clone())
 }

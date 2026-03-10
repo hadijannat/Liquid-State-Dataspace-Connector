@@ -11,7 +11,9 @@ use lsdc_common::crypto::{
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::TeeBackend;
 use lsdc_evidence::DevDeletionEvidence;
-use lsdc_ports::{AttestationVerifier, EnclaveJobRequest, EnclaveJobResult, EnclaveManager, ProofEngine};
+use lsdc_ports::{
+    AttestationVerifier, EnclaveJobRequest, EnclaveJobResult, EnclaveManager, ProofEngine,
+};
 use std::sync::Arc;
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -95,7 +97,9 @@ impl EnclaveManager for NitroEnclaveManager {
                         chrono::Utc::now(),
                         Some(binding),
                     )?,
-                    None => build_attestation_document(&enclave_id, &manifest_hash, chrono::Utc::now())?,
+                    None => {
+                        build_attestation_document(&enclave_id, &manifest_hash, chrono::Utc::now())?
+                    }
                 }
             }
             TeeBackend::NitroLive => {
@@ -124,8 +128,10 @@ impl EnclaveManager for NitroEnclaveManager {
                 .and_then(|bindings| bindings.challenge.as_ref()),
         )?;
         let attestation_result_hash = Sha256Hash::digest_bytes(
-            &canonical_json_bytes(&serde_json::to_value(&attestation_result).map_err(LsdcError::from)?)
-                .map_err(LsdcError::from)?,
+            &canonical_json_bytes(
+                &serde_json::to_value(&attestation_result).map_err(LsdcError::from)?,
+            )
+            .map_err(LsdcError::from)?,
         );
         let proof_execution_bindings = request.execution_bindings.as_ref().map(|bindings| {
             let mut bound = bindings.clone();
@@ -176,9 +182,7 @@ impl EnclaveManager for NitroEnclaveManager {
             attestation_evidence,
             provenance_receipt: proof_result.receipt,
             attestation_result: Some(attestation_result),
-            teardown_evidence: Some(TeardownEvidence::DevDeletion(
-                dev_deletion_evidence.clone(),
-            )),
+            teardown_evidence: Some(TeardownEvidence::DevDeletion(dev_deletion_evidence.clone())),
             transparency_receipt_hash: None,
             evidence_root_hash,
             job_audit_hash: Sha256Hash::digest_bytes(&audit_bytes),
@@ -189,8 +193,14 @@ impl EnclaveManager for NitroEnclaveManager {
                 .provenance_receipt
                 .receipt_format_version
                 .clone(),
-            proof_method_id: execution_evidence.provenance_receipt.proof_method_id.clone(),
-            prior_receipt_hash: execution_evidence.provenance_receipt.prior_receipt_hash.clone(),
+            proof_method_id: execution_evidence
+                .provenance_receipt
+                .proof_method_id
+                .clone(),
+            prior_receipt_hash: execution_evidence
+                .provenance_receipt
+                .prior_receipt_hash
+                .clone(),
             raw_receipt_bytes: execution_evidence.provenance_receipt.receipt_bytes.clone(),
             provenance_receipt: execution_evidence.provenance_receipt.clone(),
             attestation: attestation.clone(),

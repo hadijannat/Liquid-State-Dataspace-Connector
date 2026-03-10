@@ -1,6 +1,6 @@
 use lsdc_policy::{
-    canonical_policy_json, normalize_policy, EvidenceRequirement, PolicyClauseStatus,
-    ProofBackend, RuntimeCapabilities, TeeBackend, TransportBackend, TruthfulnessMode,
+    canonical_policy_json, normalize_policy, EvidenceRequirement, PolicyClauseStatus, ProofBackend,
+    RuntimeCapabilities, TeeBackend, TransportBackend, TruthfulnessMode,
 };
 
 #[test]
@@ -26,7 +26,10 @@ fn canonical_policy_json_is_stable_across_key_order() {
         }]
     });
 
-    assert_eq!(canonical_policy_json(&policy_a), canonical_policy_json(&policy_b));
+    assert_eq!(
+        canonical_policy_json(&policy_a),
+        canonical_policy_json(&policy_b)
+    );
 
     let normalized = normalize_policy(&policy_a).expect("policy should normalize");
     assert_eq!(normalized.truthfulness_mode, TruthfulnessMode::Strict);
@@ -87,10 +90,8 @@ fn capability_solver_rejects_metadata_only_overlay_clauses_in_strict_mode() {
         dev_backends_allowed: false,
     };
 
-    let realizations = capabilities.clause_realizations(
-        &normalized,
-        &[EvidenceRequirement::PriceApproval],
-    );
+    let realizations =
+        capabilities.clause_realizations(&normalized, &[EvidenceRequirement::PriceApproval]);
     let deletion = realizations
         .iter()
         .find(|item| item.clause_id == "deletionMode")

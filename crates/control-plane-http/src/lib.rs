@@ -6,8 +6,8 @@ mod state;
 
 pub mod handlers {
     pub mod contracts;
-    pub mod execution;
     pub mod evidence;
+    pub mod execution;
     pub mod lineage;
     pub mod settlement;
     pub mod transfers;

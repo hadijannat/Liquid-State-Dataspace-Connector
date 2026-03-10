@@ -1,10 +1,10 @@
+use lsdc_evidence::Sha256Hash;
 use lsdc_execution_protocol::{
     AdvertisedProfiles, CapabilitySupportLevel, ExecutionCapabilityDescriptor,
     ExecutionEvidenceRequirements, ExecutionOverlayCommitment, ProofCompositionMode,
     TransparencyMode, TruthfulnessMode, LOCAL_TRANSPARENCY_PROFILE,
     LSDC_EXECUTION_PROTOCOL_VERSION,
 };
-use lsdc_evidence::Sha256Hash;
 use std::collections::BTreeMap;
 
 fn sample_descriptor() -> ExecutionCapabilityDescriptor {

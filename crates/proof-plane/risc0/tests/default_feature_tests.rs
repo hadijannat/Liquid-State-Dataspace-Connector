@@ -23,7 +23,13 @@ async fn test_default_risc0_crate_reports_feature_gate_truthfully() {
     };
 
     let err = engine
-        .execute_csv_transform(&agreement, b"id,email\n1,a@example.com\n", &manifest, None, None)
+        .execute_csv_transform(
+            &agreement,
+            b"id,email\n1,a@example.com\n",
+            &manifest,
+            None,
+            None,
+        )
         .await
         .unwrap_err();
 

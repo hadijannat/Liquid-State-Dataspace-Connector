@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use lsdc_common::crypto::{
     AttestationDocument, AttestationEvidence, AttestationResult, ExecutionEvidenceBundle,
     KeyErasureEvidence, PriceDecision, PricingAuditContext, ProofBundle, ProvenanceReceipt,
-    ShapleyValue, Sha256Hash, TeardownEvidence,
+    Sha256Hash, ShapleyValue, TeardownEvidence,
 };
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::execution::{ProofBackend, TeeBackend, TransportBackend, TransportSelector};
@@ -11,14 +11,10 @@ use lsdc_common::execution_overlay::{
     TransparencyReceipt,
 };
 use lsdc_common::liquid::CsvTransformManifest;
-use lsdc_common::profile::{
-    ClauseRealization, NormalizedPolicy, RuntimeCapabilities,
-};
+use lsdc_common::profile::{ClauseRealization, NormalizedPolicy, RuntimeCapabilities};
 use lsdc_common::runtime_model::EvidenceDag;
 use lsdc_common::Result;
-use lsdc_evidence::{
-    ChainVerification, DevDeletionEvidence, ReceiptEnvelopeV1, VerifiedClaims,
-};
+use lsdc_evidence::{ChainVerification, DevDeletionEvidence, ReceiptEnvelopeV1, VerifiedClaims};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

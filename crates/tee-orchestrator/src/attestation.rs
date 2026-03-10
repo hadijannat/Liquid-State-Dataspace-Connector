@@ -16,6 +16,17 @@ pub(crate) struct AttestationBinding<'a> {
     pub user_data_hash: Option<&'a Sha256Hash>,
 }
 
+struct AttestationPayload<'a> {
+    enclave_id: &'a str,
+    platform: &'a str,
+    binary_hash: &'a Sha256Hash,
+    measurements: &'a AttestationMeasurements,
+    nonce: Option<&'a str>,
+    public_key: Option<&'a [u8]>,
+    user_data_hash: Option<&'a Sha256Hash>,
+    timestamp: chrono::DateTime<chrono::Utc>,
+}
+
 pub(crate) fn build_attestation_document(
     enclave_id: &str,
     binary_hash: &Sha256Hash,
@@ -54,16 +65,16 @@ pub(crate) fn build_attestation_document_with_binding(
         ]),
         debug: false,
     };
-    let payload = attestation_payload_bytes(
+    let payload = attestation_payload_bytes(&AttestationPayload {
         enclave_id,
-        NITRO_PLATFORM_DEV,
+        platform: NITRO_PLATFORM_DEV,
         binary_hash,
-        &measurements,
-        binding.as_ref().map(|binding| binding.challenge_nonce_hex),
-        binding.as_ref().and_then(|binding| binding.public_key),
-        binding.as_ref().and_then(|binding| binding.user_data_hash),
+        measurements: &measurements,
+        nonce: binding.as_ref().map(|binding| binding.challenge_nonce_hex),
+        public_key: binding.as_ref().and_then(|binding| binding.public_key),
+        user_data_hash: binding.as_ref().and_then(|binding| binding.user_data_hash),
         timestamp,
-    )?;
+    })?;
     let document_hash = Sha256Hash::digest_bytes(&payload);
     let signature_hex = sign_bytes(&attestation_secret(), &payload);
 
@@ -88,16 +99,16 @@ pub fn verify_attestation(doc: &AttestationDocument) -> Result<bool> {
         return Ok(false);
     }
 
-    let payload = attestation_payload_bytes(
-        &doc.enclave_id,
-        &doc.platform,
-        &doc.binary_hash,
-        &doc.measurements,
-        doc.nonce.as_deref(),
-        doc.public_key.as_deref(),
-        doc.user_data_hash.as_ref(),
-        doc.timestamp,
-    )?;
+    let payload = attestation_payload_bytes(&AttestationPayload {
+        enclave_id: &doc.enclave_id,
+        platform: &doc.platform,
+        binary_hash: &doc.binary_hash,
+        measurements: &doc.measurements,
+        nonce: doc.nonce.as_deref(),
+        public_key: doc.public_key.as_deref(),
+        user_data_hash: doc.user_data_hash.as_ref(),
+        timestamp: doc.timestamp,
+    })?;
 
     Ok(doc.raw_attestation_document == payload
         && doc.document_hash == Sha256Hash::digest_bytes(&payload)
@@ -111,25 +122,16 @@ pub(crate) fn attestation_secret() -> String {
         .unwrap_or_else(|_| DEFAULT_ATTESTATION_SECRET.to_string())
 }
 
-fn attestation_payload_bytes(
-    enclave_id: &str,
-    platform: &str,
-    binary_hash: &Sha256Hash,
-    measurements: &AttestationMeasurements,
-    nonce: Option<&str>,
-    public_key: Option<&[u8]>,
-    user_data_hash: Option<&Sha256Hash>,
-    timestamp: chrono::DateTime<chrono::Utc>,
-) -> Result<Vec<u8>> {
+fn attestation_payload_bytes(payload: &AttestationPayload<'_>) -> Result<Vec<u8>> {
     serde_json::to_vec(&serde_json::json!({
-        "enclave_id": enclave_id,
-        "platform": platform,
-        "binary_hash": binary_hash.to_hex(),
-        "measurements": measurements,
-        "nonce": nonce,
-        "public_key": public_key.map(hex::encode),
-        "user_data_hash": user_data_hash.map(Sha256Hash::to_hex),
-        "timestamp": timestamp.to_rfc3339(),
+        "enclave_id": payload.enclave_id,
+        "platform": payload.platform,
+        "binary_hash": payload.binary_hash.to_hex(),
+        "measurements": payload.measurements,
+        "nonce": payload.nonce,
+        "public_key": payload.public_key.map(hex::encode),
+        "user_data_hash": payload.user_data_hash.map(Sha256Hash::to_hex),
+        "timestamp": payload.timestamp.to_rfc3339(),
     }))
     .map_err(LsdcError::from)
 }
@@ -155,11 +157,24 @@ impl AttestationVerifier for LocalAttestationVerifier {
             .map(|challenge| challenge.expires_at >= chrono::Utc::now())
             .unwrap_or(true);
         let nonce_matches = challenge
+            .map(|challenge| doc.nonce.as_deref() == Some(challenge.challenge_nonce_hex.as_str()))
+            .unwrap_or(true);
+        let public_key_matches = challenge
             .map(|challenge| {
-                doc.nonce.as_deref() == Some(challenge.challenge_nonce_hex.as_str())
+                challenge.requester_ephemeral_pubkey.is_empty()
+                    || doc.public_key.as_deref()
+                        == Some(challenge.requester_ephemeral_pubkey.as_slice())
             })
             .unwrap_or(true);
-        let appraisal = if document_valid && freshness_ok && nonce_matches {
+        let user_data_matches = challenge
+            .map(|challenge| doc.user_data_hash.as_ref() == Some(&challenge.resolved_selector_hash))
+            .unwrap_or(true);
+        let appraisal = if document_valid
+            && freshness_ok
+            && nonce_matches
+            && public_key_matches
+            && user_data_matches
+        {
             AppraisalStatus::Accepted
         } else {
             AppraisalStatus::Rejected
@@ -189,6 +204,26 @@ impl AttestationVerifier for LocalAttestationVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lsdc_common::execution_overlay::{
+        ExecutionSession, ExecutionSessionChallenge, ExecutionSessionState,
+    };
+
+    fn sample_challenge(timestamp: chrono::DateTime<chrono::Utc>) -> ExecutionSessionChallenge {
+        let session = ExecutionSession {
+            session_id: uuid::Uuid::new_v4(),
+            agreement_id: "agreement-1".into(),
+            agreement_commitment_hash: Sha256Hash::digest_bytes(b"agreement"),
+            capability_descriptor_hash: Sha256Hash::digest_bytes(b"capability"),
+            evidence_requirements_hash: Sha256Hash::digest_bytes(b"requirements"),
+            resolved_selector_hash: Some(Sha256Hash::digest_bytes(b"selector")),
+            requester_ephemeral_pubkey: vec![1, 2, 3, 4],
+            state: ExecutionSessionState::Challenged,
+            created_at: timestamp,
+            expires_at: Some(timestamp + chrono::Duration::minutes(5)),
+        };
+
+        ExecutionSessionChallenge::issue(&session, Sha256Hash::digest_bytes(b"selector"), timestamp)
+    }
 
     #[test]
     fn test_build_and_verify_attestation() {
@@ -200,5 +235,78 @@ mod tests {
         .unwrap();
 
         assert!(verify_attestation(&doc).unwrap());
+    }
+
+    #[test]
+    fn test_build_and_appraise_attestation_with_binding() {
+        let timestamp = chrono::Utc::now();
+        let challenge = sample_challenge(timestamp);
+        let doc = build_attestation_document_with_binding(
+            "enclave-1",
+            &Sha256Hash::digest_bytes(b"binary"),
+            timestamp,
+            Some(AttestationBinding {
+                challenge_nonce_hex: &challenge.challenge_nonce_hex,
+                public_key: Some(challenge.requester_ephemeral_pubkey.as_slice()),
+                user_data_hash: Some(&challenge.resolved_selector_hash),
+            }),
+        )
+        .unwrap();
+
+        assert!(verify_attestation(&doc).unwrap());
+        assert_eq!(
+            doc.nonce.as_deref(),
+            Some(challenge.challenge_nonce_hex.as_str())
+        );
+        assert_eq!(
+            doc.public_key.as_deref(),
+            Some(challenge.requester_ephemeral_pubkey.as_slice())
+        );
+        assert_eq!(
+            doc.user_data_hash.as_ref(),
+            Some(&challenge.resolved_selector_hash)
+        );
+
+        let result = LocalAttestationVerifier::new()
+            .appraise_attestation_evidence(
+                &AttestationEvidence {
+                    evidence_profile: "nitro-dev-attestation-evidence-v1".into(),
+                    document: doc,
+                },
+                Some(&challenge),
+            )
+            .unwrap();
+
+        assert_eq!(result.appraisal, AppraisalStatus::Accepted);
+    }
+
+    #[test]
+    fn test_appraisal_rejects_attestation_binding_mismatch() {
+        let timestamp = chrono::Utc::now();
+        let challenge = sample_challenge(timestamp);
+        let wrong_selector_hash = Sha256Hash::digest_bytes(b"wrong-selector");
+        let doc = build_attestation_document_with_binding(
+            "enclave-1",
+            &Sha256Hash::digest_bytes(b"binary"),
+            timestamp,
+            Some(AttestationBinding {
+                challenge_nonce_hex: &challenge.challenge_nonce_hex,
+                public_key: Some(&[9, 9, 9, 9]),
+                user_data_hash: Some(&wrong_selector_hash),
+            }),
+        )
+        .unwrap();
+
+        let result = LocalAttestationVerifier::new()
+            .appraise_attestation_evidence(
+                &AttestationEvidence {
+                    evidence_profile: "nitro-dev-attestation-evidence-v1".into(),
+                    document: doc,
+                },
+                Some(&challenge),
+            )
+            .unwrap();
+
+        assert_eq!(result.appraisal, AppraisalStatus::Rejected);
     }
 }

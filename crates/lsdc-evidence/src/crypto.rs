@@ -1,5 +1,5 @@
-use hmac::{Hmac, Mac};
 use crate::canonical::{AttestedTeardownEvidence, DevDeletionEvidence};
+use hmac::{Hmac, Mac};
 use lsdc_policy::{PricingMode, ProofBackend};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};

@@ -46,9 +46,16 @@ pub struct CapabilityGraph {
 }
 
 impl CapabilityGraph {
-    pub fn new(nodes: Vec<CapabilityNode>, edges: Vec<CapabilityEdge>) -> Result<Self, serde_json::Error> {
+    pub fn new(
+        nodes: Vec<CapabilityNode>,
+        edges: Vec<CapabilityEdge>,
+    ) -> Result<Self, serde_json::Error> {
         let root_hash = graph_root_hash(&nodes, &edges)?;
-        Ok(Self { nodes, edges, root_hash })
+        Ok(Self {
+            nodes,
+            edges,
+            root_hash,
+        })
     }
 }
 
@@ -76,9 +83,16 @@ pub struct EvidenceDag {
 }
 
 impl EvidenceDag {
-    pub fn new(nodes: Vec<EvidenceNode>, edges: Vec<EvidenceEdge>) -> Result<Self, serde_json::Error> {
+    pub fn new(
+        nodes: Vec<EvidenceNode>,
+        edges: Vec<EvidenceEdge>,
+    ) -> Result<Self, serde_json::Error> {
         let root_hash = graph_root_hash(&nodes, &edges)?;
-        Ok(Self { nodes, edges, root_hash })
+        Ok(Self {
+            nodes,
+            edges,
+            root_hash,
+        })
     }
 }
 
