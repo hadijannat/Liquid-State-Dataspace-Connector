@@ -83,20 +83,21 @@ That layering is implemented as an additive change: the new `/lsdc/v1/*` overlay
 - Proof plane:
   - default `DevReceiptProofEngine`
   - shared CSV transform kernel
-  - `proof-plane-core` defines canonical receipt and chain-verification types
+  - `proof-plane-core` defines canonical receipt plus chain- and DAG-verification helpers
   - `proof-plane-dev` re-exports the dev receipt engine
   - `proof-plane-risc0` is present in the workspace but the real backend is enabled only with the `risc0` feature and the external guest toolchain
   - session-bound receipts now carry agreement and challenge commitments
-  - receipt DAG composition is modeled truthfully in the local stack without claiming recursive zk proving
-  - recursive proving remains explicitly unsupported for the `RISC Zero` backend in the default workspace
+  - the default local stack still uses the dev receipt backend, but the `risc0` feature now enables versioned recursive transform chaining and receipt-composition proofs for the `RISC Zero` backend while preserving verification of legacy `risc0.csv_transform.v1` receipts
+  - recursive verification is DAG-native on `/lsdc/v1/evidence/verify` while the legacy chain endpoint remains a strictly linear compatibility path
 - TEE plane:
   - deterministic `nitro-dev`
   - pinned-measurement `nitro-live` validation with shared fixture coverage
   - submitted `AttestationEvidence` is appraised server-side into `AttestationResult`
   - verifier-produced `AttestationResult` is the canonical execution appraisal object
   - challenge nonce and resolved transport guard bindings are part of the execution-session model
-  - `TeardownEvidence` truthfully defaults to `DevDeletionEvidence`; `KeyErasureEvidence` is modeled for future broker-backed paths
-  - `nitro-live` remains a truthful local-first measurement-validation path, not a full provider-PKI or KMS-backed attested key-release flow
+  - the live Nitro path now wires an AWS-backed attestation verifier plus AWS KMS key broker when `tee_backend = nitro_live`
+  - `TeardownEvidence` still defaults to `DevDeletionEvidence` outside the live Nitro path, but the live KMS-attested execution flow can emit `KeyErasureEvidence`
+  - the current live path is still not a complete end-to-end confidential dataflow because plaintext transform inputs remain in the runtime path
 - Transparency plane:
   - a local append-only Merkle log registers execution statement hashes and returns inclusion receipts
   - settlement and verification can anchor to the resulting transparency receipts
@@ -116,13 +117,10 @@ That layering is implemented as an additive change: the new `/lsdc/v1/*` overlay
 
 The branch still does **not** claim:
 
-- AWS certificate-chain validation for Nitro attestation
-- AWS KMS-backed key release
-- recursive `RISC Zero` proving in the default workspace
 - hardware-rooted deletion proof
 - autonomous pricing or ledger mutation
 
-Those capabilities may appear in descriptors or policy clauses, but they must remain surfaced as unsupported or metadata-only until real implementations exist.
+The branch also does not claim that those feature-gated implementations are active in the default local workspace. Recursive `RISC Zero` proving still requires the `risc0` feature plus the external guest toolchain, and the live Nitro AWS verifier/KMS path still requires explicit production configuration.
 
 ## Shared Fixtures
 
@@ -141,7 +139,7 @@ The repo now keeps reusable workload artifacts in `fixtures/`:
 - Python oracle: `python -m pytest python/pricing-oracle/tests`
 - Local reference stack: `./scripts/run-phase3-demo.sh`
 - Linux XDP: `cargo xtask build-ebpf` and `cargo test -p liquid-agent --test linux_agent_tests -- --ignored` on a privileged Linux runner
-- `RISC Zero`: `cargo test -p proof-plane-risc0 --features risc0` or `cargo test -p control-plane-api --features risc0 --test risc0_http_tests`
+- `RISC Zero`: install the guest toolchain first with `rzup install rust`, then run `cargo test -p proof-plane-host --features risc0` or `cargo test -p control-plane-api --features risc0 --test risc0_http_tests`
 
 For the current delivery sequence, use [roadmap.md](roadmap.md).
 

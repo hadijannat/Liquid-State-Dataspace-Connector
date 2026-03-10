@@ -23,6 +23,7 @@ members = [
     "crates/proof-plane/core",
     "crates/proof-plane/dev",
     "crates/proof-plane/host",
+    "crates/proof-plane/risc0-model",
     "crates/proof-plane/risc0",
     "crates/proof-plane/transform-kernel",
     "crates/tee-orchestrator",
@@ -49,6 +50,7 @@ default-members = [
     "crates/proof-plane/core",
     "crates/proof-plane/dev",
     "crates/proof-plane/host",
+    "crates/proof-plane/risc0-model",
     "crates/tee-orchestrator",
 ]
 

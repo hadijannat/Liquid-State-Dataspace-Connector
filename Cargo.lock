@@ -3840,8 +3840,11 @@ dependencies = [
 name = "proof-plane-core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "lsdc-common",
  "lsdc-evidence",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3860,6 +3863,8 @@ dependencies = [
  "chrono",
  "lsdc-common",
  "lsdc-ports",
+ "proof-plane-core",
+ "proof-plane-risc0-model",
  "proof-transform-kernel",
  "risc0-build",
  "risc0-zkvm",
@@ -3880,6 +3885,14 @@ dependencies = [
  "proof-plane-host",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "proof-plane-risc0-model"
+version = "0.1.0"
+dependencies = [
+ "lsdc-common",
+ "serde",
 ]
 
 [[package]]

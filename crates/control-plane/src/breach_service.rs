@@ -1,5 +1,5 @@
 use lsdc_common::crypto::{
-    canonical_json_bytes, AppraisalStatus, ProofBundle, SanctionProposal, Sha256Hash,
+    attestation_result_binding_hash, AppraisalStatus, ProofBundle, SanctionProposal,
     TeardownEvidence,
 };
 use lsdc_common::dsp::ContractAgreement;
@@ -23,14 +23,8 @@ pub fn assess_evidence(
             let attestation_result_hash = proof_bundle
                 .attestation_result
                 .as_ref()
-                .map(|result| {
-                    let payload = serde_json::to_value(result)
-                        .and_then(|value| canonical_json_bytes(&value))
-                        .map_err(lsdc_common::error::LsdcError::from)?;
-                    Ok::<Sha256Hash, lsdc_common::error::LsdcError>(Sha256Hash::digest_bytes(
-                        &payload,
-                    ))
-                })
+                .map(attestation_result_binding_hash)
+                .map(|result| result.map_err(lsdc_common::error::LsdcError::from))
                 .transpose()?;
             proof_bundle.attestation.platform == "aws-nitro-live"
                 && proof_bundle
@@ -67,7 +61,7 @@ mod tests {
     use super::*;
     use lsdc_common::crypto::{
         AttestationDocument, AttestationMeasurements, AttestationResult, EvidenceClass,
-        ExecutionEvidenceBundle, ProofOfForgetting, ProvenanceReceipt,
+        ExecutionEvidenceBundle, ProofOfForgetting, ProvenanceReceipt, Sha256Hash,
     };
     use lsdc_common::dsp::EvidenceRequirement;
     use lsdc_common::liquid::{LiquidPolicyIr, RuntimeGuard, TransformGuard, TransportGuard};
@@ -144,9 +138,7 @@ mod tests {
             freshness_ok: true,
             appraisal: AppraisalStatus::Accepted,
         };
-        let attestation_result_hash = Sha256Hash::digest_bytes(
-            &canonical_json_bytes(&serde_json::to_value(&attestation_result).unwrap()).unwrap(),
-        );
+        let attestation_result_hash = attestation_result_binding_hash(&attestation_result).unwrap();
         let teardown_evidence = include_teardown.then(|| {
             let mut evidence = build_key_erasure_evidence(
                 "session-1",

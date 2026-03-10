@@ -4,8 +4,10 @@ use axum::extract::State;
 use axum::Json;
 use lsdc_common::crypto::ProvenanceReceipt;
 use lsdc_common::execution::ProofBackend;
+#[cfg(feature = "risc0")]
+use lsdc_ports::ProofEngine;
 use lsdc_service_types::{EvidenceVerificationRequest, EvidenceVerificationResult};
-use proof_plane_core::verify_receipt_links;
+use proof_plane_core::verify_provenance_receipt_chain;
 #[cfg(feature = "risc0")]
 use proof_plane_host::Risc0ProofEngine;
 
@@ -14,13 +16,7 @@ pub async fn verify_evidence_chain(
     Json(request): Json<EvidenceVerificationRequest>,
 ) -> ApiResult<Json<EvidenceVerificationResult>> {
     let verified_backends = dedup_backends(&request.receipts);
-    let linkage = verify_receipt_links(
-        &request
-            .receipts
-            .iter()
-            .map(proof_plane_core::ReceiptEnvelopeV1::from)
-            .collect::<Vec<_>>(),
-    );
+    let linkage = verify_provenance_receipt_chain(&request.receipts);
     let valid = if request.receipts.is_empty() || !linkage.valid {
         false
     } else {

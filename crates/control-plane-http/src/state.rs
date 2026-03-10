@@ -4,8 +4,8 @@ use control_plane::orchestrator::Orchestrator;
 use control_plane_store::Store;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use lsdc_common::crypto::{
-    canonical_json_bytes, AppraisalStatus, AttestationEvidence, PriceDecision, ProvenanceReceipt,
-    Sha256Hash,
+    attestation_result_binding_hash, canonical_json_bytes, AppraisalStatus, AttestationEvidence,
+    PriceDecision, ProvenanceReceipt, Sha256Hash,
 };
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::execution::{
@@ -33,6 +33,7 @@ use lsdc_service_types::{
     ExecutionOverlaySummary, IssueExecutionChallengeRequest, IssueExecutionChallengeResponse,
     SubmitAttestationEvidenceResponse,
 };
+use proof_plane_core::verify_provenance_receipt_dag;
 #[cfg(feature = "risc0")]
 use proof_plane_host::Risc0ProofEngine;
 use receipt_log::LocalTransparencyLog;
@@ -197,6 +198,8 @@ impl ApiState {
         &self,
     ) -> std::collections::BTreeMap<String, CapabilitySupportLevel> {
         use CapabilitySupportLevel::{Experimental, Implemented, ModeledOnly, Unsupported};
+        let risc0_recursive_supported =
+            cfg!(feature = "risc0") && self.proof_engine.proof_backend() == ProofBackend::RiscZero;
 
         std::collections::BTreeMap::from([
             (
@@ -235,13 +238,20 @@ impl ApiState {
             ),
             (
                 "proof.risc0_single_hop".into(),
-                if self.proof_engine.proof_backend() == ProofBackend::RiscZero {
-                    Experimental
+                if risc0_recursive_supported {
+                    Implemented
                 } else {
                     Unsupported
                 },
             ),
-            ("proof.risc0_recursive".into(), Unsupported),
+            (
+                "proof.risc0_recursive".into(),
+                if risc0_recursive_supported {
+                    Implemented
+                } else {
+                    Unsupported
+                },
+            ),
             ("transparency.local_merkle".into(), Implemented),
             (
                 "teardown.dev_deletion".into(),
@@ -271,7 +281,8 @@ impl ApiState {
             transparency_registration_mode: TransparencyMode::Required,
             proof_composition_mode: match self.proof_engine.proof_backend() {
                 ProofBackend::DevReceipt => ProofCompositionMode::Dag,
-                ProofBackend::RiscZero | ProofBackend::None => ProofCompositionMode::None,
+                ProofBackend::RiscZero => ProofCompositionMode::Recursive,
+                ProofBackend::None => ProofCompositionMode::None,
             },
         }
     }
@@ -291,7 +302,7 @@ impl ApiState {
                 .into(),
                 proof_profile: match self.proof_engine.proof_backend() {
                     ProofBackend::DevReceipt => "dev-receipt-dag-v1",
-                    ProofBackend::RiscZero => "risc0-single-hop-v1",
+                    ProofBackend::RiscZero => "risc0-recursive-dag-v1",
                     ProofBackend::None => "none",
                 }
                 .into(),
@@ -517,13 +528,8 @@ impl ApiState {
             )
             .map_err(lsdc_common::error::LsdcError::from)?,
         );
-        let attestation_result_hash = Sha256Hash::digest_bytes(
-            &canonical_json_bytes(
-                &serde_json::to_value(&attestation_result)
-                    .map_err(lsdc_common::error::LsdcError::from)?,
-            )
-            .map_err(lsdc_common::error::LsdcError::from)?,
-        );
+        let attestation_result_hash = attestation_result_binding_hash(&attestation_result)
+            .map_err(lsdc_common::error::LsdcError::from)?;
         session.state = ExecutionSessionState::AttestationVerified;
         challenge.consumed_at = Some(now);
         self.store.save_attestation_evidence_and_result(
@@ -561,6 +567,12 @@ impl ApiState {
     }
 
     pub async fn verify_evidence_dag(&self, dag: &EvidenceDag) -> lsdc_common::error::Result<bool> {
+        let verification =
+            verify_provenance_receipt_dag(dag).map_err(lsdc_common::error::LsdcError::from)?;
+        if !verification.valid {
+            return Ok(false);
+        }
+
         for node in &dag.nodes {
             if node.kind != ExecutionStatementKind::ProofReceiptRegistered {
                 continue;
