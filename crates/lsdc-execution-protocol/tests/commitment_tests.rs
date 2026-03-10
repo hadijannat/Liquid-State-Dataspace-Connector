@@ -1,30 +1,45 @@
 use lsdc_execution_protocol::{
-    clause_set_hash, ExecutionCapabilityDescriptor, ExecutionOverlayCommitment,
-    SelectorSemantics, TruthfulnessMode, LOCAL_TRANSPARENCY_PROFILE,
+    AdvertisedProfiles, CapabilitySupportLevel, ExecutionCapabilityDescriptor,
+    ExecutionEvidenceRequirements, ExecutionOverlayCommitment, ProofCompositionMode,
+    TransparencyMode, TruthfulnessMode, LOCAL_TRANSPARENCY_PROFILE,
     LSDC_EXECUTION_PROTOCOL_VERSION,
 };
 use lsdc_evidence::Sha256Hash;
+use std::collections::BTreeMap;
 
 fn sample_descriptor() -> ExecutionCapabilityDescriptor {
-    let supported_clause_ids = vec![
-        "maxEgressBytes".to_string(),
-        "proofKind".to_string(),
-        "teeImageSha384".to_string(),
-    ];
-
     ExecutionCapabilityDescriptor {
-        protocol_version: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
-        attestation_profile: "nitro-dev-attestation-result-v1".into(),
-        proof_profile: "dev-receipt-dag-v1".into(),
-        transparency_profile: LOCAL_TRANSPARENCY_PROFILE.into(),
-        key_release_profile: "session-bound-local-key-erasure-v1".into(),
-        selector_semantics: SelectorSemantics {
-            protocol_bound: true,
-            session_port_bound: true,
-            selector_hash_binding_required: true,
+        overlay_version: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
+        truthfulness_default: TruthfulnessMode::Permissive,
+        advertised_profiles: AdvertisedProfiles {
+            attestation_profile: "nitro-dev-attestation-result-v1".into(),
+            proof_profile: "dev-receipt-dag-v1".into(),
+            transparency_profile: LOCAL_TRANSPARENCY_PROFILE.into(),
+            teardown_profile: "dev-deletion-v1".into(),
         },
-        required_clause_set_hash: clause_set_hash(&supported_clause_ids).unwrap(),
-        supported_clause_ids,
+        support: BTreeMap::from([
+            (
+                "attestation.nitro_dev".into(),
+                CapabilitySupportLevel::Implemented,
+            ),
+            (
+                "proof.dev_receipt_dag".into(),
+                CapabilitySupportLevel::Implemented,
+            ),
+            (
+                "teardown.dev_deletion".into(),
+                CapabilitySupportLevel::Experimental,
+            ),
+        ]),
+    }
+}
+
+fn sample_evidence_requirements() -> ExecutionEvidenceRequirements {
+    ExecutionEvidenceRequirements {
+        challenge_nonce_required: true,
+        selector_hash_binding_required: true,
+        transparency_registration_mode: TransparencyMode::Required,
+        proof_composition_mode: ProofCompositionMode::Dag,
     }
 }
 
@@ -40,20 +55,22 @@ fn capability_descriptor_hash_is_stable() {
 fn overlay_commitment_hash_changes_when_truthfulness_changes() {
     let descriptor = sample_descriptor();
     let policy_hash = Sha256Hash::digest_bytes(b"policy");
-    let evidence_hash = Sha256Hash::digest_bytes(b"evidence");
+    let evidence_requirements = sample_evidence_requirements();
 
     let permissive = ExecutionOverlayCommitment::build(
+        "agreement-1",
         TruthfulnessMode::Permissive,
         policy_hash.clone(),
         descriptor.clone(),
-        evidence_hash.clone(),
+        evidence_requirements.clone(),
     )
     .expect("commitment");
     let strict = ExecutionOverlayCommitment::build(
+        "agreement-1",
         TruthfulnessMode::Strict,
         policy_hash,
         descriptor,
-        evidence_hash,
+        evidence_requirements,
     )
     .expect("commitment");
 

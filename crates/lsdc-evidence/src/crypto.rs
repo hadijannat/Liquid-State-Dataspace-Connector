@@ -1,4 +1,5 @@
 use hmac::{Hmac, Mac};
+use crate::canonical::{AttestedTeardownEvidence, DevDeletionEvidence};
 use lsdc_policy::{PricingMode, ProofBackend};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -181,6 +182,12 @@ pub struct AttestationResult {
     pub appraisal: AppraisalStatus,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttestationEvidence {
+    pub evidence_profile: String,
+    pub document: AttestationDocument,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ErasureMode {
@@ -207,6 +214,14 @@ pub struct KeyErasureEvidence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "evidence")]
+pub enum TeardownEvidence {
+    DevDeletion(DevDeletionEvidence),
+    KeyErasure(KeyErasureEvidence),
+    AttestedTeardown(AttestedTeardownEvidence),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofOfForgetting {
     pub attestation: AttestationDocument,
     pub destruction_timestamp: chrono::DateTime<chrono::Utc>,
@@ -228,6 +243,8 @@ pub struct ProofBundle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation_result: Option<AttestationResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teardown_evidence: Option<TeardownEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_erasure_evidence: Option<KeyErasureEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence_root_hash: Option<Sha256Hash>,
@@ -238,10 +255,12 @@ pub struct ProofBundle {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionEvidenceBundle {
+    pub attestation_evidence: AttestationEvidence,
     pub provenance_receipt: ProvenanceReceipt,
-    pub attestation_document: AttestationDocument,
-    pub attestation_result: AttestationResult,
-    pub key_erasure_evidence: KeyErasureEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_result: Option<AttestationResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teardown_evidence: Option<TeardownEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transparency_receipt_hash: Option<Sha256Hash>,
     pub evidence_root_hash: Sha256Hash,
@@ -250,12 +269,40 @@ pub struct ExecutionEvidenceBundle {
 
 impl ExecutionEvidenceBundle {
     pub fn into_legacy_proof_bundle(self) -> ProofBundle {
+        let legacy_deletion_evidence = match self.teardown_evidence.clone() {
+            Some(TeardownEvidence::DevDeletion(evidence)) => evidence,
+            Some(TeardownEvidence::KeyErasure(evidence)) => DevDeletionEvidence {
+                attestation: self.attestation_evidence.document.clone(),
+                destruction_timestamp: evidence.teardown_timestamp,
+                data_hash: self.provenance_receipt.input_hash.clone(),
+                proof_hash: evidence.evidence_hash.clone(),
+                signature_hex: evidence.evidence_hash.to_hex(),
+            },
+            Some(TeardownEvidence::AttestedTeardown(evidence)) => DevDeletionEvidence {
+                attestation: evidence.attestation,
+                destruction_timestamp: evidence.teardown_timestamp,
+                data_hash: evidence.data_hash,
+                proof_hash: evidence.teardown_hash,
+                signature_hex: evidence.attestation_anchor.unwrap_or_default(),
+            },
+            None => DevDeletionEvidence {
+                attestation: self.attestation_evidence.document.clone(),
+                destruction_timestamp: chrono::Utc::now(),
+                data_hash: self.provenance_receipt.input_hash.clone(),
+                proof_hash: self.job_audit_hash.clone(),
+                signature_hex: self.job_audit_hash.to_hex(),
+            },
+        };
         let proof_of_forgetting = ProofOfForgetting {
-            attestation: self.attestation_document.clone(),
-            destruction_timestamp: self.key_erasure_evidence.teardown_timestamp,
-            data_hash: self.provenance_receipt.input_hash.clone(),
-            proof_hash: self.key_erasure_evidence.evidence_hash.clone(),
-            signature_hex: self.key_erasure_evidence.evidence_hash.to_hex(),
+            attestation: legacy_deletion_evidence.attestation.clone(),
+            destruction_timestamp: legacy_deletion_evidence.destruction_timestamp,
+            data_hash: legacy_deletion_evidence.data_hash.clone(),
+            proof_hash: legacy_deletion_evidence.proof_hash.clone(),
+            signature_hex: legacy_deletion_evidence.signature_hex.clone(),
+        };
+        let key_erasure_evidence = match self.teardown_evidence.clone() {
+            Some(TeardownEvidence::KeyErasure(evidence)) => Some(evidence),
+            _ => None,
         };
 
         ProofBundle {
@@ -265,10 +312,11 @@ impl ExecutionEvidenceBundle {
             prior_receipt_hash: self.provenance_receipt.prior_receipt_hash.clone(),
             raw_receipt_bytes: self.provenance_receipt.receipt_bytes.clone(),
             provenance_receipt: self.provenance_receipt,
-            attestation: self.attestation_document,
+            attestation: self.attestation_evidence.document,
             proof_of_forgetting,
-            attestation_result: Some(self.attestation_result),
-            key_erasure_evidence: Some(self.key_erasure_evidence),
+            attestation_result: self.attestation_result,
+            teardown_evidence: self.teardown_evidence,
+            key_erasure_evidence,
             evidence_root_hash: Some(self.evidence_root_hash),
             transparency_receipt_hash: self.transparency_receipt_hash,
             job_audit_hash: self.job_audit_hash,

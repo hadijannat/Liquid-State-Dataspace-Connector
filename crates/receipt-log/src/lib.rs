@@ -47,6 +47,7 @@ impl LocalTransparencyLog {
         let signed_at = Utc::now();
         let unsigned = serde_json::json!({
             "statement_id": statement.statement_id,
+            "receipt_profile": lsdc_execution_protocol::LOCAL_TRANSPARENCY_PROFILE,
             "log_id": self.log_id(),
             "statement_hash": statement_hash,
             "leaf_index": leaf_index,
@@ -60,6 +61,7 @@ impl LocalTransparencyLog {
 
         Ok(TransparencyReceipt {
             statement_id: statement.statement_id.clone(),
+            receipt_profile: lsdc_execution_protocol::LOCAL_TRANSPARENCY_PROFILE.into(),
             log_id: self.log_id().to_string(),
             statement_hash,
             leaf_index,
@@ -85,6 +87,7 @@ impl LocalTransparencyLog {
 
         let unsigned = serde_json::json!({
             "statement_id": receipt.statement_id,
+            "receipt_profile": receipt.receipt_profile,
             "log_id": receipt.log_id,
             "statement_hash": receipt.statement_hash,
             "leaf_index": receipt.leaf_index,

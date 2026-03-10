@@ -85,6 +85,33 @@ impl Store {
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS session_challenges (
+                    challenge_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    challenge_json TEXT NOT NULL,
+                    nonce_hash TEXT NOT NULL,
+                    resolved_selector_hash TEXT NOT NULL,
+                    requester_ephemeral_pubkey_hash TEXT,
+                    issued_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT,
+                    status TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS attestation_evidence (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS attestation_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS evidence_nodes (
                     job_id TEXT NOT NULL,
                     agreement_id TEXT NOT NULL,

@@ -1,6 +1,6 @@
 use crate::ser::{from_json, to_json};
 use crate::{sqlite_error, Store};
-use lsdc_common::crypto::AttestationResult;
+use lsdc_common::crypto::{AttestationEvidence, AttestationResult};
 use lsdc_common::error::Result;
 use lsdc_common::execution_overlay::{
     ExecutionSession, ExecutionSessionChallenge, ExecutionStatement, TransparencyReceipt,
@@ -103,24 +103,113 @@ impl Store {
                 params![session_id, to_json(session)?, to_json(challenge)?, now],
             )
             .map_err(sqlite_error)?;
+        self.lock()?
+            .execute(
+                "INSERT INTO session_challenges (
+                    challenge_id,
+                    session_id,
+                    challenge_json,
+                    nonce_hash,
+                    resolved_selector_hash,
+                    requester_ephemeral_pubkey_hash,
+                    issued_at,
+                    expires_at,
+                    consumed_at,
+                    status
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                ON CONFLICT(challenge_id) DO UPDATE SET
+                    challenge_json = excluded.challenge_json,
+                    nonce_hash = excluded.nonce_hash,
+                    resolved_selector_hash = excluded.resolved_selector_hash,
+                    requester_ephemeral_pubkey_hash = excluded.requester_ephemeral_pubkey_hash,
+                    issued_at = excluded.issued_at,
+                    expires_at = excluded.expires_at,
+                    consumed_at = excluded.consumed_at,
+                    status = excluded.status",
+                params![
+                    challenge.challenge_id.to_string(),
+                    session_id,
+                    to_json(challenge)?,
+                    challenge.challenge_nonce_hash.to_hex(),
+                    challenge.resolved_selector_hash.to_hex(),
+                    (!challenge.requester_ephemeral_pubkey.is_empty()).then(|| {
+                        lsdc_common::crypto::Sha256Hash::digest_bytes(
+                            challenge.requester_ephemeral_pubkey.as_slice(),
+                        )
+                        .to_hex()
+                    }),
+                    challenge.issued_at.to_rfc3339(),
+                    challenge.expires_at.to_rfc3339(),
+                    challenge.consumed_at.map(|value| value.to_rfc3339()),
+                    if challenge.consumed_at.is_some() {
+                        "consumed"
+                    } else {
+                        "issued"
+                    },
+                ],
+            )
+            .map_err(sqlite_error)?;
         Ok(())
     }
 
-    pub fn save_attestation_result(
+    pub fn save_attestation_evidence_and_result(
         &self,
         session_id: &str,
         session: &ExecutionSession,
+        challenge: &ExecutionSessionChallenge,
+        attestation_evidence: &AttestationEvidence,
         attestation_result: &AttestationResult,
     ) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        self.lock()?
+        let connection = self.lock()?;
+        connection
             .execute(
                 "UPDATE execution_sessions
                  SET session_json = ?2,
-                     attestation_result_json = ?3,
-                     updated_at = ?4
+                     challenge_json = ?3,
+                     attestation_result_json = ?4,
+                     updated_at = ?5
                  WHERE session_id = ?1",
-                params![session_id, to_json(session)?, to_json(attestation_result)?, now],
+                params![
+                    session_id,
+                    to_json(session)?,
+                    to_json(challenge)?,
+                    to_json(attestation_result)?,
+                    now
+                ],
+            )
+            .map_err(sqlite_error)?;
+        connection
+            .execute(
+                "INSERT INTO attestation_evidence (session_id, evidence_json, created_at)
+                 VALUES (?1, ?2, ?3)",
+                params![session_id, to_json(attestation_evidence)?, now],
+            )
+            .map_err(sqlite_error)?;
+        connection
+            .execute(
+                "INSERT INTO attestation_results (session_id, result_json, created_at)
+                 VALUES (?1, ?2, ?3)",
+                params![session_id, to_json(attestation_result)?, now],
+            )
+            .map_err(sqlite_error)?;
+        connection
+            .execute(
+                "UPDATE session_challenges
+                 SET challenge_json = ?2,
+                     consumed_at = ?3,
+                     status = ?4
+                 WHERE challenge_id = ?1",
+                params![
+                    challenge.challenge_id.to_string(),
+                    to_json(challenge)?,
+                    challenge.consumed_at.map(|value| value.to_rfc3339()),
+                    if challenge.consumed_at.is_some() {
+                        "consumed"
+                    } else {
+                        "issued"
+                    }
+                ],
             )
             .map_err(sqlite_error)?;
         Ok(())
@@ -307,7 +396,7 @@ impl Store {
                     receipt_json = excluded.receipt_json",
                 params![
                     statement.statement_id,
-                    statement.subject_hash.to_hex(),
+                    statement.statement_hash.to_hex(),
                     receipt.root_hash.to_hex(),
                     to_json(receipt)?,
                     now

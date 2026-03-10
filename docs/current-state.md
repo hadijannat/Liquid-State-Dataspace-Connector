@@ -29,7 +29,7 @@ Internally, the repo now keeps five layers separate:
 - execution overlay: capability descriptors, overlay commitments, execution sessions, challenges, and truthfulness mode
 - execution planning: backend-neutral transport plans and execution-pipeline inputs
 - backend realization: XDP/simulated transport enforcement, dev/live TEE adapters, and proof backend adapters
-- evidence generation: attestation results, receipt DAG nodes, key-erasure evidence, transparency receipts, pricing evidence, and settlement inputs
+- evidence generation: attestation evidence, verifier-produced attestation results, receipt DAG nodes, teardown evidence, transparency receipts, pricing evidence, and settlement inputs
 
 That layering is implemented as an additive change: the new `/lsdc/v1/*` overlay routes exist alongside the previous HTTP surface, and older job and settlement responses remain available as compatibility views.
 
@@ -40,7 +40,7 @@ That layering is implemented as an additive change: the new `/lsdc/v1/*` overlay
   - `crates/lsdc-contracts`: DSP-facing agreement, transfer, lineage-job, and settlement DTOs
   - `crates/lsdc-evidence`: receipt envelopes, attestation DTOs, deletion evidence, pricing evidence, and evidence hashing
   - `crates/lsdc-execution-protocol`: execution capability descriptors, overlay commitments, sessions, challenges, statements, and transparency receipts
-  - `crates/lsdc-runtime-model`: `CapabilityGraph` and `EvidenceDag`
+  - `crates/lsdc-runtime-model`: `ExecutionSessionAggregate`, `CapabilityResolution`, `EvidenceDag`, and legacy projection builders
   - `crates/receipt-log`: local append-only transparency log and inclusion receipts
 - Compatibility facades:
   - `crates/lsdc-common` now re-exports the policy/contracts/evidence domains for one release while keeping `fixtures` and `identity`
@@ -71,7 +71,8 @@ That layering is implemented as an additive change: the new `/lsdc/v1/*` overlay
   - actions: `read`, `transfer`, `anonymize`
   - constraints: `count`, `purpose`, `validUntil`
   - duties: `transform-required`, `delete-after`
-  - overlay operands: `teeImageSha384`, `attestationFreshnessSeconds`, `proofKind`, `proofRecursionDepth`, `transparencyRegistrationRequired`, `keyReleaseProfile`, `maxEgressBytes`, `selectorHashBindingRequired`
+  - overlay operands: `teeImageSha384`, `attestationFreshnessSeconds`, `proofKind`, `keyReleaseProfile`, `maxEgressBytes`, `deletionMode`
+  - session-binding and transparency-registration requirements live in the execution overlay, not the ODRL profile
   - negotiated metadata only or strict-rejected depending on truthfulness mode: unsupported overlay clauses and `spatial`
 - Liquid data plane:
   - parameterized Aya/XDP enforcement for packet and byte caps
@@ -91,12 +92,13 @@ That layering is implemented as an additive change: the new `/lsdc/v1/*` overlay
 - TEE plane:
   - deterministic `nitro-dev`
   - pinned-measurement `nitro-live` validation with shared fixture coverage
+  - submitted `AttestationEvidence` is appraised server-side into `AttestationResult`
   - verifier-produced `AttestationResult` is the canonical execution appraisal object
-  - challenge nonce and selector bindings are part of the execution-session model
-  - local key-erasure evidence replaces any claim that the repo already has hardware-rooted deletion proof
+  - challenge nonce and resolved transport guard bindings are part of the execution-session model
+  - `TeardownEvidence` truthfully defaults to `DevDeletionEvidence`; `KeyErasureEvidence` is modeled for future broker-backed paths
   - `nitro-live` remains a truthful local-first measurement-validation path, not a full provider-PKI or KMS-backed attested key-release flow
 - Transparency plane:
-  - a local append-only Merkle log registers execution statements and returns inclusion receipts
+  - a local append-only Merkle log registers execution statement hashes and returns inclusion receipts
   - settlement and verification can anchor to the resulting transparency receipts
   - this is not presented as an external SCITT deployment or internet-facing transparency service
 - Pricing plane:

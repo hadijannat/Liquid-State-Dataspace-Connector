@@ -127,9 +127,12 @@ impl ProofEngine for DevReceiptProofEngine {
         let agreement_commitment_hash = execution_bindings
             .map(|bindings| bindings.overlay_commitment.agreement_commitment_hash.clone());
         let session_id = execution_bindings.map(|bindings| bindings.session.session_id.to_string());
-        let challenge_nonce_hash =
-            execution_bindings.map(|bindings| bindings.challenge.challenge_nonce_hash.clone());
-        let selector_hash = execution_bindings.map(|bindings| bindings.challenge.selector_hash.clone());
+        let challenge_nonce_hash = execution_bindings
+            .and_then(|bindings| bindings.challenge.as_ref())
+            .map(|challenge| challenge.challenge_nonce_hash.clone());
+        let selector_hash = execution_bindings
+            .and_then(|bindings| bindings.challenge.as_ref())
+            .map(|challenge| challenge.resolved_selector_hash.clone());
         let attestation_result_hash = execution_bindings
             .and_then(|bindings| bindings.attestation_result_hash.clone());
         let capability_commitment_hash = execution_bindings
@@ -405,7 +408,7 @@ impl ProofEngine for DevReceiptProofEngine {
 
     async fn verify_receipt_dag(&self, dag: &EvidenceDag) -> Result<bool> {
         for node in &dag.nodes {
-            if node.kind != ExecutionStatementKind::ProofReceipt {
+            if node.kind != ExecutionStatementKind::ProofReceiptRegistered {
                 continue;
             }
             let receipt: ProvenanceReceipt =

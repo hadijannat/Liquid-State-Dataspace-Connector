@@ -6,9 +6,10 @@ use axum::Json;
 use lsdc_common::crypto::Sha256Hash;
 use lsdc_service_types::{
     CreateExecutionSessionRequest, CreateExecutionSessionResponse, ExecutionCapabilitiesResponse,
-    IssueExecutionChallengeResponse, RegisterAttestationResultRequest,
-    RegisterAttestationResultResponse, RegisterEvidenceStatementRequest,
+    IssueExecutionChallengeRequest, IssueExecutionChallengeResponse,
+    RegisterEvidenceStatementRequest,
     RegisterEvidenceStatementResponse, VerifyEvidenceDagRequest, VerifyEvidenceDagResponse,
+    SubmitAttestationEvidenceRequest, SubmitAttestationEvidenceResponse,
 };
 
 pub async fn execution_capabilities(
@@ -30,18 +31,19 @@ pub async fn create_execution_session(
 pub async fn issue_execution_challenge(
     State(state): State<ApiState>,
     Path(session_id): Path<String>,
+    Json(request): Json<IssueExecutionChallengeRequest>,
 ) -> ApiResult<Json<IssueExecutionChallengeResponse>> {
     let response = state
-        .issue_execution_challenge(&session_id)
+        .issue_execution_challenge(&session_id, &request)
         .map_err(ApiError::bad_request)?;
     Ok(Json(response))
 }
 
-pub async fn register_attestation_result(
+pub async fn submit_attestation_evidence(
     State(state): State<ApiState>,
     Path(session_id): Path<String>,
-    Json(request): Json<RegisterAttestationResultRequest>,
-) -> ApiResult<Json<RegisterAttestationResultResponse>> {
+    Json(request): Json<SubmitAttestationEvidenceRequest>,
+) -> ApiResult<Json<SubmitAttestationEvidenceResponse>> {
     if request.session_id != session_id {
         return Err(ApiError::bad_request(
             lsdc_common::error::LsdcError::PolicyCompile(
@@ -50,14 +52,11 @@ pub async fn register_attestation_result(
         ));
     }
 
-    let (session, attestation_result_hash) = state
-        .register_attestation_result(&session_id, &request.attestation_result)
+    let response = state
+        .submit_attestation_evidence(&session_id, &request.attestation_evidence)
         .map_err(ApiError::bad_request)?;
 
-    Ok(Json(RegisterAttestationResultResponse {
-        session,
-        attestation_result_hash,
-    }))
+    Ok(Json(response))
 }
 
 pub async fn register_evidence_statement(

@@ -8,7 +8,7 @@ fn canonical_policy_json_is_stable_across_key_order() {
     let policy_a = serde_json::json!({
         "permission": [{
             "constraint": [
-                {"rightOperand": 2, "leftOperand": "proofRecursionDepth", "operator": "lteq"},
+                {"rightOperand": 300, "leftOperand": "attestationFreshnessSeconds", "operator": "lteq"},
                 {"rightOperand": 4096, "operator": "lteq", "leftOperand": "maxEgressBytes"}
             ],
             "action": "read"
@@ -20,7 +20,7 @@ fn canonical_policy_json_is_stable_across_key_order() {
         "permission": [{
             "action": "read",
             "constraint": [
-                {"operator": "lteq", "leftOperand": "proofRecursionDepth", "rightOperand": 2},
+                {"operator": "lteq", "leftOperand": "attestationFreshnessSeconds", "rightOperand": 300},
                 {"leftOperand": "maxEgressBytes", "rightOperand": 4096, "operator": "lteq"}
             ]
         }]
@@ -34,13 +34,13 @@ fn canonical_policy_json_is_stable_across_key_order() {
 }
 
 #[test]
-fn capability_solver_is_permissive_when_recursion_is_unavailable() {
+fn capability_solver_is_permissive_when_dev_teardown_is_unavailable() {
     let policy = serde_json::json!({
         "permission": [{
             "action": "read",
             "constraint": [
-                {"leftOperand": "proofRecursionDepth", "operator": "lteq", "rightOperand": 2},
-                {"leftOperand": "transparencyRegistrationRequired", "operator": "eq", "rightOperand": true}
+                {"leftOperand": "deletionMode", "operator": "eq", "rightOperand": "dev_deletion"},
+                {"leftOperand": "keyReleaseProfile", "operator": "eq", "rightOperand": "kms-attested"}
             ]
         }]
     });
@@ -56,13 +56,13 @@ fn capability_solver_is_permissive_when_recursion_is_unavailable() {
 
     let realizations = capabilities.clause_realizations(&normalized, &[]);
     assert_eq!(realizations.len(), 2);
-    assert_eq!(realizations[0].clause_id, "proofRecursionDepth");
+    assert_eq!(realizations[0].clause_id, "deletionMode");
     assert_eq!(realizations[0].status, PolicyClauseStatus::MetadataOnly);
     assert_eq!(
         realizations[0].reason_code.as_deref(),
-        Some("recursive_proof_unsupported")
+        Some("teardown_mode_unavailable")
     );
-    assert_eq!(realizations[1].status, PolicyClauseStatus::Executable);
+    assert_eq!(realizations[1].status, PolicyClauseStatus::MetadataOnly);
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn capability_solver_rejects_metadata_only_overlay_clauses_in_strict_mode() {
         "permission": [{
             "action": "read",
             "constraint": [
-                {"leftOperand": "proofRecursionDepth", "operator": "lteq", "rightOperand": 3},
+                {"leftOperand": "deletionMode", "operator": "eq", "rightOperand": "kms_erasure"},
                 {"leftOperand": "keyReleaseProfile", "operator": "eq", "rightOperand": "kms-attested"}
             ]
         }]
@@ -91,15 +91,15 @@ fn capability_solver_rejects_metadata_only_overlay_clauses_in_strict_mode() {
         &normalized,
         &[EvidenceRequirement::PriceApproval],
     );
-    let recursion = realizations
+    let deletion = realizations
         .iter()
-        .find(|item| item.clause_id == "proofRecursionDepth")
-        .expect("recursion clause");
+        .find(|item| item.clause_id == "deletionMode")
+        .expect("deletion clause");
     let key_release = realizations
         .iter()
         .find(|item| item.clause_id == "keyReleaseProfile")
         .expect("key release clause");
 
-    assert_eq!(recursion.status, PolicyClauseStatus::Rejected);
+    assert_eq!(deletion.status, PolicyClauseStatus::Rejected);
     assert_eq!(key_release.status, PolicyClauseStatus::Rejected);
 }

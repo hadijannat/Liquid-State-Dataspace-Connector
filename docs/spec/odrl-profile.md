@@ -2,9 +2,9 @@
 
 ## Goal
 
-The LSDC ODRL profile defines how DSP-carried ODRL policies are normalized into execution and evidence requirements for the LSDC execution overlay.
+The LSDC ODRL profile defines how DSP-carried ODRL policies are normalized into contractual and evidence semantics for the LSDC execution overlay.
 
-This profile is intentionally narrower than generic ODRL. It focuses on clauses that can be mapped to transport enforcement, session binding, attestation, proof generation, transparency logging, and teardown evidence.
+This profile is intentionally narrower than generic ODRL. It focuses on clauses that can be mapped to transport enforcement, attestation appraisal, proof generation, and teardown evidence. Session mechanics such as challenge issuance, resolved selector binding, and transparency registration mode belong to the overlay, not the policy language.
 
 ## Base Subset
 
@@ -24,11 +24,9 @@ The execution overlay extends the profile with these LSDC-specific operands:
 - `teeImageSha384`
 - `attestationFreshnessSeconds`
 - `proofKind`
-- `proofRecursionDepth`
-- `transparencyRegistrationRequired`
 - `keyReleaseProfile`
 - `maxEgressBytes`
-- `selectorHashBindingRequired`
+- `deletionMode`
 
 These operands are normalized even when the current runtime cannot fully enforce them, because they participate in overlay capability matching and truthfulness reporting.
 
@@ -63,21 +61,25 @@ This keeps the current compatibility classification while making the execution o
 The intended overlay-to-runtime mapping is:
 
 - `maxEgressBytes` -> transport byte-cap enforcement
-- `selectorHashBindingRequired` -> session challenge plus selector-hash binding
 - `teeImageSha384` -> attestation appraisal against measured image identity
 - `attestationFreshnessSeconds` -> challenge expiry and verifier freshness checks
 - `proofKind` -> proof backend selection and receipt format requirements
-- `proofRecursionDepth` -> receipt-DAG or recursive-composition support
-- `transparencyRegistrationRequired` -> statement registration in the transparency log
-- `keyReleaseProfile` -> attested key-release or key-erasure semantics
+- `keyReleaseProfile` -> modeled key-broker semantics until a real attested broker exists
+- `deletionMode` -> teardown evidence mode selection
+
+Overlay evidence requirements, not ODRL operands, carry:
+
+- challenge nonce requirements
+- resolved selector hash binding requirements
+- transparency registration mode
+- proof-composition mode
 
 ## Current Truthful Limits
 
 The branch should document these limits rather than hiding them:
 
-- `proofRecursionDepth` above single-hop is modeled truthfully even when only the dev receipt backend can realize DAG composition in the local stack
 - `keyReleaseProfile` is modeled before real AWS-backed key release exists
-- `transparencyRegistrationRequired` is satisfied by a local transparency log, not an external SCITT deployment
+- `deletionMode` is executable only for the truthful local `dev_deletion` path in the default build
 - `teeImageSha384` is represented through current attestation appraisal data, not a full provider PKI chain
 
 The profile exists to sharpen semantics, not to overstate implementation maturity.

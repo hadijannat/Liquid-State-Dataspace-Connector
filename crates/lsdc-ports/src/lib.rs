@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use lsdc_common::crypto::{
-    AttestationDocument, AttestationResult, ExecutionEvidenceBundle, KeyErasureEvidence,
-    PriceDecision, PricingAuditContext, ProofBundle, ProvenanceReceipt, ShapleyValue, Sha256Hash,
+    AttestationDocument, AttestationEvidence, AttestationResult, ExecutionEvidenceBundle,
+    KeyErasureEvidence, PriceDecision, PricingAuditContext, ProofBundle, ProvenanceReceipt,
+    ShapleyValue, Sha256Hash, TeardownEvidence,
 };
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::execution::{ProofBackend, TeeBackend, TransportBackend, TransportSelector};
@@ -134,7 +135,10 @@ pub struct ProofExecutionResult {
 pub struct ExecutionBindings {
     pub overlay_commitment: ExecutionOverlayCommitment,
     pub session: ExecutionSession,
-    pub challenge: ExecutionSessionChallenge,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub challenge: Option<ExecutionSessionChallenge>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_transport: Option<ResolvedTransportGuard>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation_result_hash: Option<Sha256Hash>,
 }
@@ -239,17 +243,21 @@ pub struct WorkloadRequest {
 pub struct WorkloadResult {
     pub output_bytes: Vec<u8>,
     pub attestation: Option<AttestationDocument>,
+    pub attestation_evidence: Option<AttestationEvidence>,
     pub attestation_result: Option<AttestationResult>,
     pub deletion_evidence: Option<DevDeletionEvidence>,
     pub key_erasure_evidence: Option<KeyErasureEvidence>,
+    pub teardown_evidence: Option<TeardownEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DestroyEvidence {
     pub attestation: Option<AttestationDocument>,
+    pub attestation_evidence: Option<AttestationEvidence>,
     pub attestation_result: Option<AttestationResult>,
     pub deletion_evidence: Option<DevDeletionEvidence>,
     pub key_erasure_evidence: Option<KeyErasureEvidence>,
+    pub teardown_evidence: Option<TeardownEvidence>,
 }
 
 #[async_trait]
@@ -280,9 +288,9 @@ pub trait CapabilitySolver: Send + Sync {
 }
 
 pub trait AttestationVerifier: Send + Sync {
-    fn verify_attestation(
+    fn appraise_attestation_evidence(
         &self,
-        document: &AttestationDocument,
+        evidence: &AttestationEvidence,
         challenge: Option<&ExecutionSessionChallenge>,
     ) -> Result<AttestationResult>;
 }

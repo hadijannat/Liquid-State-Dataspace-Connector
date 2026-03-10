@@ -70,9 +70,11 @@ impl ProofEngine for Risc0ProofEngine {
                 session_id: execution_bindings
                     .map(|bindings| bindings.session.session_id.to_string()),
                 challenge_nonce_hash: execution_bindings
-                    .map(|bindings| bindings.challenge.challenge_nonce_hash.clone()),
+                    .and_then(|bindings| bindings.challenge.as_ref())
+                    .map(|challenge| challenge.challenge_nonce_hash.clone()),
                 selector_hash: execution_bindings
-                    .map(|bindings| bindings.challenge.selector_hash.clone()),
+                    .and_then(|bindings| bindings.challenge.as_ref())
+                    .map(|challenge| challenge.resolved_selector_hash.clone()),
                 attestation_result_hash: execution_bindings
                     .and_then(|bindings| bindings.attestation_result_hash.clone()),
                 capability_commitment_hash: execution_bindings
@@ -186,7 +188,7 @@ impl ProofEngine for Risc0ProofEngine {
 
     async fn verify_receipt_dag(&self, dag: &EvidenceDag) -> Result<bool> {
         for node in &dag.nodes {
-            if node.kind != ExecutionStatementKind::ProofReceipt {
+            if node.kind != ExecutionStatementKind::ProofReceiptRegistered {
                 continue;
             }
             let receipt: ProvenanceReceipt =

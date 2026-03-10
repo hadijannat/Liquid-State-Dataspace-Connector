@@ -1,9 +1,10 @@
 use chrono::{Duration, Utc};
 use control_plane_store::Store;
 use lsdc_common::crypto::{
-    AppraisalStatus, AttestationDocument, AttestationMeasurements, AttestationResult,
-    MetricsWindow, PriceDecision, PricingAuditContext, ProofBundle, ProofOfForgetting,
-    ProvenanceReceipt, ReceiptKind, SanctionProposal, Sha256Hash, ShapleyValue,
+    AppraisalStatus, AttestationDocument, AttestationEvidence, AttestationMeasurements,
+    AttestationResult, MetricsWindow, PriceDecision, PricingAuditContext, ProofBundle,
+    ProofOfForgetting, ProvenanceReceipt, ReceiptKind, SanctionProposal, Sha256Hash,
+    ShapleyValue,
 };
 use lsdc_common::dsp::{ContractAgreement, EvidenceRequirement};
 use lsdc_common::execution::{
@@ -11,10 +12,11 @@ use lsdc_common::execution::{
     TransportBackend, TransportSelector,
 };
 use lsdc_common::execution_overlay::{
-    clause_set_hash, ExecutionCapabilityDescriptor, ExecutionSession, ExecutionSessionChallenge,
-    ExecutionSessionState, ExecutionStatement, ExecutionStatementKind, SelectorSemantics,
-    TransparencyReceipt, LOCAL_TRANSPARENCY_PROFILE,
-    LSDC_EXECUTION_PROTOCOL_VERSION,
+    AdvertisedProfiles, CapabilitySupportLevel, ExecutionCapabilityDescriptor,
+    ExecutionEvidenceRequirements, ExecutionSession, ExecutionSessionChallenge,
+    ExecutionSessionState, ExecutionStatement, ExecutionStatementKind, ProofCompositionMode,
+    TransparencyMode, TransparencyReceipt, TruthfulnessMode as OverlayTruthfulnessMode,
+    LOCAL_TRANSPARENCY_PROFILE, LSDC_EXECUTION_PROTOCOL_VERSION,
 };
 use lsdc_common::liquid::{
     CsvTransformManifest, CsvTransformOp, CsvTransformOpKind, LiquidPolicyIr, RuntimeGuard,
@@ -231,6 +233,7 @@ fn test_execution_overlay_session_and_evidence_round_trip() {
     let overlay = sample_execution_overlay();
     let session = sample_execution_session(&overlay);
     let challenge = sample_execution_challenge(&session);
+    let attestation_evidence = sample_attestation_evidence();
     let attestation_result = sample_attestation_result(&session);
     let dag = sample_evidence_dag();
     let statement = sample_execution_statement(&session, &dag);
@@ -252,12 +255,14 @@ fn test_execution_overlay_session_and_evidence_round_trip() {
         .upsert_execution_session(&session, Some(&challenge))
         .unwrap();
     store
-        .save_attestation_result(
+        .save_attestation_evidence_and_result(
             &session.session_id.to_string(),
             &ExecutionSession {
                 state: ExecutionSessionState::AttestationVerified,
                 ..session.clone()
             },
+            &challenge,
+            &attestation_evidence,
             &attestation_result,
         )
         .unwrap();
@@ -496,10 +501,18 @@ fn sample_proof_bundle(
             signature_hex: "forget-signature".into(),
         },
         attestation_result: None,
+        teardown_evidence: None,
         key_erasure_evidence: None,
         evidence_root_hash: None,
         transparency_receipt_hash: None,
         job_audit_hash: Sha256Hash::digest_bytes(b"audit"),
+    }
+}
+
+fn sample_attestation_evidence() -> AttestationEvidence {
+    AttestationEvidence {
+        evidence_profile: "nitro-dev-attestation-evidence-v1".into(),
+        document: sample_attestation(Utc::now()),
     }
 }
 
@@ -561,30 +574,44 @@ fn sample_price_decision(
 }
 
 fn sample_execution_overlay() -> ExecutionOverlaySummary {
-    let supported_clause_ids = vec![
-        "teeImageSha384".into(),
-        "proofKind".into(),
-        "transparencyRegistrationRequired".into(),
-    ];
+    let support_summary = BTreeMap::from([
+        (
+            "attestation.nitro_dev".into(),
+            CapabilitySupportLevel::Implemented,
+        ),
+        (
+            "proof.dev_receipt_dag".into(),
+            CapabilitySupportLevel::Implemented,
+        ),
+        (
+            "teardown.dev_deletion".into(),
+            CapabilitySupportLevel::Experimental,
+        ),
+    ]);
     let capability_descriptor = ExecutionCapabilityDescriptor {
-        protocol_version: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
-        attestation_profile: "nitro-dev-attestation-result-v1".into(),
-        proof_profile: "dev-receipt-dag-v1".into(),
-        transparency_profile: LOCAL_TRANSPARENCY_PROFILE.into(),
-        key_release_profile: "session-bound-local-key-erasure-v1".into(),
-        selector_semantics: SelectorSemantics {
-            protocol_bound: true,
-            session_port_bound: true,
-            selector_hash_binding_required: true,
+        overlay_version: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
+        truthfulness_default: OverlayTruthfulnessMode::Permissive,
+        advertised_profiles: AdvertisedProfiles {
+            attestation_profile: "nitro-dev-attestation-result-v1".into(),
+            proof_profile: "dev-receipt-dag-v1".into(),
+            transparency_profile: LOCAL_TRANSPARENCY_PROFILE.into(),
+            teardown_profile: "dev-deletion-v1".into(),
         },
-        required_clause_set_hash: clause_set_hash(&supported_clause_ids).unwrap(),
-        supported_clause_ids,
+        support: support_summary.clone(),
+    };
+    let evidence_requirements = ExecutionEvidenceRequirements {
+        challenge_nonce_required: true,
+        selector_hash_binding_required: true,
+        transparency_registration_mode: TransparencyMode::Required,
+        proof_composition_mode: ProofCompositionMode::Dag,
     };
     ExecutionOverlaySummary {
+        overlay_version: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
         capability_descriptor_hash: capability_descriptor.canonical_hash().unwrap(),
-        capability_descriptor,
         agreement_commitment_hash: Sha256Hash::digest_bytes(b"agreement-commitment"),
         truthfulness_mode: lsdc_common::profile::TruthfulnessMode::Permissive,
+        evidence_requirements_hash: evidence_requirements.canonical_hash().unwrap(),
+        support_summary,
     }
 }
 
@@ -593,8 +620,9 @@ fn sample_execution_session(overlay: &ExecutionOverlaySummary) -> ExecutionSessi
         session_id: uuid::Uuid::new_v4(),
         agreement_id: "agreement-store-test".into(),
         agreement_commitment_hash: overlay.agreement_commitment_hash.clone(),
-        capability_commitment_hash: overlay.capability_descriptor_hash.clone(),
-        selector_hash: Sha256Hash::digest_bytes(b"selector"),
+        capability_descriptor_hash: overlay.capability_descriptor_hash.clone(),
+        evidence_requirements_hash: overlay.evidence_requirements_hash.clone(),
+        resolved_selector_hash: Some(Sha256Hash::digest_bytes(b"selector")),
         requester_ephemeral_pubkey: vec![1, 2, 3, 4],
         state: ExecutionSessionState::Created,
         created_at: Utc::now(),
@@ -603,15 +631,14 @@ fn sample_execution_session(overlay: &ExecutionOverlaySummary) -> ExecutionSessi
 }
 
 fn sample_execution_challenge(session: &ExecutionSession) -> ExecutionSessionChallenge {
-    ExecutionSessionChallenge {
-        agreement_hash: session.agreement_commitment_hash.clone(),
-        session_id: session.session_id,
-        challenge_nonce_hex: "feedbeef".into(),
-        challenge_nonce_hash: Sha256Hash::digest_bytes(b"challenge"),
-        selector_hash: session.selector_hash.clone(),
-        requester_ephemeral_pubkey: vec![1, 2, 3, 4],
-        expires_at: Utc::now() + Duration::minutes(10),
-    }
+    ExecutionSessionChallenge::issue(
+        session,
+        session
+            .resolved_selector_hash
+            .clone()
+            .expect("resolved selector hash should exist"),
+        Utc::now(),
+    )
 }
 
 fn sample_attestation_result(session: &ExecutionSession) -> AttestationResult {
@@ -636,7 +663,7 @@ fn sample_evidence_dag() -> EvidenceDag {
     let nodes = vec![
         EvidenceNode {
             node_id: "statement-1".into(),
-            kind: ExecutionStatementKind::ProofReceipt,
+            kind: ExecutionStatementKind::ProofReceiptRegistered,
             canonical_hash: Sha256Hash::digest_bytes(b"statement-1"),
             status: NodeStatus::Verified,
             payload_json: serde_json::json!({
@@ -666,7 +693,7 @@ fn sample_evidence_dag() -> EvidenceDag {
         },
         EvidenceNode {
             node_id: "statement-2".into(),
-            kind: ExecutionStatementKind::TransparencyReceipt,
+            kind: ExecutionStatementKind::TransparencyAnchored,
             canonical_hash: Sha256Hash::digest_bytes(b"statement-2"),
             status: NodeStatus::Anchored,
             payload_json: serde_json::json!({"root": "hash"}),
@@ -686,21 +713,26 @@ fn sample_execution_statement(
 ) -> ExecutionStatement {
     ExecutionStatement {
         statement_id: "statement-2".into(),
+        statement_hash: Sha256Hash::digest_bytes(b"statement-2"),
         agreement_id: session.agreement_id.clone(),
         session_id: Some(session.session_id),
-        kind: ExecutionStatementKind::SettlementRecord,
-        subject_hash: dag.root_hash.clone(),
-        parent_hashes: dag.nodes.iter().map(|node| node.canonical_hash.clone()).collect(),
-        created_at: Utc::now(),
+        statement_kind: ExecutionStatementKind::SettlementRecorded,
         payload_hash: dag.root_hash.clone(),
+        parent_hashes: dag.nodes.iter().map(|node| node.canonical_hash.clone()).collect(),
+        producer: "store-test".into(),
+        profile: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
+        created_at: Utc::now(),
     }
+    .with_computed_hash()
+    .unwrap()
 }
 
 fn sample_transparency_receipt(statement: &ExecutionStatement) -> TransparencyReceipt {
     TransparencyReceipt {
         statement_id: statement.statement_id.clone(),
+        receipt_profile: LOCAL_TRANSPARENCY_PROFILE.into(),
         log_id: "local-log".into(),
-        statement_hash: statement.subject_hash.clone(),
+        statement_hash: statement.statement_hash.clone(),
         leaf_index: 0,
         tree_size: 1,
         root_hash: Sha256Hash::digest_bytes(b"transparency-root"),

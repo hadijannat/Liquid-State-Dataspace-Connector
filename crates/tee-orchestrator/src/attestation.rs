@@ -1,6 +1,6 @@
 use lsdc_common::crypto::{
-    sign_bytes, verify_signature, AppraisalStatus, AttestationDocument, AttestationMeasurements,
-    AttestationResult, Sha256Hash,
+    sign_bytes, verify_signature, AppraisalStatus, AttestationDocument, AttestationEvidence,
+    AttestationMeasurements, AttestationResult, Sha256Hash,
 };
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_ports::AttestationVerifier;
@@ -144,11 +144,12 @@ impl LocalAttestationVerifier {
 }
 
 impl AttestationVerifier for LocalAttestationVerifier {
-    fn verify_attestation(
+    fn appraise_attestation_evidence(
         &self,
-        doc: &AttestationDocument,
+        evidence: &AttestationEvidence,
         challenge: Option<&lsdc_common::execution_overlay::ExecutionSessionChallenge>,
     ) -> Result<AttestationResult> {
+        let doc = &evidence.document;
         let document_valid = verify_attestation(doc)?;
         let freshness_ok = challenge
             .map(|challenge| challenge.expires_at >= chrono::Utc::now())
@@ -165,7 +166,7 @@ impl AttestationVerifier for LocalAttestationVerifier {
         };
 
         Ok(AttestationResult {
-            profile: doc.platform.clone(),
+            profile: evidence.evidence_profile.clone(),
             doc_hash: doc.document_hash.clone(),
             session_id: challenge.map(|challenge| challenge.session_id.to_string()),
             nonce: doc.nonce.clone(),

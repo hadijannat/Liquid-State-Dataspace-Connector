@@ -89,10 +89,19 @@ impl LineageJobRunner {
         &self,
         job_id: String,
         agreement: ContractAgreement,
-        execution_bindings: Option<lsdc_ports::ExecutionBindings>,
+        requested_execution_bindings: Option<lsdc_ports::ExecutionBindings>,
         result: control_plane::orchestrator::BatchLineageResult,
     ) {
-        let handle = result.enforcement_handle;
+        let control_plane::orchestrator::BatchLineageResult {
+            enforcement_handle: handle,
+            execution_bindings: actual_execution_bindings,
+            transformed_csv,
+            proof_bundle,
+            execution_evidence,
+            price_decision,
+            sanction_proposal,
+            settlement_allowed,
+        } = result;
         let resolved_transport = handle.resolved_transport.clone();
         let enforcement_runtime = handle.runtime.clone();
         let enforcement_status = match self.state.liquid_agent.status(&handle).await {
@@ -108,7 +117,7 @@ impl LineageJobRunner {
             tracing::warn!(job_id, error = %err, "failed to revoke post-job enforcement");
         }
 
-        let transformed_csv_utf8 = match String::from_utf8(result.transformed_csv.clone()) {
+        let transformed_csv_utf8 = match String::from_utf8(transformed_csv.clone()) {
             Ok(csv) => csv,
             Err(err) => {
                 let message = format!("transformed CSV is not valid UTF-8: {err}");
@@ -122,35 +131,43 @@ impl LineageJobRunner {
             agreement_id: agreement.agreement_id.0.clone(),
             actual_execution_profile: self
                 .state
-                .actual_execution_profile(result.price_decision.pricing_mode),
+                .actual_execution_profile(price_decision.pricing_mode),
             enforcement_handle: handle,
             enforcement_status,
             policy_execution: Some(self.state.policy_execution_for(&agreement)),
             resolved_transport,
             enforcement_runtime,
             transformed_csv_utf8,
-            proof_bundle: result.proof_bundle,
-            session_id: execution_bindings
+            proof_bundle,
+            session_id: actual_execution_bindings
                 .as_ref()
                 .map(|bindings| bindings.session.session_id.to_string()),
             evidence_root_hash: None,
             transparency_receipt_hash: None,
-            price_decision: result.price_decision,
-            sanction_proposal: result.sanction_proposal,
-            settlement_allowed: result.settlement_allowed,
+            price_decision,
+            sanction_proposal,
+            settlement_allowed,
             completed_at: chrono::Utc::now(),
         };
 
-        if let Some(bindings) = execution_bindings.as_ref() {
+        let execution_bindings = actual_execution_bindings
+            .as_ref()
+            .or(requested_execution_bindings.as_ref());
+
+        if let Some(bindings) = execution_bindings {
+            self.state
+                .store
+                .upsert_execution_session(&bindings.session, bindings.challenge.as_ref())
+                .ok();
             if self
                 .state
-                .register_attestation_result(
+                .submit_attestation_evidence(
                     &bindings.session.session_id.to_string(),
-                    &result.execution_evidence.attestation_result,
+                    &execution_evidence.attestation_evidence,
                 )
                 .is_err()
             {
-                tracing::warn!(job_id, "failed to persist attestation result for execution session");
+                tracing::warn!(job_id, "failed to persist attestation evidence for execution session");
             }
 
             let execution_overlay = match self.state.execution_overlay_for(&agreement) {
@@ -165,7 +182,7 @@ impl LineageJobRunner {
                 &agreement,
                 &execution_overlay,
                 bindings,
-                &result.execution_evidence,
+                &execution_evidence,
                 &record.price_decision,
             ) {
                 Ok(value) => value,

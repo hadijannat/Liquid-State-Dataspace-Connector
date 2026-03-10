@@ -1,14 +1,15 @@
 use chrono::{DateTime, Utc};
 use lsdc_common::crypto::{
-    AttestationResult, PriceDecision, ProofBundle, ProvenanceReceipt, SanctionProposal, Sha256Hash,
+    AttestationEvidence, AttestationResult, PriceDecision, ProofBundle, ProvenanceReceipt,
+    SanctionProposal, Sha256Hash,
 };
 use lsdc_common::dsp::{ContractAgreement, ContractOffer, TransferStart};
 use lsdc_common::execution::{
     ActualExecutionProfile, PolicyExecutionClassification, RequestedExecutionProfile,
 };
 use lsdc_common::execution_overlay::{
-    ExecutionCapabilityDescriptor, ExecutionSession, ExecutionSessionChallenge,
-    ExecutionStatement, TransparencyReceipt,
+    CapabilitySupportLevel, ExecutionCapabilityDescriptor, ExecutionEvidenceRequirements,
+    ExecutionSession, ExecutionSessionChallenge, ExecutionStatement, TransparencyReceipt,
 };
 use lsdc_common::liquid::CsvTransformManifest;
 use lsdc_common::runtime_model::EvidenceDag;
@@ -30,16 +31,20 @@ pub struct FinalizeContractResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionOverlaySummary {
-    pub capability_descriptor: ExecutionCapabilityDescriptor,
+    pub overlay_version: String,
+    pub truthfulness_mode: lsdc_common::profile::TruthfulnessMode,
     pub capability_descriptor_hash: Sha256Hash,
     pub agreement_commitment_hash: Sha256Hash,
-    pub truthfulness_mode: lsdc_common::profile::TruthfulnessMode,
+    pub evidence_requirements_hash: Sha256Hash,
+    pub support_summary: std::collections::BTreeMap<String, CapabilitySupportLevel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionCapabilitiesResponse {
     pub capability_descriptor: ExecutionCapabilityDescriptor,
     pub capability_descriptor_hash: Sha256Hash,
+    pub evidence_requirements: ExecutionEvidenceRequirements,
+    pub evidence_requirements_hash: Sha256Hash,
     pub strict_mode_supported: bool,
     pub dev_backends_allowed: bool,
 }
@@ -47,8 +52,6 @@ pub struct ExecutionCapabilitiesResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateExecutionSessionRequest {
     pub agreement_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selector_hash: Option<Sha256Hash>,
     #[serde(default)]
     pub requester_ephemeral_pubkey: Vec<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -68,14 +71,21 @@ pub struct IssueExecutionChallengeResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterAttestationResultRequest {
-    pub session_id: String,
-    pub attestation_result: AttestationResult,
+pub struct IssueExecutionChallengeRequest {
+    pub resolved_transport: ResolvedTransportGuard,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterAttestationResultResponse {
+pub struct SubmitAttestationEvidenceRequest {
+    pub session_id: String,
+    pub attestation_evidence: AttestationEvidence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubmitAttestationEvidenceResponse {
     pub session: ExecutionSession,
+    pub attestation_evidence_hash: Sha256Hash,
+    pub attestation_result: AttestationResult,
     pub attestation_result_hash: Sha256Hash,
 }
 

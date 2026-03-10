@@ -8,9 +8,9 @@ pub use canonical::{
 };
 pub use crypto::{
     canonical_json_bytes, hash_json, sign_bytes, verify_signature, AppraisalStatus,
-    AttestationDocument, AttestationMeasurements, AttestationResult, ErasureMode,
-    EvidenceClass, ExecutionEvidenceBundle, KeyErasureEvidence, MetricsWindow, PriceDecision,
-    PricingAuditContext, ProofBundle, ProofOfForgetting, ProvenanceReceipt, ReceiptKind,
-    SanctionProposal, Sha256Hash, ShapleyValue,
+    AttestationDocument, AttestationEvidence, AttestationMeasurements, AttestationResult,
+    ErasureMode, EvidenceClass, ExecutionEvidenceBundle, KeyErasureEvidence, MetricsWindow,
+    PriceDecision, PricingAuditContext, ProofBundle, ProofOfForgetting, ProvenanceReceipt,
+    ReceiptKind, SanctionProposal, Sha256Hash, ShapleyValue, TeardownEvidence,
 };
 pub use proof::{CsvTransformProofInput, CsvTransformProofJournal};

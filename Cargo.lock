@@ -2510,6 +2510,7 @@ name = "lsdc-execution-protocol"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "hex",
  "lsdc-evidence",
  "serde",
  "serde_json",

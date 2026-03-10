@@ -7,8 +7,8 @@ use liquid_agent_core::loader::LiquidDataPlane;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use liquid_agent_grpc::server::{serve as serve_agent, LiquidAgentService};
 use lsdc_common::crypto::{
-    AppraisalStatus, AttestationResult, PriceDecision, PricingAuditContext, ProvenanceReceipt,
-    ReceiptKind, Sha256Hash, ShapleyValue,
+    AttestationDocument, AttestationEvidence, AttestationMeasurements, PriceDecision,
+    PricingAuditContext, ProvenanceReceipt, ReceiptKind, Sha256Hash, ShapleyValue,
 };
 use lsdc_common::dsp::{
     ContractAgreement, ContractOffer, ContractRequest, EvidenceRequirement, TransferRequest,
@@ -25,18 +25,21 @@ use lsdc_common::liquid::{
 };
 use lsdc_common::odrl::ast::PolicyId;
 use lsdc_common::runtime_model::{EvidenceDag, EvidenceNode, NodeStatus};
-use lsdc_ports::{DataPlane, PricingOracle, TrainingMetrics};
+use lsdc_ports::{
+    DataPlane, EnforcementIdentity, PricingOracle, ResolvedTransportGuard, TrainingMetrics,
+};
 use lsdc_service_types::{
     CreateExecutionSessionRequest, CreateExecutionSessionResponse, EvidenceVerificationRequest,
     ExecutionCapabilitiesResponse, FinalizeContractResponse, IssueExecutionChallengeResponse,
-    LineageJobAccepted, LineageJobRecord, LineageJobRequest, LineageJobState,
-    RegisterAttestationResultRequest, RegisterAttestationResultResponse,
+    IssueExecutionChallengeRequest, LineageJobAccepted, LineageJobRecord, LineageJobRequest,
+    LineageJobState, SubmitAttestationEvidenceRequest, SubmitAttestationEvidenceResponse,
     RegisterEvidenceStatementRequest, RegisterEvidenceStatementResponse, SettlementDecision,
     TransferStartResponse, VerifyEvidenceDagRequest, VerifyEvidenceDagResponse,
 };
 use proof_plane_host::DevReceiptProofEngine;
 use std::sync::Arc;
 use std::sync::Once;
+use tee_orchestrator::attestation::LocalAttestationVerifier;
 use tee_orchestrator::enclave::NitroEnclaveManager;
 use tower::ServiceExt;
 
@@ -102,17 +105,10 @@ async fn test_contract_finalize_transfer_and_settlement_surface() {
         .execution_overlay
         .clone()
         .expect("expected execution overlay summary");
-    assert_eq!(
-        execution_overlay.capability_descriptor.protocol_version,
-        LSDC_EXECUTION_PROTOCOL_VERSION
-    );
-    assert_eq!(
-        execution_overlay.capability_descriptor_hash,
-        execution_overlay
-            .capability_descriptor
-            .canonical_hash()
-            .expect("capability descriptor hash")
-    );
+    assert_eq!(execution_overlay.overlay_version, LSDC_EXECUTION_PROTOCOL_VERSION);
+    assert!(execution_overlay
+        .support_summary
+        .contains_key("proof.dev_receipt_dag"));
 
     let settlement = get_json::<SettlementDecision, _>(
         &app,
@@ -301,7 +297,7 @@ async fn test_health_reports_configured_and_actual_backends() {
     assert_eq!(health["actual_backends"]["proof_backend"], "dev_receipt");
     assert_eq!(health["actual_backends"]["tee_backend"], "nitro_dev");
     assert_eq!(
-        health["execution_overlay"]["capability_descriptor"]["protocol_version"],
+        health["execution_overlay"]["capability_descriptor"]["overlay_version"],
         LSDC_EXECUTION_PROTOCOL_VERSION
     );
     assert_eq!(
@@ -334,7 +330,7 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
     )
     .await;
     assert_eq!(
-        capabilities.capability_descriptor.protocol_version,
+        capabilities.capability_descriptor.overlay_version,
         LSDC_EXECUTION_PROTOCOL_VERSION
     );
     assert_eq!(
@@ -351,7 +347,6 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
         "/lsdc/v1/sessions",
         Some(CreateExecutionSessionRequest {
             agreement_id: finalized.agreement.agreement_id.0.clone(),
-            selector_hash: None,
             requester_ephemeral_pubkey: vec![1, 2, 3],
             expires_in_seconds: Some(120),
         }),
@@ -367,8 +362,10 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
     let challenge: IssueExecutionChallengeResponse = get_json(
         &app,
         Method::POST,
-        &format!("/lsdc/v1/sessions/{}/challenge", created.session.session_id),
-        None::<serde_json::Value>,
+        &format!("/lsdc/v1/sessions/{}/challenges", created.session.session_id),
+        Some(IssueExecutionChallengeRequest {
+            resolved_transport: sample_resolved_transport(&finalized.agreement.agreement_id.0),
+        }),
         StatusCode::OK,
     )
     .await;
@@ -381,8 +378,10 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
     let duplicate_challenge_error: serde_json::Value = get_json(
         &app,
         Method::POST,
-        &format!("/lsdc/v1/sessions/{}/challenge", created.session.session_id),
-        None::<serde_json::Value>,
+        &format!("/lsdc/v1/sessions/{}/challenges", created.session.session_id),
+        Some(IssueExecutionChallengeRequest {
+            resolved_transport: sample_resolved_transport(&finalized.agreement.agreement_id.0),
+        }),
         StatusCode::BAD_REQUEST,
     )
     .await;
@@ -391,30 +390,18 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
         .unwrap()
         .contains("active challenge"));
 
-    let attestation_result = AttestationResult {
-        profile: "nitro-dev-attestation-result-v1".into(),
-        doc_hash: Sha256Hash::digest_bytes(b"attestation-doc"),
-        session_id: Some(created.session.session_id.to_string()),
-        nonce: Some(challenge.challenge.challenge_nonce_hex.clone()),
-        image_sha384: "image-sha384".into(),
-        pcrs: std::collections::BTreeMap::from([(0, "pcr0".into())]),
-        public_key: Some(vec![9, 9, 9]),
-        user_data_hash: Some(Sha256Hash::digest_bytes(b"user-data")),
-        cert_chain_verified: true,
-        freshness_ok: true,
-        appraisal: AppraisalStatus::Accepted,
-    };
-
-    let registered_attestation: RegisterAttestationResultResponse = get_json(
+    let attestation_evidence =
+        sample_attestation_evidence(Some(challenge.challenge.challenge_nonce_hex.clone()));
+    let registered_attestation: SubmitAttestationEvidenceResponse = get_json(
         &app,
         Method::POST,
         &format!(
-            "/lsdc/v1/sessions/{}/attestation-result",
+            "/lsdc/v1/sessions/{}/attestation-evidence",
             created.session.session_id
         ),
-        Some(RegisterAttestationResultRequest {
+        Some(SubmitAttestationEvidenceRequest {
             session_id: created.session.session_id.to_string(),
-            attestation_result: attestation_result.clone(),
+            attestation_evidence,
         }),
         StatusCode::OK,
     )
@@ -426,18 +413,22 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
 
     let statement = ExecutionStatement {
         statement_id: "statement-http-test".into(),
+        statement_hash: Sha256Hash::digest_bytes(b"statement-http-test"),
         agreement_id: finalized.agreement.agreement_id.0.clone(),
         session_id: Some(created.session.session_id),
-        kind: ExecutionStatementKind::SettlementRecord,
-        subject_hash: registered_attestation.attestation_result_hash.clone(),
-        parent_hashes: vec![registered_attestation.attestation_result_hash.clone()],
-        created_at: chrono::Utc::now(),
+        statement_kind: ExecutionStatementKind::SettlementRecorded,
         payload_hash: registered_attestation.attestation_result_hash.clone(),
-    };
+        parent_hashes: vec![registered_attestation.attestation_result_hash.clone()],
+        producer: "http-test".into(),
+        profile: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
+        created_at: chrono::Utc::now(),
+    }
+    .with_computed_hash()
+    .expect("statement hash");
     let registered_statement: RegisterEvidenceStatementResponse = get_json(
         &app,
         Method::POST,
-        "/lsdc/v1/evidence/register",
+        "/lsdc/v1/evidence/statements",
         Some(RegisterEvidenceStatementRequest {
             statement: statement.clone(),
         }),
@@ -452,7 +443,10 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
     let fetched_receipt: lsdc_common::execution_overlay::TransparencyReceipt = get_json(
         &app,
         Method::GET,
-        &format!("/lsdc/v1/evidence/{}/receipt", statement.statement_id),
+        &format!(
+            "/lsdc/v1/evidence/statements/{}/receipt",
+            statement.statement_id
+        ),
         None::<serde_json::Value>,
         StatusCode::OK,
     )
@@ -462,7 +456,7 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
     let dag = EvidenceDag::new(
         vec![EvidenceNode {
             node_id: statement.statement_id.clone(),
-            kind: statement.kind,
+            kind: statement.statement_kind,
             canonical_hash: statement.canonical_hash().expect("statement hash"),
             status: NodeStatus::Anchored,
             payload_json: serde_json::to_value(&statement).unwrap(),
@@ -537,7 +531,7 @@ async fn test_lineage_jobs_persist_evidence_dag_and_verify_via_v1_route() {
 }
 
 #[tokio::test]
-async fn test_register_attestation_result_rejects_expired_and_mismatched_challenges() {
+async fn test_submit_attestation_evidence_rejects_expired_and_mismatched_challenges() {
     ensure_test_env();
     let agent_endpoint = start_simulated_agent().await;
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
@@ -549,13 +543,17 @@ async fn test_register_attestation_result_rejects_expired_and_mismatched_challen
     let created = state
         .create_execution_session(CreateExecutionSessionRequest {
             agreement_id: finalized.agreement.agreement_id.0.clone(),
-            selector_hash: None,
             requester_ephemeral_pubkey: vec![4, 5, 6],
             expires_in_seconds: Some(120),
         })
         .expect("execution session");
     let challenged = state
-        .issue_execution_challenge(&created.session.session_id.to_string())
+        .issue_execution_challenge(
+            &created.session.session_id.to_string(),
+            &IssueExecutionChallengeRequest {
+                resolved_transport: sample_resolved_transport(&finalized.agreement.agreement_id.0),
+            },
+        )
         .expect("execution challenge");
 
     let expired_challenge = lsdc_common::execution_overlay::ExecutionSessionChallenge {
@@ -570,21 +568,10 @@ async fn test_register_attestation_result_rejects_expired_and_mismatched_challen
         )
         .unwrap();
 
-    let attestation_result = AttestationResult {
-        profile: "nitro-dev-attestation-result-v1".into(),
-        doc_hash: Sha256Hash::digest_bytes(b"attestation-doc-expired"),
-        session_id: Some(created.session.session_id.to_string()),
-        nonce: Some(expired_challenge.challenge_nonce_hex.clone()),
-        image_sha384: "image-sha384".into(),
-        pcrs: std::collections::BTreeMap::from([(0, "pcr0".into())]),
-        public_key: Some(vec![1, 2, 3]),
-        user_data_hash: Some(Sha256Hash::digest_bytes(b"user-data")),
-        cert_chain_verified: true,
-        freshness_ok: true,
-        appraisal: AppraisalStatus::Accepted,
-    };
+    let attestation_evidence =
+        sample_attestation_evidence(Some(expired_challenge.challenge_nonce_hex.clone()));
     let expired_err = state
-        .register_attestation_result(&created.session.session_id.to_string(), &attestation_result)
+        .submit_attestation_evidence(&created.session.session_id.to_string(), &attestation_evidence)
         .unwrap_err();
     assert!(expired_err.to_string().contains("challenge has expired"));
 
@@ -601,13 +588,10 @@ async fn test_register_attestation_result_rejects_expired_and_mismatched_challen
         )
         .unwrap();
 
-    let mismatch_attestation = AttestationResult {
-        doc_hash: Sha256Hash::digest_bytes(b"attestation-doc-mismatch"),
-        nonce: Some(mismatch_challenge.challenge_nonce_hex.clone()),
-        ..attestation_result
-    };
+    let mismatch_attestation =
+        sample_attestation_evidence(Some(mismatch_challenge.challenge_nonce_hex.clone()));
     let mismatch_err = state
-        .register_attestation_result(
+        .submit_attestation_evidence(
             &created.session.session_id.to_string(),
             &mismatch_attestation,
         )
@@ -825,6 +809,7 @@ fn build_test_state(agent_endpoint: String, store: control_plane_api::store::Sto
     ensure_test_env();
     let proof_engine = Arc::new(DevReceiptProofEngine::new().unwrap());
     let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()).unwrap());
+    let attestation_verifier = Arc::new(LocalAttestationVerifier::new());
     let pricing_oracle = Arc::new(MockPricingOracle);
     let liquid_agent = Arc::new(LiquidAgentGrpcClient::new(agent_endpoint));
 
@@ -834,6 +819,7 @@ fn build_test_state(agent_endpoint: String, store: control_plane_api::store::Sto
         liquid_agent,
         dev_receipt_verifier: proof_engine.clone(),
         proof_engine,
+        attestation_verifier,
         enclave_manager,
         pricing_oracle,
         default_interface: "lo".into(),
@@ -845,6 +831,46 @@ fn build_test_state(agent_endpoint: String, store: control_plane_api::store::Sto
         },
         actual_transport_backend: TransportBackend::Simulated,
     })
+}
+
+fn sample_resolved_transport(agreement_id: &str) -> ResolvedTransportGuard {
+    ResolvedTransportGuard {
+        selector: lsdc_common::execution::TransportSelector {
+            protocol: TransportProtocol::Udp,
+            port: 31_337,
+        },
+        enforcement: EnforcementIdentity {
+            agreement_id: agreement_id.into(),
+            enforcement_key: 7,
+        },
+        packet_cap: Some(100),
+        byte_cap: Some(2048),
+        expires_at: Some(chrono::Utc::now() + chrono::Duration::minutes(15)),
+    }
+}
+
+fn sample_attestation_evidence(nonce: Option<String>) -> AttestationEvidence {
+    AttestationEvidence {
+        evidence_profile: "nitro-dev-attestation-evidence-v1".into(),
+        document: AttestationDocument {
+            enclave_id: "http-test-enclave".into(),
+            platform: "aws-nitro-dev".into(),
+            binary_hash: Sha256Hash::digest_bytes(b"binary"),
+            measurements: AttestationMeasurements {
+                image_hash: Sha256Hash::digest_bytes(b"image"),
+                pcrs: std::collections::BTreeMap::from([(0, "pcr0".into())]),
+                debug: false,
+            },
+            nonce,
+            public_key: Some(vec![9, 9, 9]),
+            user_data_hash: Some(Sha256Hash::digest_bytes(b"user-data")),
+            document_hash: Sha256Hash::digest_bytes(b"document"),
+            timestamp: chrono::Utc::now(),
+            raw_attestation_document: b"document".to_vec(),
+            certificate_chain_pem: vec!["cert".into()],
+            signature_hex: "signature".into(),
+        },
+    }
 }
 
 async fn start_simulated_agent() -> String {

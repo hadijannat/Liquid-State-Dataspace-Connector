@@ -24,19 +24,19 @@ pub fn router(state: ApiState) -> Router {
         .route("/lsdc/v1/capabilities", get(execution::execution_capabilities))
         .route("/lsdc/v1/sessions", post(execution::create_execution_session))
         .route(
-            "/lsdc/v1/sessions/:session_id/challenge",
+            "/lsdc/v1/sessions/:session_id/challenges",
             post(execution::issue_execution_challenge),
         )
         .route(
-            "/lsdc/v1/sessions/:session_id/attestation-result",
-            post(execution::register_attestation_result),
+            "/lsdc/v1/sessions/:session_id/attestation-evidence",
+            post(execution::submit_attestation_evidence),
         )
         .route(
-            "/lsdc/v1/evidence/register",
+            "/lsdc/v1/evidence/statements",
             post(execution::register_evidence_statement),
         )
         .route(
-            "/lsdc/v1/evidence/:statement_id/receipt",
+            "/lsdc/v1/evidence/statements/:statement_id/receipt",
             get(execution::get_transparency_receipt),
         )
         .route("/lsdc/v1/evidence/verify", post(execution::verify_evidence_dag))

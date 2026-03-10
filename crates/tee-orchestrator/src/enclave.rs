@@ -2,16 +2,15 @@ use crate::attestation::{
     build_attestation_document, build_attestation_document_with_binding, AttestationBinding,
     LocalAttestationVerifier,
 };
-use crate::forgetting::{
-    build_key_erasure_evidence, build_proof_of_forgetting, validate_forgetting_secret,
-};
+use crate::forgetting::{build_proof_of_forgetting, validate_forgetting_secret};
 use async_trait::async_trait;
 use lsdc_common::crypto::{
-    canonical_json_bytes, AttestationDocument, AttestationMeasurements, EvidenceClass,
-    ExecutionEvidenceBundle, ProofBundle, Sha256Hash,
+    canonical_json_bytes, AttestationDocument, AttestationEvidence, AttestationMeasurements,
+    ExecutionEvidenceBundle, ProofBundle, Sha256Hash, TeardownEvidence,
 };
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::TeeBackend;
+use lsdc_evidence::DevDeletionEvidence;
 use lsdc_ports::{AttestationVerifier, EnclaveJobRequest, EnclaveJobResult, EnclaveManager, ProofEngine};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -80,11 +79,15 @@ impl EnclaveManager for NitroEnclaveManager {
         let attestation = match self.mode {
             TeeBackend::NitroDev => {
                 let enclave_id = format!("nitro-{}", Uuid::new_v4());
-                let binding = request.execution_bindings.as_ref().map(|bindings| AttestationBinding {
-                    challenge_nonce_hex: &bindings.challenge.challenge_nonce_hex,
-                    public_key: Some(bindings.challenge.requester_ephemeral_pubkey.as_slice()),
-                    user_data_hash: Some(&bindings.challenge.selector_hash),
-                });
+                let binding = request
+                    .execution_bindings
+                    .as_ref()
+                    .and_then(|bindings| bindings.challenge.as_ref())
+                    .map(|challenge| AttestationBinding {
+                        challenge_nonce_hex: &challenge.challenge_nonce_hex,
+                        public_key: Some(challenge.requester_ephemeral_pubkey.as_slice()),
+                        user_data_hash: Some(&challenge.resolved_selector_hash),
+                    });
                 match binding {
                     Some(binding) => build_attestation_document_with_binding(
                         &enclave_id,
@@ -109,12 +112,16 @@ impl EnclaveManager for NitroEnclaveManager {
                 ))
             }
         };
-        let attestation_result = self.attestation_verifier.verify_attestation(
-            &attestation,
+        let attestation_evidence = AttestationEvidence {
+            evidence_profile: attestation.platform.clone(),
+            document: attestation.clone(),
+        };
+        let attestation_result = self.attestation_verifier.appraise_attestation_evidence(
+            &attestation_evidence,
             request
                 .execution_bindings
                 .as_ref()
-                .map(|bindings| &bindings.challenge),
+                .and_then(|bindings| bindings.challenge.as_ref()),
         )?;
         let attestation_result_hash = Sha256Hash::digest_bytes(
             &canonical_json_bytes(&serde_json::to_value(&attestation_result).map_err(LsdcError::from)?)
@@ -140,26 +147,17 @@ impl EnclaveManager for NitroEnclaveManager {
         let mut wipe_buffer = request.input_csv.clone();
         wipe_buffer.zeroize();
 
-        let session_id = request
-            .execution_bindings
-            .as_ref()
-            .map(|bindings| bindings.session.session_id.to_string())
-            .unwrap_or_else(|| request.agreement.agreement_id.0.clone());
-        let key_erasure_evidence = build_key_erasure_evidence(
-            &session_id,
-            &attestation_result_hash,
+        let proof_of_forgetting = build_proof_of_forgetting(
+            attestation.clone(),
             chrono::Utc::now(),
-            if self.mode == TeeBackend::NitroDev {
-                EvidenceClass::Dev
-            } else {
-                EvidenceClass::Attested
-            },
+            &proof_result.receipt.input_hash,
         )?;
+        let dev_deletion_evidence = DevDeletionEvidence::from(&proof_of_forgetting);
         let evidence_root_hash = Sha256Hash::digest_bytes(
             &serde_json::to_vec(&serde_json::json!({
                 "receipt_hash": proof_result.receipt.receipt_hash.to_hex(),
                 "attestation_result_hash": attestation_result_hash.to_hex(),
-                "key_erasure_hash": key_erasure_evidence.evidence_hash.to_hex(),
+                "teardown_hash": dev_deletion_evidence.proof_hash.to_hex(),
             }))
             .map_err(LsdcError::from)?,
         );
@@ -168,26 +166,23 @@ impl EnclaveManager for NitroEnclaveManager {
             "receipt_hash": proof_result.receipt.receipt_hash.to_hex(),
             "attestation_hash": attestation.document_hash.to_hex(),
             "attestation_result_hash": attestation_result_hash.to_hex(),
-            "key_erasure_hash": key_erasure_evidence.evidence_hash.to_hex(),
+            "teardown_hash": dev_deletion_evidence.proof_hash.to_hex(),
             "output_hash": Sha256Hash::digest_bytes(&proof_result.output_csv).to_hex(),
             "evidence_root_hash": evidence_root_hash.to_hex(),
         }))
         .map_err(LsdcError::from)?;
 
         let execution_evidence = ExecutionEvidenceBundle {
+            attestation_evidence,
             provenance_receipt: proof_result.receipt,
-            attestation_document: attestation,
-            attestation_result,
-            key_erasure_evidence,
+            attestation_result: Some(attestation_result),
+            teardown_evidence: Some(TeardownEvidence::DevDeletion(
+                dev_deletion_evidence.clone(),
+            )),
             transparency_receipt_hash: None,
             evidence_root_hash,
             job_audit_hash: Sha256Hash::digest_bytes(&audit_bytes),
         };
-        let proof_of_forgetting = build_proof_of_forgetting(
-            execution_evidence.attestation_document.clone(),
-            execution_evidence.key_erasure_evidence.teardown_timestamp,
-            &execution_evidence.provenance_receipt.input_hash,
-        )?;
         let proof_bundle = ProofBundle {
             proof_backend: execution_evidence.provenance_receipt.proof_backend,
             receipt_format_version: execution_evidence
@@ -198,10 +193,11 @@ impl EnclaveManager for NitroEnclaveManager {
             prior_receipt_hash: execution_evidence.provenance_receipt.prior_receipt_hash.clone(),
             raw_receipt_bytes: execution_evidence.provenance_receipt.receipt_bytes.clone(),
             provenance_receipt: execution_evidence.provenance_receipt.clone(),
-            attestation: execution_evidence.attestation_document.clone(),
+            attestation: attestation.clone(),
             proof_of_forgetting,
-            attestation_result: Some(execution_evidence.attestation_result.clone()),
-            key_erasure_evidence: Some(execution_evidence.key_erasure_evidence.clone()),
+            attestation_result: execution_evidence.attestation_result.clone(),
+            teardown_evidence: execution_evidence.teardown_evidence.clone(),
+            key_erasure_evidence: None,
             evidence_root_hash: Some(execution_evidence.evidence_root_hash.clone()),
             transparency_receipt_hash: execution_evidence.transparency_receipt_hash.clone(),
             job_audit_hash: execution_evidence.job_audit_hash.clone(),

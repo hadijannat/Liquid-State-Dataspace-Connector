@@ -17,11 +17,9 @@ pub const LSDC_PROFILE_OPERANDS: &[&str] = &[
     "teeImageSha384",
     "attestationFreshnessSeconds",
     "proofKind",
-    "proofRecursionDepth",
-    "transparencyRegistrationRequired",
     "keyReleaseProfile",
     "maxEgressBytes",
-    "selectorHashBindingRequired",
+    "deletionMode",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -92,25 +90,6 @@ impl RuntimeCapabilities {
                         required_evidence: Vec::new(),
                         reason_code: None,
                     },
-                    "selectorHashBindingRequired" => ClauseRealization {
-                        clause_id: constraint.clause_id.clone(),
-                        status: PolicyClauseStatus::Executable,
-                        required_primitives: vec!["execution_session.selector_hash".into()],
-                        required_evidence: vec!["session_challenge".into()],
-                        reason_code: None,
-                    },
-                    "transparencyRegistrationRequired" => ClauseRealization {
-                        clause_id: constraint.clause_id.clone(),
-                        status: if self.transparency_supported {
-                            PolicyClauseStatus::Executable
-                        } else {
-                            PolicyClauseStatus::MetadataOnly
-                        },
-                        required_primitives: vec!["transparency.log".into()],
-                        required_evidence: vec!["transparency_receipt".into()],
-                        reason_code: (!self.transparency_supported)
-                            .then(|| "transparency_unsupported".into()),
-                    },
                     "proofKind" => ClauseRealization {
                         clause_id: constraint.clause_id.clone(),
                         status: if self.proof_backend == ProofBackend::None {
@@ -123,22 +102,6 @@ impl RuntimeCapabilities {
                         reason_code: (self.proof_backend == ProofBackend::None)
                             .then(|| "proof_backend_missing".into()),
                     },
-                    "proofRecursionDepth" => {
-                        let requested = constraint.right_operand.as_u64().unwrap_or(1);
-                        let recursive_supported = self.proof_backend == ProofBackend::DevReceipt;
-                        ClauseRealization {
-                            clause_id: constraint.clause_id.clone(),
-                            status: if requested <= 1 || recursive_supported {
-                                PolicyClauseStatus::Executable
-                            } else {
-                                PolicyClauseStatus::MetadataOnly
-                            },
-                            required_primitives: vec!["proof.receipt_dag".into()],
-                            required_evidence: vec!["composed_receipt".into()],
-                            reason_code: (requested > 1 && !recursive_supported)
-                                .then(|| "recursive_proof_unsupported".into()),
-                        }
-                    }
                     "teeImageSha384" | "attestationFreshnessSeconds" => ClauseRealization {
                         clause_id: constraint.clause_id.clone(),
                         status: if self.tee_backend == TeeBackend::None {
@@ -163,6 +126,21 @@ impl RuntimeCapabilities {
                             required_primitives: vec!["key_broker".into()],
                             required_evidence: vec!["key_erasure_evidence".into()],
                             reason_code: (!executable).then(|| "key_release_profile_stub".into()),
+                        }
+                    }
+                    "deletionMode" => {
+                        let executable = self.dev_backends_allowed
+                            && constraint.right_operand.as_str() == Some("dev_deletion");
+                        ClauseRealization {
+                            clause_id: constraint.clause_id.clone(),
+                            status: if executable {
+                                PolicyClauseStatus::Executable
+                            } else {
+                                PolicyClauseStatus::MetadataOnly
+                            },
+                            required_primitives: vec!["teardown.evidence".into()],
+                            required_evidence: vec!["teardown_evidence".into()],
+                            reason_code: (!executable).then(|| "teardown_mode_unavailable".into()),
                         }
                     }
                     _ => ClauseRealization {
