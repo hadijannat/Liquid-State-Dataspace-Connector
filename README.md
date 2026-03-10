@@ -10,35 +10,51 @@ The Liquid-State Dataspace Connector (LSDC) is a Rust-first dataspace prototype 
 
 ```mermaid
 flowchart LR
-    Client["External DSP + ODRL Clients"] --> API["control-plane-api<br/>HTTP API"]
+    Client(["External DSP\n+ ODRL Clients"])
 
-    subgraph Control["Control Plane"]
-        API --> Orchestrator["Negotiation + Policy Lowering<br/>crates/control-plane"]
-        Orchestrator --> Store["SQLite Persistence<br/>crates/control-plane-store"]
+    subgraph CP["Control Plane"]
+        direction TB
+        API["control-plane-api\nHTTP API"]
+        Orch["Negotiation + Policy Lowering\ncrates/control-plane"]
+        Store[("SQLite Persistence\ncrates/control-plane-store")]
+        API --> Orch
+        Orch <--> Store
     end
 
-    Orchestrator --> AgentGrpc["gRPC Coordination<br/>liquid-agent-grpc"]
-    subgraph Data["Liquid Data Plane"]
-        AgentGrpc --> Agent["liquid-agent<br/>Daemon"]
-        Agent --> Enforcement["Transport Enforcement<br/>Simulation or Aya/XDP"]
+    subgraph DP["Liquid Data Plane"]
+        direction TB
+        AgentGrpc["gRPC Coordination\nliquid-agent-grpc"]
+        Agent["liquid-agent\nDaemon"]
+        Enforce["Transport Enforcement\nSim / Aya/XDP"]
+        AgentGrpc --> Agent --> Enforce
     end
 
-    Orchestrator --> ProofHost["Proof Host<br/>crates/proof-plane/host"]
-    subgraph Proof["Proof Plane"]
-        ProofHost --> Kernel["Transform Kernel<br/>CSV Lineage Execution"]
-        Kernel --> Evidence["Receipt Proofs +<br/>Forgetting Artifacts"]
+    subgraph PP["Proof Plane"]
+        direction TB
+        ProofHost["Proof Host\ncrates/proof-plane/host"]
+        Kernel["Transform Kernel\nCSV Lineage Execution"]
+        Evidence["Receipt Proofs +\nForgetting Artifacts"]
+        ProofHost --> Kernel --> Evidence
     end
 
-    Orchestrator --> Tee["TEE Orchestrator<br/>Attestation-Aware Execution"]
-    Orchestrator --> Pricing["Pricing Oracle<br/>Advisory gRPC Decisions"]
+    subgraph AT["Attestation + Pricing"]
+        direction TB
+        TEE["TEE Orchestrator\nAttestation-Aware Execution"]
+        Pricing["Pricing Oracle\nAdvisory gRPC Decisions"]
+    end
 
-    Evidence --> API
-    Tee --> API
-    Pricing --> API
-    API --> Surfaces["Transfer, Lineage, Evidence,<br/>and Settlement Surfaces"]
+    Surfaces(["Transfer · Lineage\nEvidence · Settlement"])
+
+    Client --> API
+    Orch --> AgentGrpc
+    Orch --> ProofHost
+    Orch --> TEE
+    Enforce & Evidence & TEE & Pricing --> Surfaces
 ```
 
-The diagram reflects the currently implemented runtime path. Recursive proof rollups, live enclave lifecycle orchestration, and non-advisory pricing or settlement mutation remain future work.
+Static fallback: [docs/architecture.svg](docs/architecture.svg) for renderers that do not support Mermaid.
+
+The diagram reflects the currently implemented runtime path. The control plane orchestrates all four subsystems, and their outputs feed the transfer, lineage, evidence, and settlement surfaces exposed by `control-plane-api`. Recursive proof rollups, live enclave lifecycle orchestration, and non-advisory pricing or settlement mutation remain future work.
 
 ## What LSDC Is
 

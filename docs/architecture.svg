@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1031.4309999999998 1302.92" width="1031.4309999999998" height="1302.92" style="--bg:#ffffff;--fg:#1f2328;--line:#d1d9e0;--accent:#0969da;--muted:#59636e;background:var(--bg)">
+<style>
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 85%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="arrowhead" markerWidth="8" markerHeight="5" refX="7" refY="2.5" orient="auto">
+    <polygon points="0 0, 8 2.5, 0 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+  <marker id="arrowhead-start" markerWidth="8" markerHeight="5" refX="1" refY="2.5" orient="auto-start-reverse">
+    <polygon points="8 0, 0 2.5, 8 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+</defs>
+<g class="subgraph" data-id="CP" data-label="Control Plane">
+  <rect x="217.388" y="76.90000000000005" width="334.83635" height="331.40000000000003" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="217.388" y="76.90000000000005" width="334.83635" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="229.388" y="90.90000000000005" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">Control Plane</text>
+</g>
+<g class="subgraph" data-id="DP" data-label="Liquid Data Plane">
+  <rect x="586.9939999999999" y="777.7000000000002" width="211.03499999999997" height="317.40000000000003" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="586.9939999999999" y="777.7000000000002" width="211.03499999999997" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="598.9939999999999" y="791.7000000000002" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">Liquid Data Plane</text>
+</g>
+<g class="subgraph" data-id="PP" data-label="Proof Plane">
+  <rect x="703.3999999999999" y="428.3000000000001" width="213.25799999999995" height="317.40000000000003" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="703.3999999999999" y="428.3000000000001" width="213.25799999999995" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="715.3999999999999" y="442.3000000000001" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">Proof Plane</text>
+</g>
+<g class="subgraph" data-id="AT" data-label="Attestation + Pricing">
+  <rect x="320.981" y="1127.1000000000004" width="453.0479999999999" height="113.80000000000001" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="320.981" y="1127.1000000000004" width="453.0479999999999" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="332.981" y="1141.1000000000004" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">Attestation + Pricing</text>
+</g>
+<polyline class="edge" data-from="Client" data-to="API" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="169.388,66.9 428.92285000000004,66.90000000000005 428.92285000000004,76.90000000000005 418.262925,120.90000000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Orch" data-to="AgentGrpc" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="536.22435,249.60000000000005 572.758425,249.60000000000005 572.758425,848.6000000000001 609.2924999999999,848.6000000000001" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Orch" data-to="ProofHost" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="536.22435,249.60000000000005 572.758425,249.60000000000005 572.758425,499.2000000000001 726.4394999999998,499.2000000000001" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Orch" data-to="TEE" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="407.46254999999996,276.50000000000006 407.46254999999996,288.50000000000006 440.207,288.50000000000006 440.207,408.30000000000007 440.207,1117.1000000000004 440.207,1117.1000000000004 450.866925,1127.1000000000004 450.866925,1171.1000000000004" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Enforce" data-to="Surfaces" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="788.3274999999999,1052.2000000000003 805.1782499999999,1052.2000000000003 805.1782499999999,1178.0000000000005 822.0289999999999,1178.0000000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Evidence" data-to="Surfaces" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="803.3599999999999,729.7000000000002 803.3599999999999,745.7000000000002 810.0289999999999,755.7000000000002 810.0289999999999,755.7000000000002 810.0289999999999,1161.8600000000001 822.0289999999999,1161.8600000000004" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="TEE" data-to="Surfaces" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="554.0929249999999,1198.0000000000005 805.1782499999999,1198.0000000000005 805.1782499999999,1178.0000000000005 822.0289999999999,1178.0000000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Pricing" data-to="Surfaces" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="758.029,1198.0000000000005 805.1782499999999,1198.0000000000005 805.1782499999999,1178.0000000000005 822.0289999999999,1178.0000000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="API" data-to="Orch" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="418.262925,174.70000000000005 428.92285000000004,222.70000000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Orch" data-to="Store" data-style="solid" data-arrow-start="true" data-arrow-end="true" points="364.54195000000004,276.50000000000006 364.54195000000004,288.50000000000006 331.7975,288.50000000000006 331.7975,324.50000000000006" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" marker-start="url(#arrowhead-start)" />
+<polyline class="edge" data-from="AgentGrpc" data-to="Agent" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="686.2129999999999,875.5000000000002 686.2129999999999,923.5000000000002" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Agent" data-to="Enforce" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="698.8099999999998,977.3000000000002 698.8099999999998,1025.3000000000002" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="ProofHost" data-to="Kernel" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="816.6979999999999,526.1000000000001 816.6979999999999,574.1000000000001" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="Kernel" data-to="Evidence" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="803.3599999999999,627.9000000000001 803.3599999999999,675.9000000000001" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<g class="node" data-id="Client" data-label="External DSP
++ ODRL Clients" data-shape="stadium">
+  <rect x="40" y="40" width="129.388" height="53.800000000000004" rx="26.900000000000002" ry="26.900000000000002" fill="#fff8e1" stroke="#f9a825" stroke-width="0.75" />
+  <text x="104.694" y="66.9" text-anchor="middle" font-size="13" font-weight="500" fill="#e65100"><tspan x="104.694" dy="-3.9000000000000012">External DSP</tspan><tspan x="104.694" dy="16.900000000000002">+ ODRL Clients</tspan></text>
+</g>
+<g class="node" data-id="Surfaces" data-label="Transfer · Lineage
+Evidence · Settlement" data-shape="stadium">
+  <rect x="822.0289999999999" y="1151.1000000000004" width="169.40199999999996" height="53.800000000000004" rx="26.900000000000002" ry="26.900000000000002" fill="#e8f5e9" stroke="#43a047" stroke-width="0.75" />
+  <text x="906.7299999999999" y="1178.0000000000005" text-anchor="middle" font-size="13" font-weight="500" fill="#1b5e20"><tspan x="906.7299999999999" dy="-3.9000000000000012">Transfer · Lineage</tspan><tspan x="906.7299999999999" dy="16.900000000000002">Evidence · Settlement</tspan></text>
+</g>
+<g class="node" data-id="API" data-label="control-plane-api
+HTTP API" data-shape="rectangle">
+  <rect x="347.640925" y="120.90000000000005" width="141.244" height="53.800000000000004" rx="0" ry="0" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <text x="418.262925" y="147.80000000000004" text-anchor="middle" font-size="13" font-weight="500" fill="#1a237e"><tspan x="418.262925" dy="-3.9000000000000012">control-plane-api</tspan><tspan x="418.262925" dy="16.900000000000002">HTTP API</tspan></text>
+</g>
+<g class="node" data-id="Orch" data-label="Negotiation + Policy Lowering
+crates/control-plane" data-shape="rectangle">
+  <rect x="321.62135" y="222.70000000000005" width="214.60299999999998" height="53.800000000000004" rx="0" ry="0" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <text x="428.92285" y="249.60000000000005" text-anchor="middle" font-size="13" font-weight="500" fill="#1a237e"><tspan x="428.92285" dy="-3.9000000000000012">Negotiation + Policy Lowering</tspan><tspan x="428.92285" dy="16.900000000000002">crates/control-plane</tspan></text>
+</g>
+<g class="node" data-id="Store" data-label="SQLite Persistence
+crates/control-plane-store" data-shape="cylinder">
+  <rect x="233.388" y="331.50000000000006" width="196.819" height="53.80000000000001" fill="#e8eaf6" stroke="none" />
+  <line x1="233.388" y1="331.50000000000006" x2="233.388" y2="385.30000000000007" stroke="#7986cb" stroke-width="0.75" />
+  <line x1="430.207" y1="331.50000000000006" x2="430.207" y2="385.30000000000007" stroke="#7986cb" stroke-width="0.75" />
+  <ellipse cx="331.7975" cy="385.30000000000007" rx="98.4095" ry="7" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <ellipse cx="331.7975" cy="331.50000000000006" rx="98.4095" ry="7" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <text x="331.7975" y="358.4000000000001" text-anchor="middle" font-size="13" font-weight="500" fill="#1a237e"><tspan x="331.7975" dy="-3.9000000000000012">SQLite Persistence</tspan><tspan x="331.7975" dy="16.900000000000002">crates/control-plane-store</tspan></text>
+</g>
+<g class="node" data-id="AgentGrpc" data-label="gRPC Coordination
+liquid-agent-grpc" data-shape="rectangle">
+  <rect x="609.2924999999999" y="821.7000000000002" width="153.841" height="53.800000000000004" rx="0" ry="0" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <text x="686.213" y="848.6000000000001" text-anchor="middle" font-size="13" font-weight="500" fill="#1a237e"><tspan x="686.213" dy="-3.9000000000000012">gRPC Coordination</tspan><tspan x="686.213" dy="16.900000000000002">liquid-agent-grpc</tspan></text>
+</g>
+<g class="node" data-id="Agent" data-label="liquid-agent
+Daemon" data-shape="rectangle">
+  <rect x="637.8209999999999" y="923.5000000000002" width="109.381" height="53.800000000000004" rx="0" ry="0" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <text x="692.5115" y="950.4000000000002" text-anchor="middle" font-size="13" font-weight="500" fill="#1a237e"><tspan x="692.5115" dy="-3.9000000000000012">liquid-agent</tspan><tspan x="692.5115" dy="16.900000000000002">Daemon</tspan></text>
+</g>
+<g class="node" data-id="Enforce" data-label="Transport Enforcement
+Sim / Aya/XDP" data-shape="rectangle">
+  <rect x="609.2924999999999" y="1025.3000000000002" width="179.03499999999997" height="53.800000000000004" rx="0" ry="0" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <text x="698.81" y="1052.2000000000003" text-anchor="middle" font-size="13" font-weight="500" fill="#1a237e"><tspan x="698.81" dy="-3.9000000000000012">Transport Enforcement</tspan><tspan x="698.81" dy="16.900000000000002">Sim / Aya/XDP</tspan></text>
+</g>
+<g class="node" data-id="ProofHost" data-label="Proof Host
+crates/proof-plane/host" data-shape="rectangle">
+  <rect x="726.4394999999998" y="472.3000000000001" width="180.51699999999997" height="53.800000000000004" rx="0" ry="0" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <text x="816.6979999999999" y="499.2000000000001" text-anchor="middle" font-size="13" font-weight="500" fill="#1a237e"><tspan x="816.6979999999999" dy="-3.9000000000000012">Proof Host</tspan><tspan x="816.6979999999999" dy="16.900000000000002">crates/proof-plane/host</tspan></text>
+</g>
+<g class="node" data-id="Kernel" data-label="Transform Kernel
+CSV Lineage Execution" data-shape="rectangle">
+  <rect x="719.3999999999999" y="574.1000000000001" width="181.25799999999995" height="53.800000000000004" rx="0" ry="0" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <text x="810.0289999999999" y="601.0000000000001" text-anchor="middle" font-size="13" font-weight="500" fill="#1a237e"><tspan x="810.0289999999999" dy="-3.9000000000000012">Transform Kernel</tspan><tspan x="810.0289999999999" dy="16.900000000000002">CSV Lineage Execution</tspan></text>
+</g>
+<g class="node" data-id="Evidence" data-label="Receipt Proofs +
+Forgetting Artifacts" data-shape="rectangle">
+  <rect x="726.4394999999998" y="675.9000000000001" width="153.841" height="53.800000000000004" rx="0" ry="0" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <text x="803.3599999999999" y="702.8000000000001" text-anchor="middle" font-size="13" font-weight="500" fill="#1a237e"><tspan x="803.3599999999999" dy="-3.9000000000000012">Receipt Proofs +</tspan><tspan x="803.3599999999999" dy="16.900000000000002">Forgetting Artifacts</tspan></text>
+</g>
+<g class="node" data-id="TEE" data-label="TEE Orchestrator
+Attestation-Aware Execution" data-shape="rectangle">
+  <rect x="347.640925" y="1171.1000000000004" width="206.45199999999994" height="53.800000000000004" rx="0" ry="0" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <text x="450.8669249999999" y="1198.0000000000005" text-anchor="middle" font-size="13" font-weight="500" fill="#1a237e"><tspan x="450.8669249999999" dy="-3.9000000000000012">TEE Orchestrator</tspan><tspan x="450.8669249999999" dy="16.900000000000002">Attestation-Aware Execution</tspan></text>
+</g>
+<g class="node" data-id="Pricing" data-label="Pricing Oracle
+Advisory gRPC Decisions" data-shape="rectangle">
+  <rect x="563.433" y="1171.1000000000004" width="194.59599999999995" height="53.800000000000004" rx="0" ry="0" fill="#e8eaf6" stroke="#7986cb" stroke-width="0.75" />
+  <text x="660.731" y="1198.0000000000005" text-anchor="middle" font-size="13" font-weight="500" fill="#1a237e"><tspan x="660.731" dy="-3.9000000000000012">Pricing Oracle</tspan><tspan x="660.731" dy="16.900000000000002">Advisory gRPC Decisions</tspan></text>
+</g>
+</svg>
