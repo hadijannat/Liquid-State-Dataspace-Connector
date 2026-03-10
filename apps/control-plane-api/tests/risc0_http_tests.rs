@@ -8,14 +8,21 @@ use liquid_agent_core::loader::LiquidDataPlane;
 use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use liquid_agent_grpc::server::{serve as serve_agent, LiquidAgentService};
 use lsdc_common::crypto::{PriceDecision, PricingAuditContext, ShapleyValue};
-use lsdc_common::dsp::{ContractRequest, EvidenceRequirement};
+use lsdc_common::dsp::{ContractOffer, ContractRequest, EvidenceRequirement};
 use lsdc_common::execution::{PricingMode, ProofBackend, TeeBackend, TransportBackend};
-use lsdc_ports::{PricingOracle, TrainingMetrics};
+use lsdc_common::execution_overlay::{CapabilitySupportLevel, ProofCompositionMode};
+use lsdc_common::liquid::{CsvTransformManifest, CsvTransformOp};
+use lsdc_common::runtime_model::{
+    DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus,
+};
+use lsdc_ports::{PricingOracle, ProofEngine, TrainingMetrics};
 use lsdc_service_types::{
-    EvidenceVerificationRequest, EvidenceVerificationResult, FinalizeContractResponse,
-    LineageJobAccepted, LineageJobRecord, LineageJobRequest, LineageJobState,
+    EvidenceVerificationRequest, EvidenceVerificationResult, ExecutionCapabilitiesResponse,
+    FinalizeContractResponse, LineageJobAccepted, LineageJobRecord, LineageJobRequest,
+    LineageJobState, VerifyEvidenceDagRequest, VerifyEvidenceDagResponse,
 };
 use proof_plane_host::Risc0ProofEngine;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::Once;
 use tee_orchestrator::attestation::LocalAttestationVerifier;
@@ -31,7 +38,28 @@ fn ensure_test_env() {
         std::env::set_var("LSDC_API_BEARER_TOKEN", TEST_API_TOKEN);
         std::env::set_var("LSDC_PROOF_SECRET", "test-proof-secret");
         std::env::set_var("LSDC_FORGETTING_SECRET", "test-forgetting-secret");
+        std::env::set_var("RISC0_DEV_MODE", "1");
     });
+}
+
+fn run_risc0_http_test<F>(name: &str, future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    ensure_test_env();
+    std::thread::Builder::new()
+        .name(name.into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(future);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 struct MockPricingOracle;
@@ -73,38 +101,97 @@ impl PricingOracle for MockPricingOracle {
     }
 }
 
-#[tokio::test]
-async fn test_single_hop_risc0_lineage_via_http_api() {
+async fn build_risc0_app() -> axum::Router {
     ensure_test_env();
     let agent_endpoint = start_simulated_agent().await;
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
     let proof_engine = Arc::new(Risc0ProofEngine::new());
+    let attestation_verifier = Arc::new(LocalAttestationVerifier::new());
     let enclave_manager = Arc::new(
-        NitroEnclaveManager::new_dev(
-            proof_engine.clone(),
-            Arc::new(LocalAttestationVerifier::new()),
-        )
-        .unwrap(),
+        NitroEnclaveManager::new_dev(proof_engine.clone(), attestation_verifier.clone()).unwrap(),
     );
-    let app = router(ApiState::new(ApiStateInit {
+
+    router(ApiState::new(ApiStateInit {
         store,
         node_name: "test-risc0-node".into(),
         liquid_agent: Arc::new(LiquidAgentGrpcClient::new(agent_endpoint)),
         proof_engine,
         dev_receipt_verifier: Arc::new(proof_plane_host::DevReceiptProofEngine::new().unwrap()),
+        attestation_verifier,
         enclave_manager,
         pricing_oracle: Arc::new(MockPricingOracle),
         default_interface: "lo".into(),
         api_bearer_token: TEST_API_TOKEN.into(),
         configured_backends: BackendSummary {
             transport_backend: TransportBackend::Simulated,
-            proof_backend: lsdc_common::execution::ProofBackend::RiscZero,
+            proof_backend: ProofBackend::RiscZero,
             tee_backend: TeeBackend::NitroDev,
         },
         actual_transport_backend: TransportBackend::Simulated,
-    }));
+    }))
+}
 
-    let offer = post_json(
+fn proof_node(node_id: &str, receipt: &lsdc_common::crypto::ProvenanceReceipt) -> EvidenceNode {
+    EvidenceNode {
+        node_id: node_id.into(),
+        kind: lsdc_common::execution_overlay::ExecutionStatementKind::ProofReceiptRegistered,
+        canonical_hash: receipt.receipt_hash.clone(),
+        status: NodeStatus::Verified,
+        payload_json: serde_json::to_value(receipt).unwrap(),
+    }
+}
+
+fn recursive_manifest() -> CsvTransformManifest {
+    let mut manifest: CsvTransformManifest =
+        lsdc_common::fixtures::read_json("liquid/analytics_manifest.json").unwrap();
+    manifest.dataset_id = "dataset-derived".into();
+    manifest.ops.push(CsvTransformOp::HashColumns {
+        columns: vec!["region".into()],
+        salt: "tier-c".into(),
+    });
+    manifest
+}
+
+async fn assert_risc0_capabilities_advertise_recursive_dag_support() {
+    let app = build_risc0_app().await;
+    let capabilities: ExecutionCapabilitiesResponse = get_json(
+        &app,
+        Method::GET,
+        "/lsdc/v1/capabilities",
+        None::<serde_json::Value>,
+        StatusCode::OK,
+    )
+    .await;
+
+    assert_eq!(
+        capabilities.evidence_requirements.proof_composition_mode,
+        ProofCompositionMode::Dag
+    );
+    assert_eq!(
+        capabilities
+            .capability_descriptor
+            .advertised_profiles
+            .proof_profile,
+        "risc0-recursive-dag-v1"
+    );
+    assert_eq!(
+        capabilities.capability_descriptor.support["proof.risc0_recursive"],
+        CapabilitySupportLevel::Experimental
+    );
+}
+
+#[test]
+fn test_risc0_capabilities_advertise_recursive_dag_support() {
+    run_risc0_http_test(
+        "risc0-http-capabilities",
+        assert_risc0_capabilities_advertise_recursive_dag_support(),
+    );
+}
+
+async fn assert_single_hop_risc0_lineage_via_http_api() {
+    let app = build_risc0_app().await;
+
+    let offer: ContractOffer = post_json(
         &app,
         "/dsp/contracts/request",
         ContractRequest {
@@ -163,36 +250,16 @@ async fn test_single_hop_risc0_lineage_via_http_api() {
     );
 }
 
-#[tokio::test]
-async fn test_risc0_node_verifies_valid_dev_receipt_chain() {
-    ensure_test_env();
-    let agent_endpoint = start_simulated_agent().await;
-    let store = control_plane_api::store::Store::new(":memory:").unwrap();
-    let proof_engine = Arc::new(Risc0ProofEngine::new());
-    let enclave_manager = Arc::new(
-        NitroEnclaveManager::new_dev(
-            proof_engine.clone(),
-            Arc::new(LocalAttestationVerifier::new()),
-        )
-        .unwrap(),
+#[test]
+fn test_single_hop_risc0_lineage_via_http_api() {
+    run_risc0_http_test(
+        "risc0-http-single-hop",
+        assert_single_hop_risc0_lineage_via_http_api(),
     );
-    let app = router(ApiState::new(ApiStateInit {
-        store,
-        node_name: "test-risc0-node".into(),
-        liquid_agent: Arc::new(LiquidAgentGrpcClient::new(agent_endpoint)),
-        dev_receipt_verifier: Arc::new(proof_plane_host::DevReceiptProofEngine::new().unwrap()),
-        proof_engine,
-        enclave_manager,
-        pricing_oracle: Arc::new(MockPricingOracle),
-        default_interface: "lo".into(),
-        api_bearer_token: TEST_API_TOKEN.into(),
-        configured_backends: BackendSummary {
-            transport_backend: TransportBackend::Simulated,
-            proof_backend: ProofBackend::RiscZero,
-            tee_backend: TeeBackend::NitroDev,
-        },
-        actual_transport_backend: TransportBackend::Simulated,
-    }));
+}
+
+async fn assert_risc0_node_verifies_valid_dev_receipt_chain() {
+    let app = build_risc0_app().await;
 
     let agreement = lsdc_common::dsp::ContractAgreement {
         agreement_id: lsdc_common::odrl::ast::PolicyId("agreement-dev-chain".into()),
@@ -208,7 +275,8 @@ async fn test_risc0_node_verifies_valid_dev_receipt_chain() {
         )
         .unwrap(),
     };
-    let manifest = lsdc_common::fixtures::read_json("liquid/analytics_manifest.json").unwrap();
+    let manifest: CsvTransformManifest =
+        lsdc_common::fixtures::read_json("liquid/analytics_manifest.json").unwrap();
     let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
     let dev_engine = proof_plane_host::DevReceiptProofEngine::new().unwrap();
     let first = dev_engine
@@ -240,6 +308,242 @@ async fn test_risc0_node_verifies_valid_dev_receipt_chain() {
     assert_eq!(
         verification.verified_backends,
         vec![ProofBackend::DevReceipt]
+    );
+}
+
+#[test]
+fn test_risc0_node_verifies_valid_dev_receipt_chain() {
+    run_risc0_http_test(
+        "risc0-http-verify-dev-chain",
+        assert_risc0_node_verifies_valid_dev_receipt_chain(),
+    );
+}
+
+async fn assert_recursive_risc0_two_hop_lineage_via_http_api() {
+    let app = build_risc0_app().await;
+
+    let offer: ContractOffer = post_json(
+        &app,
+        "/dsp/contracts/request",
+        ContractRequest {
+            consumer_id: "did:web:risc0-consumer".into(),
+            provider_id: "did:web:risc0-provider".into(),
+            offer_id: uuid::Uuid::new_v4().to_string(),
+            asset_id: "asset-risc0-recursive".into(),
+            odrl_policy: lsdc_common::fixtures::read_json("odrl/supported_policy.json").unwrap(),
+            policy_hash: String::new(),
+            evidence_requirements: vec![
+                EvidenceRequirement::ProvenanceReceipt,
+                EvidenceRequirement::ProofOfForgetting,
+                EvidenceRequirement::PriceApproval,
+            ],
+        },
+        StatusCode::OK,
+    )
+    .await;
+    let finalized: FinalizeContractResponse =
+        post_json(&app, "/dsp/contracts/finalize", offer, StatusCode::OK).await;
+
+    let first: LineageJobAccepted = post_json(
+        &app,
+        "/lsdc/lineage/jobs",
+        LineageJobRequest {
+            agreement: finalized.agreement.clone(),
+            iface: Some("lo".into()),
+            input_csv_utf8: String::from_utf8(
+                lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap(),
+            )
+            .unwrap(),
+            manifest: lsdc_common::fixtures::read_json("liquid/analytics_manifest.json").unwrap(),
+            current_price: 42.0,
+            metrics: TrainingMetrics {
+                loss_with_dataset: 0.25,
+                loss_without_dataset: 0.4,
+                accuracy_with_dataset: 0.9,
+                accuracy_without_dataset: 0.84,
+                model_run_id: uuid::Uuid::new_v4().to_string(),
+                metrics_window_started_at: chrono::Utc::now() - chrono::Duration::minutes(5),
+                metrics_window_ended_at: chrono::Utc::now(),
+            },
+            prior_receipt: None,
+            execution_bindings: None,
+        },
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let first_record = wait_for_job(&app, &first.job_id).await;
+    let first_result = first_record
+        .result
+        .expect("expected first RISC Zero result");
+
+    let second: LineageJobAccepted = post_json(
+        &app,
+        "/lsdc/lineage/jobs",
+        LineageJobRequest {
+            agreement: finalized.agreement,
+            iface: Some("lo".into()),
+            input_csv_utf8: first_result.transformed_csv_utf8.clone(),
+            manifest: recursive_manifest(),
+            current_price: 48.0,
+            metrics: TrainingMetrics {
+                loss_with_dataset: 0.22,
+                loss_without_dataset: 0.41,
+                accuracy_with_dataset: 0.91,
+                accuracy_without_dataset: 0.84,
+                model_run_id: uuid::Uuid::new_v4().to_string(),
+                metrics_window_started_at: chrono::Utc::now() - chrono::Duration::minutes(5),
+                metrics_window_ended_at: chrono::Utc::now(),
+            },
+            prior_receipt: Some(first_result.proof_bundle.provenance_receipt.clone()),
+            execution_bindings: None,
+        },
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let second_record = wait_for_job(&app, &second.job_id).await;
+    let second_result = second_record
+        .result
+        .expect("expected recursive RISC Zero result");
+
+    assert_eq!(second_record.state, LineageJobState::Succeeded);
+    assert_eq!(
+        second_result
+            .proof_bundle
+            .provenance_receipt
+            .prior_receipt_hash,
+        Some(first_result.proof_bundle.provenance_receipt.receipt_hash)
+    );
+    assert_eq!(
+        second_result.actual_execution_profile.proof_backend,
+        ProofBackend::RiscZero
+    );
+}
+
+#[test]
+fn test_recursive_risc0_two_hop_lineage_via_http_api() {
+    run_risc0_http_test(
+        "risc0-http-two-hop",
+        assert_recursive_risc0_two_hop_lineage_via_http_api(),
+    );
+}
+
+async fn assert_verify_evidence_dag_accepts_valid_recursive_risc0_subgraph() {
+    let app = build_risc0_app().await;
+    let engine = Risc0ProofEngine::new();
+    let agreement = lsdc_common::dsp::ContractAgreement {
+        agreement_id: lsdc_common::odrl::ast::PolicyId("agreement-risc0-dag".into()),
+        asset_id: "asset-risc0".into(),
+        provider_id: "did:web:risc0-provider".into(),
+        consumer_id: "did:web:risc0-consumer".into(),
+        odrl_policy: lsdc_common::fixtures::read_json("odrl/supported_policy.json").unwrap(),
+        policy_hash: "policy-hash".into(),
+        evidence_requirements: vec![EvidenceRequirement::ProvenanceReceipt],
+        liquid_policy: lsdc_common::odrl::parser::lower_policy(
+            &lsdc_common::fixtures::read_json("odrl/supported_policy.json").unwrap(),
+            &[EvidenceRequirement::ProvenanceReceipt],
+        )
+        .unwrap(),
+    };
+    let manifest: CsvTransformManifest =
+        lsdc_common::fixtures::read_json("liquid/analytics_manifest.json").unwrap();
+    let mut second_manifest = manifest.clone();
+    second_manifest.dataset_id = "dataset-risc0-dag-sibling".into();
+    let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
+    let first = engine
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
+        .await
+        .unwrap();
+    let second = engine
+        .execute_csv_transform(&agreement, input.as_slice(), &second_manifest, None, None)
+        .await
+        .unwrap();
+    let composed = engine
+        .compose_receipts(
+            &[first.receipt.clone(), second.receipt.clone()],
+            lsdc_ports::CompositionContext {
+                agreement_id: agreement.agreement_id.0.clone(),
+                agreement_commitment_hash: None,
+                session_id: None,
+                selector_hash: None,
+                capability_commitment_hash: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dag = EvidenceDag::new(
+        vec![
+            proof_node("left", &first.receipt),
+            proof_node("right", &second.receipt),
+            proof_node("composed", &composed),
+        ],
+        vec![
+            EvidenceEdge {
+                from_node_id: "left".into(),
+                to_node_id: "composed".into(),
+                dependency_type: DependencyType::DerivedFrom,
+            },
+            EvidenceEdge {
+                from_node_id: "right".into(),
+                to_node_id: "composed".into(),
+                dependency_type: DependencyType::DerivedFrom,
+            },
+        ],
+    )
+    .unwrap();
+
+    let verification: VerifyEvidenceDagResponse = post_json(
+        &app,
+        "/lsdc/v1/evidence/verify-dag",
+        VerifyEvidenceDagRequest {
+            dag: dag.clone(),
+            receipts: Vec::new(),
+        },
+        StatusCode::OK,
+    )
+    .await;
+    assert!(verification.valid);
+
+    let mut tampered = composed.clone();
+    tampered.parent_receipt_hashes.swap(0, 1);
+    let tampered_dag = EvidenceDag::new(
+        vec![
+            proof_node("left", &first.receipt),
+            proof_node("right", &second.receipt),
+            proof_node("composed", &tampered),
+        ],
+        vec![
+            EvidenceEdge {
+                from_node_id: "left".into(),
+                to_node_id: "composed".into(),
+                dependency_type: DependencyType::DerivedFrom,
+            },
+            EvidenceEdge {
+                from_node_id: "right".into(),
+                to_node_id: "composed".into(),
+                dependency_type: DependencyType::DerivedFrom,
+            },
+        ],
+    )
+    .unwrap();
+    let tampered_verification: VerifyEvidenceDagResponse = post_json(
+        &app,
+        "/lsdc/v1/evidence/verify-dag",
+        VerifyEvidenceDagRequest {
+            dag: tampered_dag,
+            receipts: Vec::new(),
+        },
+        StatusCode::OK,
+    )
+    .await;
+    assert!(!tampered_verification.valid);
+}
+
+#[test]
+fn test_verify_evidence_dag_accepts_valid_recursive_risc0_subgraph() {
+    run_risc0_http_test(
+        "risc0-http-dag",
+        assert_verify_evidence_dag_accepts_valid_recursive_risc0_subgraph(),
     );
 }
 

@@ -1,11 +1,8 @@
 [package]
-name = "proof-plane-core"
+name = "proof-plane-risc0-model"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-lsdc-evidence = { path = "../../lsdc-evidence" }
 lsdc-common = { path = "../../lsdc-common" }
-chrono = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }

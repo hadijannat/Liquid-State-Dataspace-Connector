@@ -4,6 +4,8 @@ use axum::extract::State;
 use axum::Json;
 use lsdc_common::crypto::ProvenanceReceipt;
 use lsdc_common::execution::ProofBackend;
+#[cfg(feature = "risc0")]
+use lsdc_ports::ProofEngine;
 use lsdc_service_types::{EvidenceVerificationRequest, EvidenceVerificationResult};
 use proof_plane_core::verify_receipt_links;
 #[cfg(feature = "risc0")]

@@ -13,13 +13,37 @@ use lsdc_common::runtime_model::{
     DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus,
 };
 use lsdc_ports::{CompositionContext, ProofEngine};
+#[cfg(feature = "risc0")]
+use std::future::Future;
 use std::sync::Once;
 
 fn ensure_test_env() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         std::env::set_var("LSDC_ALLOW_DEV_DEFAULTS", "1");
+        std::env::set_var("RISC0_DEV_MODE", "1");
     });
+}
+
+#[cfg(feature = "risc0")]
+fn run_risc0_test<F>(name: &str, future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    ensure_test_env();
+    std::thread::Builder::new()
+        .name(name.into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(future);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 fn agreement() -> ContractAgreement {
@@ -171,8 +195,7 @@ async fn test_composes_receipts_and_rejects_tampered_dag_node() {
 }
 
 #[cfg(feature = "risc0")]
-#[tokio::test]
-async fn test_risc0_single_hop_proves_and_verifies_transform() {
+async fn assert_risc0_single_hop_proves_and_verifies_transform() {
     let engine = Risc0ProofEngine::new();
     let expected = lsdc_common::fixtures::read_bytes("proof/expected_redacted.csv").unwrap();
     let result = engine
@@ -191,9 +214,16 @@ async fn test_risc0_single_hop_proves_and_verifies_transform() {
 }
 
 #[cfg(feature = "risc0")]
-#[tokio::test]
-async fn test_risc0_matches_dev_receipt_output_for_same_manifest() {
-    ensure_test_env();
+#[test]
+fn test_risc0_single_hop_proves_and_verifies_transform() {
+    run_risc0_test(
+        "risc0-single-hop",
+        assert_risc0_single_hop_proves_and_verifies_transform(),
+    );
+}
+
+#[cfg(feature = "risc0")]
+async fn assert_risc0_matches_dev_receipt_output_for_same_manifest() {
     let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
     let agreement = agreement();
     let manifest = manifest();
@@ -214,12 +244,57 @@ async fn test_risc0_matches_dev_receipt_output_for_same_manifest() {
 }
 
 #[cfg(feature = "risc0")]
-#[tokio::test]
-async fn test_risc0_rejects_recursive_receipts() {
-    ensure_test_env();
+#[test]
+fn test_risc0_matches_dev_receipt_output_for_same_manifest() {
+    run_risc0_test(
+        "risc0-matches-dev",
+        assert_risc0_matches_dev_receipt_output_for_same_manifest(),
+    );
+}
+
+#[cfg(feature = "risc0")]
+async fn assert_risc0_recursive_transform_succeeds() {
+    let engine = Risc0ProofEngine::new();
     let agreement = agreement();
     let manifest = manifest();
-    let prior_receipt = DevReceiptProofEngine::new()
+    let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
+
+    let first = engine
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
+        .await
+        .unwrap();
+    let second = engine
+        .execute_csv_transform(
+            &agreement,
+            &first.output_csv,
+            &manifest,
+            Some(&first.receipt),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(engine
+        .verify_chain(&[first.receipt, second.receipt])
+        .await
+        .unwrap());
+}
+
+#[cfg(feature = "risc0")]
+#[test]
+fn test_risc0_recursive_transform_succeeds() {
+    run_risc0_test(
+        "risc0-recursive-transform",
+        assert_risc0_recursive_transform_succeeds(),
+    );
+}
+
+#[cfg(feature = "risc0")]
+async fn assert_risc0_rejects_dev_receipt_as_recursive_parent() {
+    let engine = Risc0ProofEngine::new();
+    let agreement = agreement();
+    let manifest = manifest();
+    let prior = DevReceiptProofEngine::new()
         .unwrap()
         .execute_csv_transform(
             &agreement,
@@ -229,15 +304,14 @@ async fn test_risc0_rejects_recursive_receipts() {
             None,
         )
         .await
-        .unwrap()
-        .receipt;
+        .unwrap();
 
-    let err = Risc0ProofEngine::new()
+    let err = engine
         .execute_csv_transform(
             &agreement,
-            &lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap(),
+            prior.output_csv.as_slice(),
             &manifest,
-            Some(&prior_receipt),
+            Some(&prior.receipt),
             None,
         )
         .await
@@ -246,6 +320,165 @@ async fn test_risc0_rejects_recursive_receipts() {
     assert!(matches!(
         err,
         LsdcError::Unsupported(message)
-            if message == "recursive proving not implemented for risc0 backend"
+            if message == "risc0 recursive proving only supports prior and child receipts produced by the risc0 backend"
     ));
+}
+
+#[cfg(feature = "risc0")]
+#[test]
+fn test_risc0_rejects_dev_receipt_as_recursive_parent() {
+    run_risc0_test(
+        "risc0-reject-dev-parent",
+        assert_risc0_rejects_dev_receipt_as_recursive_parent(),
+    );
+}
+
+#[cfg(feature = "risc0")]
+async fn assert_risc0_composes_receipts_and_rejects_tampered_dag_node() {
+    let engine = Risc0ProofEngine::new();
+    let agreement = agreement();
+    let manifest = manifest();
+    let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
+    let mut second_manifest = manifest.clone();
+    second_manifest.dataset_id = "dataset-proof-compose-sibling".into();
+    let first = engine
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
+        .await
+        .unwrap();
+    let second = engine
+        .execute_csv_transform(&agreement, input.as_slice(), &second_manifest, None, None)
+        .await
+        .unwrap();
+
+    let composed = engine
+        .compose_receipts(
+            &[first.receipt.clone(), second.receipt.clone()],
+            CompositionContext {
+                agreement_id: agreement.agreement_id.0.clone(),
+                agreement_commitment_hash: None,
+                session_id: None,
+                selector_hash: None,
+                capability_commitment_hash: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(composed.receipt_kind, ReceiptKind::Composition);
+    assert_eq!(composed.recursion_depth, 1);
+    assert_eq!(
+        composed.parent_receipt_hashes,
+        vec![
+            first.receipt.receipt_hash.clone(),
+            second.receipt.receipt_hash.clone()
+        ]
+    );
+
+    let dag = EvidenceDag::new(
+        vec![
+            proof_node("proof-1", &first.receipt),
+            proof_node("proof-2", &second.receipt),
+            proof_node("proof-composed", &composed),
+        ],
+        vec![
+            EvidenceEdge {
+                from_node_id: "proof-1".into(),
+                to_node_id: "proof-composed".into(),
+                dependency_type: DependencyType::DerivedFrom,
+            },
+            EvidenceEdge {
+                from_node_id: "proof-2".into(),
+                to_node_id: "proof-composed".into(),
+                dependency_type: DependencyType::DerivedFrom,
+            },
+        ],
+    )
+    .unwrap();
+    assert!(engine.verify_receipt_dag(&dag).await.unwrap());
+
+    let mut tampered = composed.clone();
+    tampered.parent_receipt_hashes.swap(0, 1);
+    let tampered_dag = EvidenceDag::new(
+        vec![
+            proof_node("proof-1", &first.receipt),
+            proof_node("proof-2", &second.receipt),
+            proof_node("proof-tampered", &tampered),
+        ],
+        vec![
+            EvidenceEdge {
+                from_node_id: "proof-1".into(),
+                to_node_id: "proof-tampered".into(),
+                dependency_type: DependencyType::DerivedFrom,
+            },
+            EvidenceEdge {
+                from_node_id: "proof-2".into(),
+                to_node_id: "proof-tampered".into(),
+                dependency_type: DependencyType::DerivedFrom,
+            },
+        ],
+    )
+    .unwrap();
+    assert!(!engine.verify_receipt_dag(&tampered_dag).await.unwrap());
+}
+
+#[cfg(feature = "risc0")]
+#[test]
+fn test_risc0_composes_receipts_and_rejects_tampered_dag_node() {
+    run_risc0_test(
+        "risc0-compose",
+        assert_risc0_composes_receipts_and_rejects_tampered_dag_node(),
+    );
+}
+
+#[cfg(feature = "risc0")]
+async fn assert_risc0_multi_hop_composition_can_be_parent() {
+    let engine = Risc0ProofEngine::new();
+    let agreement = agreement();
+    let manifest = manifest();
+    let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
+    let first = engine
+        .execute_csv_transform(&agreement, &input, &manifest, None, None)
+        .await
+        .unwrap();
+    let second = engine
+        .execute_csv_transform(&agreement, input.as_slice(), &manifest, None, None)
+        .await
+        .unwrap();
+    let composed = engine
+        .compose_receipts(
+            &[first.receipt.clone(), second.receipt.clone()],
+            CompositionContext {
+                agreement_id: agreement.agreement_id.0.clone(),
+                agreement_commitment_hash: None,
+                session_id: None,
+                selector_hash: None,
+                capability_commitment_hash: None,
+            },
+        )
+        .await
+        .unwrap();
+    let recursive = engine
+        .execute_csv_transform(
+            &agreement,
+            &first.output_csv,
+            &manifest,
+            Some(&composed),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(engine
+        .verify_chain(&[first.receipt, second.receipt, composed, recursive.receipt])
+        .await
+        .unwrap());
+}
+
+#[cfg(feature = "risc0")]
+#[test]
+fn test_risc0_multi_hop_composition_can_be_parent() {
+    run_risc0_test(
+        "risc0-multi-hop",
+        assert_risc0_multi_hop_composition_can_be_parent(),
+    );
 }

@@ -33,6 +33,7 @@ use lsdc_service_types::{
     ExecutionOverlaySummary, IssueExecutionChallengeRequest, IssueExecutionChallengeResponse,
     SubmitAttestationEvidenceResponse,
 };
+use proof_plane_core::verify_provenance_receipt_dag;
 #[cfg(feature = "risc0")]
 use proof_plane_host::Risc0ProofEngine;
 use receipt_log::LocalTransparencyLog;
@@ -241,7 +242,14 @@ impl ApiState {
                     Unsupported
                 },
             ),
-            ("proof.risc0_recursive".into(), Unsupported),
+            (
+                "proof.risc0_recursive".into(),
+                if self.proof_engine.proof_backend() == ProofBackend::RiscZero {
+                    Experimental
+                } else {
+                    Unsupported
+                },
+            ),
             ("transparency.local_merkle".into(), Implemented),
             (
                 "teardown.dev_deletion".into(),
@@ -271,7 +279,8 @@ impl ApiState {
             transparency_registration_mode: TransparencyMode::Required,
             proof_composition_mode: match self.proof_engine.proof_backend() {
                 ProofBackend::DevReceipt => ProofCompositionMode::Dag,
-                ProofBackend::RiscZero | ProofBackend::None => ProofCompositionMode::None,
+                ProofBackend::RiscZero => ProofCompositionMode::Dag,
+                ProofBackend::None => ProofCompositionMode::None,
             },
         }
     }
@@ -291,7 +300,7 @@ impl ApiState {
                 .into(),
                 proof_profile: match self.proof_engine.proof_backend() {
                     ProofBackend::DevReceipt => "dev-receipt-dag-v1",
-                    ProofBackend::RiscZero => "risc0-single-hop-v1",
+                    ProofBackend::RiscZero => "risc0-recursive-dag-v1",
                     ProofBackend::None => "none",
                 }
                 .into(),
@@ -561,6 +570,12 @@ impl ApiState {
     }
 
     pub async fn verify_evidence_dag(&self, dag: &EvidenceDag) -> lsdc_common::error::Result<bool> {
+        let verification =
+            verify_provenance_receipt_dag(dag).map_err(lsdc_common::error::LsdcError::from)?;
+        if !verification.valid {
+            return Ok(false);
+        }
+
         for node in &dag.nodes {
             if node.kind != ExecutionStatementKind::ProofReceiptRegistered {
                 continue;
