@@ -1,6 +1,44 @@
 # Liquid-State Dataspace Connector
 
+[![Host CI](https://github.com/hadijannat/Liquid-State-Dataspace-Connector/actions/workflows/host-ci.yml/badge.svg?branch=main)](https://github.com/hadijannat/Liquid-State-Dataspace-Connector/actions/workflows/host-ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](Cargo.toml)
+[![Rust nightly](https://img.shields.io/badge/rust-nightly-orange.svg)](rust-toolchain.toml)
+
 The Liquid-State Dataspace Connector (LSDC) is a Rust-first dataspace prototype that keeps `DSP + ODRL` at the external boundary, but treats the connector itself as a runtime platform for negotiation, transport enforcement, provenance proofs, attested execution, and advisory pricing. The repo is intentionally strict about truthfulness: the local stack runs real control-plane, agent, proof, and pricing flows today, while recursive proofs, live enclave orchestration, and autonomous contract mutation or billing settlement remain research or future work rather than current runtime claims.
+
+## Architecture At a Glance
+
+```mermaid
+flowchart LR
+    Client["External DSP + ODRL Clients"] --> API["control-plane-api<br/>HTTP API"]
+
+    subgraph Control["Control Plane"]
+        API --> Orchestrator["Negotiation + Policy Lowering<br/>crates/control-plane"]
+        Orchestrator --> Store["SQLite Persistence<br/>crates/control-plane-store"]
+    end
+
+    Orchestrator --> AgentGrpc["gRPC Coordination<br/>liquid-agent-grpc"]
+    subgraph Data["Liquid Data Plane"]
+        AgentGrpc --> Agent["liquid-agent<br/>Daemon"]
+        Agent --> Enforcement["Transport Enforcement<br/>Simulation or Aya/XDP"]
+    end
+
+    Orchestrator --> ProofHost["Proof Host<br/>crates/proof-plane/host"]
+    subgraph Proof["Proof Plane"]
+        ProofHost --> Kernel["Transform Kernel<br/>CSV Lineage Execution"]
+        Kernel --> Evidence["Receipt Proofs +<br/>Forgetting Artifacts"]
+    end
+
+    Orchestrator --> Tee["TEE Orchestrator<br/>Attestation-Aware Execution"]
+    Orchestrator --> Pricing["Pricing Oracle<br/>Advisory gRPC Decisions"]
+
+    Evidence --> API
+    Tee --> API
+    Pricing --> API
+    API --> Surfaces["Transfer, Lineage, Evidence,<br/>and Settlement Surfaces"]
+```
+
+The diagram reflects the currently implemented runtime path. Recursive proof rollups, live enclave lifecycle orchestration, and non-advisory pricing or settlement mutation remain future work.
 
 ## What LSDC Is
 
@@ -28,12 +66,12 @@ The Liquid-State Dataspace Connector (LSDC) is a Rust-first dataspace prototype 
 
 Implemented behavior belongs in [docs/current-state.md](docs/current-state.md). Long-horizon architecture and research direction belong in [docs/research/README.md](docs/research/README.md).
 
-## How The System Is Organized
+## How The Diagram Maps To The Repo
 
-- Control plane: `apps/control-plane-api`, `crates/control-plane`, `crates/control-plane-http`, and `crates/control-plane-store` handle negotiation, orchestration, HTTP routing, and SQLite persistence.
-- Liquid data plane: `apps/liquid-agent`, `crates/liquid-agent-grpc`, `crates/liquid-data-plane/agent-core`, and `crates/liquid-data-plane/ebpf` handle transport enforcement and agent communication.
-- Proof plane: `crates/proof-plane/transform-kernel` and `crates/proof-plane/host` run the shared CSV transform path, dev receipt backend, and optional `RISC Zero` backend.
-- TEE and pricing plane: `crates/tee-orchestrator`, `proto/pricing/v1/pricing.proto`, and `python/pricing-oracle` cover attested execution, forgetting-proof verification, and advisory pricing over gRPC.
+- HTTP entrypoint: `apps/control-plane-api` hosts the `axum` service and wires together the control-plane, transport, proof, TEE, and pricing integrations.
+- Control plane modules: `crates/control-plane`, `crates/control-plane-http`, and `crates/control-plane-store` own negotiation, policy lowering, route handling, and SQLite-backed state.
+- Liquid data plane: `apps/liquid-agent`, `crates/liquid-agent-grpc`, `crates/liquid-data-plane/agent-core`, and `crates/liquid-data-plane/ebpf` implement agent communication and transport enforcement.
+- Proof, TEE, and pricing integrations: `crates/proof-plane/host`, `crates/proof-plane/transform-kernel`, `crates/tee-orchestrator`, `proto/pricing/v1/pricing.proto`, and `python/pricing-oracle` provide lineage execution, evidence generation, attestation-aware execution hooks, and advisory pricing.
 
 ## Repo Layout
 
