@@ -1,6 +1,8 @@
 use crate::attestation::verify_attestation;
 use lsdc_common::crypto::{sign_bytes, verify_signature, ProofOfForgetting, Sha256Hash};
 use lsdc_common::error::{LsdcError, Result};
+#[cfg(test)]
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 pub(crate) const DEFAULT_FORGETTING_SECRET: &str = "lsdc-forgetting-dev-secret";
 const FORGETTING_SECRET_ENV: &str = "LSDC_FORGETTING_SECRET";
@@ -56,7 +58,7 @@ fn resolve_forgetting_secret(
     explicit_secret: Option<String>,
     allow_dev_defaults: bool,
 ) -> Result<String> {
-    if let Some(secret) = explicit_secret {
+    if let Some(secret) = explicit_secret.filter(|secret| !secret.trim().is_empty()) {
         return Ok(secret);
     }
 
@@ -67,6 +69,12 @@ fn resolve_forgetting_secret(
     Err(LsdcError::Attestation(format!(
         "{FORGETTING_SECRET_ENV} must be set unless {ALLOW_DEV_DEFAULTS_ENV}=1"
     )))
+}
+
+#[cfg(test)]
+pub(crate) fn env_lock_for_tests() -> MutexGuard<'static, ()> {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
 }
 
 fn forgetting_payload_bytes(
@@ -87,14 +95,6 @@ fn forgetting_payload_bytes(
 mod tests {
     use super::*;
     use crate::attestation::build_attestation_document;
-    use std::sync::Once;
-
-    fn ensure_test_env() {
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
-            std::env::set_var("LSDC_ALLOW_DEV_DEFAULTS", "1");
-        });
-    }
 
     #[test]
     fn test_resolve_forgetting_secret_rejects_missing_secret_without_dev_defaults() {
@@ -105,8 +105,18 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_forgetting_secret_rejects_blank_secret_without_dev_defaults() {
+        let err = resolve_forgetting_secret(Some("".into()), false).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("LSDC_FORGETTING_SECRET must be set unless LSDC_ALLOW_DEV_DEFAULTS=1"));
+    }
+
+    #[test]
     fn test_build_and_verify_forgetting_proof() {
-        ensure_test_env();
+        let _guard = env_lock_for_tests();
+        let old_allow_dev_defaults = std::env::var("LSDC_ALLOW_DEV_DEFAULTS").ok();
+        std::env::set_var("LSDC_ALLOW_DEV_DEFAULTS", "1");
         let attestation = build_attestation_document(
             "enclave-1",
             &Sha256Hash::digest_bytes(b"binary"),
@@ -119,13 +129,20 @@ mod tests {
             &Sha256Hash::digest_bytes(b"input"),
         )
         .unwrap();
+        let verification = verify_proof_of_forgetting(&proof).unwrap();
 
-        assert!(verify_proof_of_forgetting(&proof).unwrap());
+        match old_allow_dev_defaults {
+            Some(value) => std::env::set_var("LSDC_ALLOW_DEV_DEFAULTS", value),
+            None => std::env::remove_var("LSDC_ALLOW_DEV_DEFAULTS"),
+        }
+        assert!(verification);
     }
 
     #[test]
     fn test_rejects_forgetting_proof_with_invalid_attestation() {
-        ensure_test_env();
+        let _guard = env_lock_for_tests();
+        let old_allow_dev_defaults = std::env::var("LSDC_ALLOW_DEV_DEFAULTS").ok();
+        std::env::set_var("LSDC_ALLOW_DEV_DEFAULTS", "1");
         let attestation = build_attestation_document(
             "enclave-1",
             &Sha256Hash::digest_bytes(b"binary"),
@@ -139,7 +156,12 @@ mod tests {
         )
         .unwrap();
         proof.attestation.signature_hex = "tampered".into();
+        let verification = verify_proof_of_forgetting(&proof).unwrap();
 
-        assert!(!verify_proof_of_forgetting(&proof).unwrap());
+        match old_allow_dev_defaults {
+            Some(value) => std::env::set_var("LSDC_ALLOW_DEV_DEFAULTS", value),
+            None => std::env::remove_var("LSDC_ALLOW_DEV_DEFAULTS"),
+        }
+        assert!(!verification);
     }
 }

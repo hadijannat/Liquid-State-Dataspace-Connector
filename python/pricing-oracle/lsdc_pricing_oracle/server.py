@@ -91,7 +91,13 @@ def _ensure_insecure_bind_allowed(host: str) -> None:
         )
 
 
-app = FastAPI(title="LSDC Pricing Oracle", version="0.2.0")
+app = FastAPI(
+    title="LSDC Pricing Oracle",
+    version="0.2.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 
 @app.get("/health")

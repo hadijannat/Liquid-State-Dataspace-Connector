@@ -7,6 +7,7 @@ use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::TransportBackend;
 use lsdc_ports::{DataPlane, EnforcementHandle, EnforcementRuntimeStatus, EnforcementStatus};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -18,9 +19,6 @@ use crate::backend::linux_xdp::{
 use crate::runtime::InterfaceRuntime;
 #[cfg(target_os = "linux")]
 use crate::runtime::LinuxAttachment;
-#[cfg(target_os = "linux")]
-use std::collections::HashSet;
-
 const SESSION_PORT_START: u16 = 20_000;
 const SESSION_PORT_END_EXCLUSIVE: u16 = 60_000;
 const SESSION_PORT_RANGE_LEN: usize = (SESSION_PORT_END_EXCLUSIVE - SESSION_PORT_START) as usize;
@@ -372,6 +370,15 @@ fn resolve_transport_selector(
         .map(usize::from)
         .filter(|offset| *offset < SESSION_PORT_RANGE_LEN)
         .unwrap_or_default();
+    let occupied_ports = tracked
+        .values()
+        .filter(|entry| {
+            entry.interface == interface
+                && entry.transport_selector.protocol == preferred.protocol
+                && entry.state == LifecycleState::Active
+        })
+        .map(|entry| entry.transport_selector.port)
+        .collect::<HashSet<_>>();
 
     for step in 0..SESSION_PORT_RANGE_LEN {
         let offset = (base_offset + step) % SESSION_PORT_RANGE_LEN;
@@ -380,12 +387,7 @@ fn resolve_transport_selector(
             port: SESSION_PORT_START + offset as u16,
         };
 
-        let in_use = tracked.values().any(|entry| {
-            entry.interface == interface
-                && entry.transport_selector == candidate
-                && entry.state == LifecycleState::Active
-        });
-        if !in_use {
+        if !occupied_ports.contains(&candidate.port) {
             return Ok(candidate);
         }
     }

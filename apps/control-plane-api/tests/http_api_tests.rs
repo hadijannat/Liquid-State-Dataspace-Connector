@@ -291,6 +291,33 @@ async fn test_non_health_routes_require_bearer_auth() {
         .unwrap();
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
+    let wrong_token = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/dsp/contracts/request")
+                .header("authorization", "Bearer wrong-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&ContractRequest {
+                        consumer_id: "did:web:consumer".into(),
+                        provider_id: "did:web:provider".into(),
+                        offer_id: uuid::Uuid::new_v4().to_string(),
+                        asset_id: "asset-csv".into(),
+                        odrl_policy: lsdc_common::fixtures::read_json("odrl/supported_policy.json")
+                            .unwrap(),
+                        policy_hash: String::new(),
+                        evidence_requirements: vec![EvidenceRequirement::ProvenanceReceipt],
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_token.status(), StatusCode::UNAUTHORIZED);
+
     let health = app
         .clone()
         .oneshot(
@@ -768,6 +795,51 @@ async fn test_empty_receipt_chain_is_invalid() {
     .await;
     assert!(!result.valid, "empty receipt list must not be valid");
     assert_eq!(result.checked_receipt_count, 0);
+}
+
+#[tokio::test]
+async fn test_receipt_chain_with_broken_prior_hash_is_invalid() {
+    ensure_test_env();
+    let app = build_test_app(start_simulated_agent().await).await;
+    let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
+    let finalized = finalize_offer(&app, &offer).await;
+
+    let first_job = start_lineage_job(&app, &finalized.agreement, None).await;
+    let first_record = wait_for_job(&app, &first_job.job_id).await;
+    let first_result = first_record.result.expect("expected first lineage result");
+
+    let second_job = start_lineage_job_with_input(
+        &app,
+        &finalized.agreement,
+        Some(first_result.proof_bundle.provenance_receipt.clone()),
+        first_result.transformed_csv_utf8.clone(),
+    )
+    .await;
+    let second_record = wait_for_job(&app, &second_job.job_id).await;
+    let second_result = second_record
+        .result
+        .expect("expected second lineage result");
+
+    let mut broken_receipt = second_result.proof_bundle.provenance_receipt;
+    broken_receipt.prior_receipt_hash = Some(Sha256Hash::digest_bytes(b"wrong-prior"));
+
+    let verification: lsdc_service_types::EvidenceVerificationResult = get_json(
+        &app,
+        Method::POST,
+        "/lsdc/evidence/verify-chain",
+        Some(EvidenceVerificationRequest {
+            receipts: vec![first_result.proof_bundle.provenance_receipt, broken_receipt],
+        }),
+        StatusCode::OK,
+    )
+    .await;
+
+    assert!(!verification.valid);
+    assert_eq!(verification.checked_receipt_count, 2);
+    assert_eq!(
+        verification.verified_backends,
+        vec![ProofBackend::DevReceipt]
+    );
 }
 
 #[tokio::test]

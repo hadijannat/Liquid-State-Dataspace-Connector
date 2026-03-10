@@ -117,6 +117,8 @@ def resolve_pricing_secret(
 ) -> str:
     if explicit_secret is None:
         explicit_secret = os.getenv(PRICING_SECRET_ENV)
+    if explicit_secret is not None:
+        explicit_secret = explicit_secret.strip()
     if explicit_secret:
         return explicit_secret
 

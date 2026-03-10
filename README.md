@@ -68,7 +68,7 @@ cargo test --workspace
 .venv/bin/python -m pytest python/pricing-oracle/tests
 ```
 
-Before running the reference stack outside tests, set the control-plane bearer token plus the proof, forgetting, and pricing signing secrets. The demo script exports development values for you and enables explicit dev-mode fallbacks with `LSDC_ALLOW_DEV_DEFAULTS=1`.
+Before running the reference stack outside tests, set the control-plane bearer token plus the proof, forgetting, and pricing signing secrets. The demo script exports development values for the stack processes it launches, enables explicit dev-mode fallbacks with `LSDC_ALLOW_DEV_DEFAULTS=1`, and prints the bearer token you will need from any separate shell that calls the protected HTTP routes.
 
 Start the local Phase 3 reference stack:
 

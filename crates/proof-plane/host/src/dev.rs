@@ -61,7 +61,7 @@ fn resolve_proof_secret(
     explicit_secret: Option<String>,
     allow_dev_defaults: bool,
 ) -> Result<String> {
-    if let Some(secret) = explicit_secret {
+    if let Some(secret) = explicit_secret.filter(|secret| !secret.trim().is_empty()) {
         return Ok(secret);
     }
 
@@ -199,6 +199,14 @@ mod tests {
     #[test]
     fn test_resolve_proof_secret_rejects_missing_secret_without_dev_defaults() {
         let err = resolve_proof_secret(None, false).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("LSDC_PROOF_SECRET must be set unless LSDC_ALLOW_DEV_DEFAULTS=1"));
+    }
+
+    #[test]
+    fn test_resolve_proof_secret_rejects_blank_secret_without_dev_defaults() {
+        let err = resolve_proof_secret(Some("   ".into()), false).unwrap_err();
         assert!(err
             .to_string()
             .contains("LSDC_PROOF_SECRET must be set unless LSDC_ALLOW_DEV_DEFAULTS=1"));

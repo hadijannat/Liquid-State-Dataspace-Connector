@@ -79,3 +79,22 @@ def test_resolve_pricing_secret_rejects_missing_secret_without_dev_defaults():
         assert "LSDC_PRICING_SECRET must be set unless LSDC_ALLOW_DEV_DEFAULTS=1" in str(err)
     else:
         raise AssertionError("expected missing pricing secret to fail closed")
+
+
+def test_resolve_pricing_secret_rejects_blank_secret_without_dev_defaults():
+    try:
+        resolve_pricing_secret(explicit_secret="   ", allow_dev_defaults_override=False)
+    except RuntimeError as err:
+        assert "LSDC_PRICING_SECRET must be set unless LSDC_ALLOW_DEV_DEFAULTS=1" in str(err)
+    else:
+        raise AssertionError("expected blank pricing secret to fail closed")
+
+
+def test_resolve_pricing_secret_allows_dev_default_with_explicit_opt_in():
+    assert (
+        resolve_pricing_secret(
+            explicit_secret=None,
+            allow_dev_defaults_override=True,
+        )
+        == "lsdc-pricing-dev-secret"
+    )
