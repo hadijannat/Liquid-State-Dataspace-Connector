@@ -8,6 +8,14 @@ use lsdc_common::liquid::CsvTransformManifest;
 use lsdc_common::odrl::ast::PolicyId;
 use lsdc_common::odrl::parser::lower_policy;
 use lsdc_ports::ProofEngine;
+use std::sync::Once;
+
+fn ensure_test_env() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        std::env::set_var("LSDC_ALLOW_DEV_DEFAULTS", "1");
+    });
+}
 
 fn agreement() -> ContractAgreement {
     let odrl_policy: serde_json::Value =
@@ -32,7 +40,8 @@ fn manifest() -> CsvTransformManifest {
 
 #[tokio::test]
 async fn test_proves_and_verifies_transform() {
-    let engine = DevReceiptProofEngine::new();
+    ensure_test_env();
+    let engine = DevReceiptProofEngine::new().unwrap();
     let expected = lsdc_common::fixtures::read_bytes("proof/expected_redacted.csv").unwrap();
     let result = engine
         .execute_csv_transform(
@@ -50,7 +59,8 @@ async fn test_proves_and_verifies_transform() {
 
 #[tokio::test]
 async fn test_verifies_receipt_chain() {
-    let engine = DevReceiptProofEngine::new();
+    ensure_test_env();
+    let engine = DevReceiptProofEngine::new().unwrap();
     let agreement = agreement();
     let manifest = manifest();
     let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
@@ -96,11 +106,13 @@ async fn test_risc0_single_hop_proves_and_verifies_transform() {
 #[cfg(feature = "risc0")]
 #[tokio::test]
 async fn test_risc0_matches_dev_receipt_output_for_same_manifest() {
+    ensure_test_env();
     let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
     let agreement = agreement();
     let manifest = manifest();
 
     let dev_output = DevReceiptProofEngine::new()
+        .unwrap()
         .execute_csv_transform(&agreement, &input, &manifest, None)
         .await
         .unwrap()
@@ -117,9 +129,11 @@ async fn test_risc0_matches_dev_receipt_output_for_same_manifest() {
 #[cfg(feature = "risc0")]
 #[tokio::test]
 async fn test_risc0_rejects_recursive_receipts() {
+    ensure_test_env();
     let agreement = agreement();
     let manifest = manifest();
     let prior_receipt = DevReceiptProofEngine::new()
+        .unwrap()
         .execute_csv_transform(
             &agreement,
             &lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap(),

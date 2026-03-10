@@ -54,6 +54,8 @@ async def test_bind_failure_raises_and_logs(caplog, monkeypatch):
     )()
 
     monkeypatch.setattr(pricing_server.grpc.aio, "server", lambda: fake_server)
+    monkeypatch.setenv("LSDC_ALLOW_DEV_DEFAULTS", "1")
+    monkeypatch.setenv("LSDC_PRICING_SECRET", "test-pricing-secret")
     monkeypatch.setattr(
         pricing_server.pricing_pb2_grpc,
         "add_PricingOracleServicer_to_server",
@@ -67,3 +69,19 @@ async def test_bind_failure_raises_and_logs(caplog, monkeypatch):
     assert any("failed to bind insecure gRPC server" in r.message for r in caplog.records)
     fake_server.start.assert_not_called()
     fake_server.wait_for_termination.assert_not_called()
+
+
+def test_non_loopback_host_is_rejected_even_with_dev_defaults(monkeypatch):
+    from lsdc_pricing_oracle.server import _ensure_insecure_bind_allowed
+
+    monkeypatch.setenv("LSDC_ALLOW_DEV_DEFAULTS", "1")
+    with pytest.raises(RuntimeError, match="loopback address"):
+        _ensure_insecure_bind_allowed("0.0.0.0")
+
+
+def test_insecure_bind_requires_dev_defaults(monkeypatch):
+    from lsdc_pricing_oracle.server import _ensure_insecure_bind_allowed
+
+    monkeypatch.delenv("LSDC_ALLOW_DEV_DEFAULTS", raising=False)
+    with pytest.raises(RuntimeError, match="LSDC_ALLOW_DEV_DEFAULTS=1"):
+        _ensure_insecure_bind_allowed("127.0.0.1")

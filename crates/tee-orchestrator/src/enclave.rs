@@ -1,5 +1,5 @@
 use crate::attestation::build_attestation_document;
-use crate::forgetting::build_proof_of_forgetting;
+use crate::forgetting::{build_proof_of_forgetting, validate_forgetting_secret};
 use async_trait::async_trait;
 use lsdc_common::crypto::{AttestationDocument, AttestationMeasurements, ProofBundle, Sha256Hash};
 use lsdc_common::error::{LsdcError, Result};
@@ -26,18 +26,20 @@ pub struct NitroLiveAttestationMaterial {
 }
 
 impl NitroEnclaveManager {
-    pub fn new_dev(proof_engine: Arc<dyn ProofEngine>) -> Self {
-        Self {
+    pub fn new_dev(proof_engine: Arc<dyn ProofEngine>) -> Result<Self> {
+        validate_forgetting_secret()?;
+        Ok(Self {
             proof_engine,
             mode: TeeBackend::NitroDev,
             live_attestation: None,
-        }
+        })
     }
 
     pub fn new_live(
         proof_engine: Arc<dyn ProofEngine>,
         live_attestation: NitroLiveAttestationMaterial,
     ) -> Result<Self> {
+        validate_forgetting_secret()?;
         validate_live_attestation(&live_attestation)?;
         Ok(Self {
             proof_engine,
@@ -180,6 +182,39 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
+    struct NoopProofEngine;
+
+    #[async_trait::async_trait]
+    impl ProofEngine for NoopProofEngine {
+        fn proof_backend(&self) -> lsdc_common::execution::ProofBackend {
+            lsdc_common::execution::ProofBackend::None
+        }
+
+        async fn execute_csv_transform(
+            &self,
+            _agreement: &lsdc_common::dsp::ContractAgreement,
+            _input_csv: &[u8],
+            _manifest: &lsdc_common::liquid::CsvTransformManifest,
+            _prior_receipt: Option<&lsdc_common::crypto::ProvenanceReceipt>,
+        ) -> Result<lsdc_ports::ProofExecutionResult> {
+            unreachable!("proof execution is not used in this test")
+        }
+
+        async fn verify_receipt(
+            &self,
+            _receipt: &lsdc_common::crypto::ProvenanceReceipt,
+        ) -> Result<bool> {
+            unreachable!("receipt verification is not used in this test")
+        }
+
+        async fn verify_chain(
+            &self,
+            _chain: &[lsdc_common::crypto::ProvenanceReceipt],
+        ) -> Result<bool> {
+            unreachable!("chain verification is not used in this test")
+        }
+    }
+
     #[derive(Deserialize)]
     struct FixtureMeasurements {
         image_hash_hex: String,
@@ -246,5 +281,33 @@ mod tests {
         assert_eq!(attestation.platform, "aws-nitro-live");
         assert_eq!(attestation.binary_hash, expected);
         assert!(!attestation.measurements.debug);
+    }
+
+    #[test]
+    fn test_new_live_rejects_missing_forgetting_secret_without_dev_defaults() {
+        let _guard = crate::forgetting::env_lock_for_tests();
+        let old_allow_dev_defaults = std::env::var("LSDC_ALLOW_DEV_DEFAULTS").ok();
+        let old_forgetting_secret = std::env::var("LSDC_FORGETTING_SECRET").ok();
+        std::env::remove_var("LSDC_ALLOW_DEV_DEFAULTS");
+        std::env::remove_var("LSDC_FORGETTING_SECRET");
+
+        let result = NitroEnclaveManager::new_live(Arc::new(NoopProofEngine), load_live_material());
+
+        match old_allow_dev_defaults {
+            Some(value) => std::env::set_var("LSDC_ALLOW_DEV_DEFAULTS", value),
+            None => std::env::remove_var("LSDC_ALLOW_DEV_DEFAULTS"),
+        }
+        match old_forgetting_secret {
+            Some(value) => std::env::set_var("LSDC_FORGETTING_SECRET", value),
+            None => std::env::remove_var("LSDC_FORGETTING_SECRET"),
+        }
+
+        let err = match result {
+            Ok(_) => panic!("expected nitro-live startup to reject a missing forgetting secret"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("LSDC_FORGETTING_SECRET must be set unless LSDC_ALLOW_DEV_DEFAULTS=1"));
     }
 }

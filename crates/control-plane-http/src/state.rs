@@ -24,9 +24,11 @@ pub struct ApiStateInit {
     pub node_name: String,
     pub liquid_agent: Arc<LiquidAgentGrpcClient>,
     pub proof_engine: Arc<dyn ProofEngine>,
+    pub dev_receipt_verifier: Arc<dyn ProofEngine>,
     pub enclave_manager: Arc<dyn EnclaveManager>,
     pub pricing_oracle: Arc<dyn PricingOracle>,
     pub default_interface: String,
+    pub api_bearer_token: String,
     pub configured_backends: BackendSummary,
     pub actual_transport_backend: TransportBackend,
 }
@@ -38,8 +40,10 @@ pub struct ApiState {
     pub(crate) agreement_service: Arc<AgreementService>,
     pub(crate) orchestrator: Arc<Orchestrator>,
     pub(crate) proof_engine: Arc<dyn ProofEngine>,
+    pub(crate) dev_receipt_verifier: Arc<dyn ProofEngine>,
     pub(crate) liquid_agent: Arc<LiquidAgentGrpcClient>,
     pub(crate) default_interface: String,
+    pub(crate) api_bearer_token: Arc<str>,
     pub(crate) configured_backends: BackendSummary,
     pub(crate) actual_transport_backend: TransportBackend,
     pub(crate) actual_tee_backend: TeeBackend,
@@ -52,9 +56,11 @@ impl ApiState {
             node_name,
             liquid_agent,
             proof_engine,
+            dev_receipt_verifier,
             enclave_manager,
             pricing_oracle,
             default_interface,
+            api_bearer_token,
             configured_backends,
             actual_transport_backend,
         } = init;
@@ -72,8 +78,10 @@ impl ApiState {
             agreement_service: Arc::new(AgreementService::new()),
             orchestrator,
             proof_engine,
+            dev_receipt_verifier,
             liquid_agent,
             default_interface,
+            api_bearer_token: api_bearer_token.into(),
             configured_backends,
             actual_transport_backend,
             actual_tee_backend,
@@ -132,6 +140,10 @@ impl ApiState {
 
     pub fn configured_backends_summary(&self) -> BackendSummary {
         self.configured_backends
+    }
+
+    pub fn api_bearer_token(&self) -> &str {
+        &self.api_bearer_token
     }
 
     pub fn lineage_job_runner(&self) -> LineageJobRunner {

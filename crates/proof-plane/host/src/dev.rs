@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_PROOF_SECRET: &str = "lsdc-proof-dev-secret";
 const DEV_RECEIPT_FORMAT_VERSION: &str = "lsdc.dev-receipt.v1";
 const DEV_RECEIPT_METHOD_ID: &str = "dev-hmac-manifest-v1";
+const PROOF_SECRET_ENV: &str = "LSDC_PROOF_SECRET";
+const ALLOW_DEV_DEFAULTS_ENV: &str = "LSDC_ALLOW_DEV_DEFAULTS";
 
 #[derive(Clone)]
 pub struct DevReceiptProofEngine {
@@ -36,17 +38,40 @@ struct ProofEnvelope {
 
 impl Default for DevReceiptProofEngine {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("failed to initialize dev receipt proof engine")
     }
 }
 
 impl DevReceiptProofEngine {
-    pub fn new() -> Self {
-        Self {
-            secret: std::env::var("LSDC_PROOF_SECRET")
-                .unwrap_or_else(|_| DEFAULT_PROOF_SECRET.to_string()),
-        }
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            secret: resolve_proof_secret(
+                std::env::var(PROOF_SECRET_ENV).ok(),
+                allow_dev_defaults(),
+            )?,
+        })
     }
+}
+
+fn allow_dev_defaults() -> bool {
+    matches!(std::env::var(ALLOW_DEV_DEFAULTS_ENV).as_deref(), Ok("1"))
+}
+
+fn resolve_proof_secret(
+    explicit_secret: Option<String>,
+    allow_dev_defaults: bool,
+) -> Result<String> {
+    if let Some(secret) = explicit_secret.filter(|secret| !secret.trim().is_empty()) {
+        return Ok(secret);
+    }
+
+    if allow_dev_defaults {
+        return Ok(DEFAULT_PROOF_SECRET.to_string());
+    }
+
+    Err(LsdcError::ProofGeneration(format!(
+        "{PROOF_SECRET_ENV} must be set unless {ALLOW_DEV_DEFAULTS_ENV}=1"
+    )))
 }
 
 #[async_trait]
@@ -164,5 +189,32 @@ impl ProofEngine for DevReceiptProofEngine {
         }
 
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_proof_secret;
+
+    #[test]
+    fn test_resolve_proof_secret_rejects_missing_secret_without_dev_defaults() {
+        let err = resolve_proof_secret(None, false).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("LSDC_PROOF_SECRET must be set unless LSDC_ALLOW_DEV_DEFAULTS=1"));
+    }
+
+    #[test]
+    fn test_resolve_proof_secret_rejects_blank_secret_without_dev_defaults() {
+        let err = resolve_proof_secret(Some("   ".into()), false).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("LSDC_PROOF_SECRET must be set unless LSDC_ALLOW_DEV_DEFAULTS=1"));
+    }
+
+    #[test]
+    fn test_resolve_proof_secret_allows_dev_default_when_enabled() {
+        let secret = resolve_proof_secret(None, true).unwrap();
+        assert_eq!(secret, "lsdc-proof-dev-secret");
     }
 }

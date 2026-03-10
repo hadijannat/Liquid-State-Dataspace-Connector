@@ -15,6 +15,7 @@ lsdc-common = { path = "../lsdc-common" }
 lsdc-config = { path = "../lsdc-config" }
 lsdc-ports = { path = "../lsdc-ports" }
 lsdc-service-types = { path = "../lsdc-service-types" }
+proof-plane-core = { path = "../proof-plane/core" }
 proof-plane-host = { path = "../proof-plane/host" }
 tee-orchestrator = { path = "../tee-orchestrator" }
 tokio = { workspace = true }
@@ -25,4 +26,3 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
-

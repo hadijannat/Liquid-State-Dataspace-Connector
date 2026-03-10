@@ -3,6 +3,7 @@ from lsdc_pricing_oracle.shapley import (
     PricingAuditContext,
     calculate_price_decision,
     estimate_shapley_value,
+    resolve_pricing_secret,
 )
 
 
@@ -55,7 +56,8 @@ def test_mixed_signals():
     assert result.confidence == 0.6
 
 
-def test_price_decision_contains_signature():
+def test_price_decision_contains_signature(monkeypatch):
+    monkeypatch.setenv("LSDC_PRICING_SECRET", "test-pricing-secret")
     shapley = estimate_shapley_value(
         audit_context=audit_context("ds-1", "hash-1"),
         loss_with=0.3,
@@ -68,3 +70,31 @@ def test_price_decision_contains_signature():
     assert decision.approval_required is True
     assert decision.pricing_mode == "advisory"
     assert decision.signature_hex
+
+
+def test_resolve_pricing_secret_rejects_missing_secret_without_dev_defaults():
+    try:
+        resolve_pricing_secret(explicit_secret=None, allow_dev_defaults_override=False)
+    except RuntimeError as err:
+        assert "LSDC_PRICING_SECRET must be set unless LSDC_ALLOW_DEV_DEFAULTS=1" in str(err)
+    else:
+        raise AssertionError("expected missing pricing secret to fail closed")
+
+
+def test_resolve_pricing_secret_rejects_blank_secret_without_dev_defaults():
+    try:
+        resolve_pricing_secret(explicit_secret="   ", allow_dev_defaults_override=False)
+    except RuntimeError as err:
+        assert "LSDC_PRICING_SECRET must be set unless LSDC_ALLOW_DEV_DEFAULTS=1" in str(err)
+    else:
+        raise AssertionError("expected blank pricing secret to fail closed")
+
+
+def test_resolve_pricing_secret_allows_dev_default_with_explicit_opt_in():
+    assert (
+        resolve_pricing_secret(
+            explicit_secret=None,
+            allow_dev_defaults_override=True,
+        )
+        == "lsdc-pricing-dev-secret"
+    )

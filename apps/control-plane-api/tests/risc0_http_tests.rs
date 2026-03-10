@@ -9,16 +9,29 @@ use liquid_agent_grpc::client::LiquidAgentGrpcClient;
 use liquid_agent_grpc::server::{serve as serve_agent, LiquidAgentService};
 use lsdc_common::crypto::{PriceDecision, PricingAuditContext, ShapleyValue};
 use lsdc_common::dsp::{ContractRequest, EvidenceRequirement};
-use lsdc_common::execution::{PricingMode, TeeBackend, TransportBackend};
+use lsdc_common::execution::{PricingMode, ProofBackend, TeeBackend, TransportBackend};
 use lsdc_ports::{PricingOracle, TrainingMetrics};
 use lsdc_service_types::{
-    FinalizeContractResponse, LineageJobAccepted, LineageJobRecord, LineageJobRequest,
-    LineageJobState,
+    EvidenceVerificationRequest, EvidenceVerificationResult, FinalizeContractResponse,
+    LineageJobAccepted, LineageJobRecord, LineageJobRequest, LineageJobState,
 };
 use proof_plane_host::Risc0ProofEngine;
 use std::sync::Arc;
+use std::sync::Once;
 use tee_orchestrator::enclave::NitroEnclaveManager;
 use tower::ServiceExt;
+
+const TEST_API_TOKEN: &str = "test-api-token";
+
+fn ensure_test_env() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        std::env::set_var("LSDC_ALLOW_DEV_DEFAULTS", "1");
+        std::env::set_var("LSDC_API_BEARER_TOKEN", TEST_API_TOKEN);
+        std::env::set_var("LSDC_PROOF_SECRET", "test-proof-secret");
+        std::env::set_var("LSDC_FORGETTING_SECRET", "test-forgetting-secret");
+    });
+}
 
 struct MockPricingOracle;
 
@@ -61,18 +74,21 @@ impl PricingOracle for MockPricingOracle {
 
 #[tokio::test]
 async fn test_single_hop_risc0_lineage_via_http_api() {
+    ensure_test_env();
     let agent_endpoint = start_simulated_agent().await;
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
     let proof_engine = Arc::new(Risc0ProofEngine::new());
-    let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()));
+    let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()).unwrap());
     let app = router(ApiState::new(ApiStateInit {
         store,
         node_name: "test-risc0-node".into(),
         liquid_agent: Arc::new(LiquidAgentGrpcClient::new(agent_endpoint)),
         proof_engine,
+        dev_receipt_verifier: Arc::new(proof_plane_host::DevReceiptProofEngine::new().unwrap()),
         enclave_manager,
         pricing_oracle: Arc::new(MockPricingOracle),
         default_interface: "lo".into(),
+        api_bearer_token: TEST_API_TOKEN.into(),
         configured_backends: BackendSummary {
             transport_backend: TransportBackend::Simulated,
             proof_backend: lsdc_common::execution::ProofBackend::RiscZero,
@@ -139,6 +155,79 @@ async fn test_single_hop_risc0_lineage_via_http_api() {
     );
 }
 
+#[tokio::test]
+async fn test_risc0_node_verifies_valid_dev_receipt_chain() {
+    ensure_test_env();
+    let agent_endpoint = start_simulated_agent().await;
+    let store = control_plane_api::store::Store::new(":memory:").unwrap();
+    let proof_engine = Arc::new(Risc0ProofEngine::new());
+    let enclave_manager = Arc::new(NitroEnclaveManager::new_dev(proof_engine.clone()).unwrap());
+    let app = router(ApiState::new(ApiStateInit {
+        store,
+        node_name: "test-risc0-node".into(),
+        liquid_agent: Arc::new(LiquidAgentGrpcClient::new(agent_endpoint)),
+        dev_receipt_verifier: Arc::new(proof_plane_host::DevReceiptProofEngine::new().unwrap()),
+        proof_engine,
+        enclave_manager,
+        pricing_oracle: Arc::new(MockPricingOracle),
+        default_interface: "lo".into(),
+        api_bearer_token: TEST_API_TOKEN.into(),
+        configured_backends: BackendSummary {
+            transport_backend: TransportBackend::Simulated,
+            proof_backend: ProofBackend::RiscZero,
+            tee_backend: TeeBackend::NitroDev,
+        },
+        actual_transport_backend: TransportBackend::Simulated,
+    }));
+
+    let agreement = lsdc_common::dsp::ContractAgreement {
+        agreement_id: lsdc_common::odrl::ast::PolicyId("agreement-dev-chain".into()),
+        asset_id: "asset-risc0".into(),
+        provider_id: "did:web:risc0-provider".into(),
+        consumer_id: "did:web:risc0-consumer".into(),
+        odrl_policy: lsdc_common::fixtures::read_json("odrl/supported_policy.json").unwrap(),
+        policy_hash: "policy-hash".into(),
+        evidence_requirements: vec![EvidenceRequirement::ProvenanceReceipt],
+        liquid_policy: lsdc_common::odrl::parser::lower_policy(
+            &lsdc_common::fixtures::read_json("odrl/supported_policy.json").unwrap(),
+            &[EvidenceRequirement::ProvenanceReceipt],
+        )
+        .unwrap(),
+    };
+    let manifest = lsdc_common::fixtures::read_json("liquid/analytics_manifest.json").unwrap();
+    let input = lsdc_common::fixtures::read_bytes("csv/lineage_input.csv").unwrap();
+    let dev_engine = proof_plane_host::DevReceiptProofEngine::new().unwrap();
+    let first = dev_engine
+        .execute_csv_transform(&agreement, &input, &manifest, None)
+        .await
+        .unwrap();
+    let second = dev_engine
+        .execute_csv_transform(
+            &agreement,
+            &first.output_csv,
+            &manifest,
+            Some(&first.receipt),
+        )
+        .await
+        .unwrap();
+
+    let verification: EvidenceVerificationResult = post_json(
+        &app,
+        "/lsdc/evidence/verify-chain",
+        EvidenceVerificationRequest {
+            receipts: vec![first.receipt, second.receipt],
+        },
+        StatusCode::OK,
+    )
+    .await;
+
+    assert!(verification.valid);
+    assert_eq!(
+        verification.verified_backends,
+        vec![ProofBackend::DevReceipt]
+    );
+}
+
 async fn start_simulated_agent() -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -198,6 +287,7 @@ where
         Request::builder()
             .method(method)
             .uri(path)
+            .header("authorization", format!("Bearer {TEST_API_TOKEN}"))
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap()
@@ -205,6 +295,7 @@ where
         Request::builder()
             .method(method)
             .uri(path)
+            .header("authorization", format!("Bearer {TEST_API_TOKEN}"))
             .body(Body::empty())
             .unwrap()
     };

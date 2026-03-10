@@ -96,7 +96,7 @@ pub struct EvidenceVerificationRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceVerificationResult {
-    pub proof_backend: lsdc_common::execution::ProofBackend,
+    pub verified_backends: Vec<lsdc_common::execution::ProofBackend>,
     pub checked_receipt_count: usize,
     pub valid: bool,
 }
