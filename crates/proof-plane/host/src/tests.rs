@@ -107,6 +107,7 @@ fn recursive_execution_bindings() -> ExecutionBindings {
     let overlay_commitment = ExecutionOverlayCommitment::build(
         &agreement.agreement_id.0,
         TruthfulnessMode::Strict,
+        lsdc_common::execution_overlay::LSDC_POLICY_COMMITMENT_PROFILE_V2,
         Sha256Hash::digest_bytes(b"policy"),
         capability_descriptor,
         evidence_requirements,

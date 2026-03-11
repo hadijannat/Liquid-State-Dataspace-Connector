@@ -33,6 +33,8 @@ pub struct FinalizeContractResponse {
 pub struct ExecutionOverlaySummary {
     pub overlay_version: String,
     pub truthfulness_mode: lsdc_common::profile::TruthfulnessMode,
+    #[serde(default = "default_policy_commitment_profile")]
+    pub policy_commitment_profile: String,
     pub capability_descriptor_hash: Sha256Hash,
     pub agreement_commitment_hash: Sha256Hash,
     pub evidence_requirements_hash: Sha256Hash,
@@ -62,6 +64,10 @@ pub struct CreateExecutionSessionRequest {
     pub expected_attestation_public_key: Option<Vec<u8>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_in_seconds: Option<i64>,
+}
+
+fn default_policy_commitment_profile() -> String {
+    lsdc_common::profile::LSDC_POLICY_COMMITMENT_PROFILE_V1.into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

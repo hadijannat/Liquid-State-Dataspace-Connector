@@ -17,7 +17,7 @@ use lsdc_common::dsp::{
 use lsdc_common::execution::{PricingMode, ProofBackend, TeeBackend, TransportBackend};
 use lsdc_common::execution_overlay::{
     CapabilitySupportLevel, ExecutionSessionState, ExecutionStatement, ExecutionStatementKind,
-    LSDC_EXECUTION_PROTOCOL_VERSION,
+    LSDC_EXECUTION_PROTOCOL_VERSION, LSDC_POLICY_COMMITMENT_PROFILE_V2,
 };
 use lsdc_common::liquid::{
     CsvTransformManifest, CsvTransformOp, LiquidPolicyIr, RuntimeGuard, TransformGuard,
@@ -112,6 +112,10 @@ async fn test_contract_finalize_transfer_and_settlement_surface() {
     assert_eq!(
         execution_overlay.overlay_version,
         LSDC_EXECUTION_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        execution_overlay.policy_commitment_profile,
+        LSDC_POLICY_COMMITMENT_PROFILE_V2
     );
     assert!(execution_overlay
         .support_summary
@@ -333,6 +337,10 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
         .execution_overlay
         .clone()
         .expect("expected execution overlay summary");
+    assert_eq!(
+        finalized_overlay.policy_commitment_profile,
+        LSDC_POLICY_COMMITMENT_PROFILE_V2
+    );
 
     let capabilities: ExecutionCapabilitiesResponse = get_json(
         &app,

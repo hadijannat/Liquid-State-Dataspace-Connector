@@ -250,6 +250,10 @@ fn test_execution_overlay_session_and_evidence_round_trip() {
         persisted_overlay.agreement_commitment_hash,
         overlay.agreement_commitment_hash
     );
+    assert_eq!(
+        persisted_overlay.policy_commitment_profile,
+        overlay.policy_commitment_profile
+    );
 
     store
         .upsert_execution_session(&session, Some(&challenge))
@@ -324,6 +328,25 @@ fn test_execution_overlay_session_and_evidence_round_trip() {
     assert_eq!(persisted_receipt.root_hash, receipt.root_hash);
 
     let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn test_legacy_execution_overlay_defaults_policy_commitment_profile() {
+    let legacy = json!({
+        "overlay_version": LSDC_EXECUTION_PROTOCOL_VERSION,
+        "truthfulness_mode": "permissive",
+        "capability_descriptor_hash": Sha256Hash::digest_bytes(b"capability"),
+        "agreement_commitment_hash": Sha256Hash::digest_bytes(b"agreement"),
+        "evidence_requirements_hash": Sha256Hash::digest_bytes(b"requirements"),
+        "support_summary": {}
+    });
+
+    let overlay: ExecutionOverlaySummary =
+        serde_json::from_value(legacy).expect("legacy overlay should deserialize");
+    assert_eq!(
+        overlay.policy_commitment_profile,
+        lsdc_common::profile::LSDC_POLICY_COMMITMENT_PROFILE_V1
+    );
 }
 
 fn temp_db_path(label: &str) -> PathBuf {
@@ -630,6 +653,7 @@ fn sample_execution_overlay() -> ExecutionOverlaySummary {
     };
     ExecutionOverlaySummary {
         overlay_version: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
+        policy_commitment_profile: lsdc_common::profile::LSDC_POLICY_COMMITMENT_PROFILE_V2.into(),
         capability_descriptor_hash: capability_descriptor.canonical_hash().unwrap(),
         agreement_commitment_hash: Sha256Hash::digest_bytes(b"agreement-commitment"),
         truthfulness_mode: lsdc_common::profile::TruthfulnessMode::Permissive,
