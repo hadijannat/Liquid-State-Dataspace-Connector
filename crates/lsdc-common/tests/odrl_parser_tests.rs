@@ -86,7 +86,7 @@ fn test_lower_rejects_unsupported_action() {
 }
 
 #[test]
-fn test_multi_constraint_delete_duty_is_rejected() {
+fn test_multi_constraint_delete_duty_uses_smallest_delete_after() {
     let policy = serde_json::json!({
         "permission": [{
             "action": "transfer",
@@ -99,20 +99,19 @@ fn test_multi_constraint_delete_duty_is_rejected() {
             }]
         }]
     });
-    let err = lsdc_common::odrl::parser::lower_policy(
+    let lowered = lsdc_common::odrl::parser::lower_policy(
         &policy,
         &[lsdc_common::dsp::EvidenceRequirement::ProvenanceReceipt],
     )
-    .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("delete duty must have exactly one constraint, got 2"),
-        "unexpected error: {err}"
+    .unwrap();
+    assert_eq!(
+        lowered.runtime_guard.delete_after_seconds,
+        Some(7 * 24 * 60 * 60)
     );
 }
 
 #[test]
-fn test_multi_constraint_anonymize_duty_is_rejected() {
+fn test_multi_constraint_anonymize_duty_collects_required_ops() {
     let policy = serde_json::json!({
         "permission": [{
             "action": "anonymize",
@@ -125,16 +124,21 @@ fn test_multi_constraint_anonymize_duty_is_rejected() {
             }]
         }]
     });
-    let err = lsdc_common::odrl::parser::lower_policy(
+    let lowered = lsdc_common::odrl::parser::lower_policy(
         &policy,
         &[lsdc_common::dsp::EvidenceRequirement::ProvenanceReceipt],
     )
-    .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("anonymize duty must have exactly one constraint, got 2"),
-        "unexpected error: {err}"
-    );
+    .unwrap();
+    assert!(lowered.transform_guard.allow_anonymize);
+    assert_eq!(lowered.transform_guard.required_ops.len(), 2);
+    assert!(lowered
+        .transform_guard
+        .required_ops
+        .contains(&lsdc_common::liquid::CsvTransformOpKind::HashColumns));
+    assert!(lowered
+        .transform_guard
+        .required_ops
+        .contains(&lsdc_common::liquid::CsvTransformOpKind::RedactColumns));
 }
 
 #[test]
@@ -142,6 +146,67 @@ fn test_lower_rejects_prohibitions() {
     let policy = json!({
         "permission": [{"action": "read"}],
         "prohibition": [{"action": "transfer"}]
+    });
+
+    let result = lower_policy(&policy, &[]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_lower_rejects_top_level_obligations() {
+    let policy = json!({
+        "obligation": [{
+            "action": "anonymize",
+            "constraint": [{"leftOperand": "transform-required", "rightOperand": "redact_columns"}]
+        }]
+    });
+
+    let result = lower_policy(&policy, &[]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_lower_collects_and_constraint_values_and_normalized_geography() {
+    let policy = json!({
+        "permission": [{
+            "action": "read",
+            "constraint": [{
+                "operator": "and",
+                "constraint": [
+                    {"leftOperand": "count", "operator": "lteq", "rightOperand": 25},
+                    {"leftOperand": "spatial", "operator": "eq", "rightOperand": ["US", "EU", "US"]},
+                    {"leftOperand": "spatial", "operator": "eq", "rightOperand": ["EU", "CA"]},
+                    {"leftOperand": "purpose", "operator": "eq", "rightOperand": ["fraud", "analytics", "fraud"]}
+                ]
+            }]
+        }]
+    });
+
+    let lowered = lower_policy(&policy, &[]).unwrap();
+    assert_eq!(lowered.transport_guard.packet_cap, Some(25));
+    assert_eq!(
+        lowered.transport_guard.allowed_regions,
+        vec!["CA".to_string(), "EU".to_string(), "US".to_string()]
+    );
+    assert_eq!(
+        lowered.transform_guard.allowed_purposes,
+        vec!["analytics".to_string(), "fraud".to_string()]
+    );
+}
+
+#[test]
+fn test_lower_rejects_logical_disjunctions() {
+    let policy = json!({
+        "permission": [{
+            "action": "read",
+            "constraint": [{
+                "operator": "or",
+                "constraint": [
+                    {"leftOperand": "spatial", "operator": "eq", "rightOperand": ["US"]},
+                    {"leftOperand": "spatial", "operator": "eq", "rightOperand": ["CA"]}
+                ]
+            }]
+        }]
     });
 
     let result = lower_policy(&policy, &[]);

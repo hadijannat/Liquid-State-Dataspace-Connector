@@ -4,7 +4,7 @@ use crate::liquid::{
     CsvTransformOpKind, EvidenceRequirement, LiquidPolicyIr, RuntimeGuard, TransformGuard,
     TransportGuard, TransportProtocol,
 };
-use crate::profile::LSDC_PROFILE_OPERANDS;
+use crate::profile::{normalize_policy, NormalizedConstraint, NormalizedLogicalOperator};
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -26,26 +26,16 @@ pub fn lower_policy(
     policy: &Value,
     evidence_requirements: &[EvidenceRequirement],
 ) -> Result<LiquidPolicyIr> {
-    let permissions = policy
-        .get("permission")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            LsdcError::OdrlParse("ODRL policy must contain a permission array".into())
-        })?;
+    let normalized = normalize_policy(policy)?;
 
-    if permissions.is_empty() {
+    if !normalized.prohibitions.is_empty() {
         return Err(LsdcError::PolicyCompile(
-            "ODRL policy must contain at least one permission".into(),
+            "executable lowering does not support prohibition rules".into(),
         ));
     }
-
-    if policy
-        .get("prohibition")
-        .and_then(Value::as_array)
-        .is_some_and(|items| !items.is_empty())
-    {
+    if !normalized.obligations.is_empty() {
         return Err(LsdcError::PolicyCompile(
-            "prototype ODRL subset does not support prohibitions".into(),
+            "executable lowering does not support top-level obligations".into(),
         ));
     }
 
@@ -57,115 +47,36 @@ pub fn lower_policy(
     let mut allowed_regions = Vec::new();
     let mut allowed_purposes = Vec::new();
     let mut required_ops = Vec::new();
-    let mut delete_after_seconds = None;
+    let mut delete_after_seconds = Vec::new();
 
-    for permission in permissions {
-        for action in parse_actions(permission.get("action"))? {
+    for permission in &normalized.permissions {
+        for action in &permission.actions {
             match action.as_str() {
                 "read" => allow_read = true,
                 "transfer" => allow_transfer = true,
                 "anonymize" => allow_anonymize = true,
-                other => {
-                    return Err(LsdcError::PolicyCompile(format!(
-                        "unsupported ODRL action `{other}`"
-                    )))
-                }
+                _ => {}
             }
         }
 
-        if let Some(constraints) = permission.get("constraint").and_then(Value::as_array) {
-            for constraint in constraints {
-                let operand = required_string(constraint, "leftOperand")?;
-                match operand.as_str() {
-                    "count" => packet_caps.push(parse_u64_right_operand(constraint)?),
-                    "spatial" => extend_unique(
-                        &mut allowed_regions,
-                        parse_string_list_right_operand(constraint)?,
-                    ),
-                    "maxEgressBytes" => byte_caps.push(parse_u64_right_operand(constraint)?),
-                    "purpose" => extend_unique(
-                        &mut allowed_purposes,
-                        parse_string_list_right_operand(constraint)?,
-                    ),
-                    other if LSDC_PROFILE_OPERANDS.contains(&other) => {}
-                    other => {
-                        return Err(LsdcError::PolicyCompile(format!(
-                            "unsupported ODRL constraint `{other}`"
-                        )))
-                    }
-                }
-            }
+        for constraint in &permission.constraints {
+            collect_constraint_values(
+                constraint,
+                &mut packet_caps,
+                &mut byte_caps,
+                &mut allowed_regions,
+                &mut allowed_purposes,
+            )?;
         }
 
-        if let Some(duties) = permission.get("duty").and_then(Value::as_array) {
-            for duty in duties {
-                let action = parse_action_value(duty.get("action"))?;
-                match action.as_str() {
-                    "delete" => {
-                        let constraints = duty
-                            .get("constraint")
-                            .and_then(Value::as_array)
-                            .ok_or_else(|| {
-                                LsdcError::PolicyCompile(
-                                    "delete duty must contain a constraint".into(),
-                                )
-                            })?;
-                        if constraints.len() != 1 {
-                            return Err(LsdcError::PolicyCompile(format!(
-                                "delete duty must have exactly one constraint, got {}",
-                                constraints.len()
-                            )));
-                        }
-                        let constraint = &constraints[0];
-                        let operand = required_string(constraint, "leftOperand")?;
-                        if operand != "delete-after" {
-                            return Err(LsdcError::PolicyCompile(format!(
-                                "unsupported delete duty operand `{operand}`"
-                            )));
-                        }
-                        delete_after_seconds = Some(parse_duration_seconds(&required_string(
-                            constraint,
-                            "rightOperand",
-                        )?)?);
-                    }
-                    "anonymize" => {
-                        allow_anonymize = true;
-                        let constraints = duty
-                            .get("constraint")
-                            .and_then(Value::as_array)
-                            .ok_or_else(|| {
-                                LsdcError::PolicyCompile(
-                                    "anonymize duty must contain a constraint".into(),
-                                )
-                            })?;
-                        if constraints.len() != 1 {
-                            return Err(LsdcError::PolicyCompile(format!(
-                                "anonymize duty must have exactly one constraint, got {}",
-                                constraints.len()
-                            )));
-                        }
-                        let constraint = &constraints[0];
-                        let operand = required_string(constraint, "leftOperand")?;
-                        if operand != "transform-required" {
-                            if LSDC_PROFILE_OPERANDS.contains(&operand.as_str()) {
-                                continue;
-                            }
-                            return Err(LsdcError::PolicyCompile(format!(
-                                "unsupported anonymize duty operand `{operand}`"
-                            )));
-                        }
-                        required_ops.push(parse_transform_kind(&required_string(
-                            constraint,
-                            "rightOperand",
-                        )?)?);
-                    }
-                    other => {
-                        return Err(LsdcError::PolicyCompile(format!(
-                            "unsupported ODRL duty action `{other}`"
-                        )))
-                    }
-                }
-            }
+        for duty in &permission.duties {
+            collect_duty_values(
+                duty.action.as_str(),
+                &duty.constraints,
+                &mut allow_anonymize,
+                &mut required_ops,
+                &mut delete_after_seconds,
+            )?;
         }
     }
 
@@ -197,13 +108,115 @@ pub fn lower_policy(
             required_ops: dedupe_vec(required_ops),
         },
         runtime_guard: RuntimeGuard {
-            delete_after_seconds,
+            delete_after_seconds: delete_after_seconds.into_iter().min(),
             evidence_requirements: dedupe_vec(evidence_requirements.to_vec()),
             approval_required: evidence_requirements
                 .iter()
                 .any(|item| item == &EvidenceRequirement::PriceApproval),
         },
     })
+}
+
+fn collect_constraint_values(
+    constraint: &NormalizedConstraint,
+    packet_caps: &mut Vec<u64>,
+    byte_caps: &mut Vec<u64>,
+    allowed_regions: &mut Vec<String>,
+    allowed_purposes: &mut Vec<String>,
+) -> Result<()> {
+    match constraint {
+        NormalizedConstraint::Simple {
+            clause_id,
+            right_operand,
+            ..
+        } => match clause_id.as_str() {
+            "count" => packet_caps.push(parse_u64_value(right_operand)?),
+            "maxEgressBytes" => byte_caps.push(parse_u64_value(right_operand)?),
+            "spatial" => extend_unique(allowed_regions, parse_string_list_value(right_operand)?),
+            "purpose" => extend_unique(allowed_purposes, parse_string_list_value(right_operand)?),
+            _ => {}
+        },
+        NormalizedConstraint::Logical {
+            operator,
+            constraints,
+        } => {
+            if *operator != NormalizedLogicalOperator::And {
+                return Err(LsdcError::PolicyCompile(format!(
+                    "executable lowering does not support logical `{}` groups",
+                    logical_operator_name(*operator)
+                )));
+            }
+            for child in constraints {
+                collect_constraint_values(
+                    child,
+                    packet_caps,
+                    byte_caps,
+                    allowed_regions,
+                    allowed_purposes,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_duty_values(
+    action: &str,
+    constraints: &[NormalizedConstraint],
+    allow_anonymize: &mut bool,
+    required_ops: &mut Vec<CsvTransformOpKind>,
+    delete_after_seconds: &mut Vec<u64>,
+) -> Result<()> {
+    match action {
+        "anonymize" => *allow_anonymize = true,
+        "delete" => {}
+        other => {
+            return Err(LsdcError::PolicyCompile(format!(
+                "unsupported executable duty action `{other}`"
+            )))
+        }
+    }
+
+    for constraint in constraints {
+        match constraint {
+            NormalizedConstraint::Simple {
+                clause_id,
+                right_operand,
+                ..
+            } => match (action, clause_id.as_str()) {
+                ("delete", "delete-after") => {
+                    delete_after_seconds.push(parse_duration_value(right_operand)?);
+                }
+                ("anonymize", "transform-required") => {
+                    if let Some(value) = right_operand.as_str() {
+                        required_ops.push(parse_transform_kind(value)?);
+                    }
+                }
+                _ => {}
+            },
+            NormalizedConstraint::Logical {
+                operator,
+                constraints,
+            } => {
+                if *operator != NormalizedLogicalOperator::And {
+                    return Err(LsdcError::PolicyCompile(format!(
+                        "executable lowering does not support logical `{}` groups",
+                        logical_operator_name(*operator)
+                    )));
+                }
+                collect_duty_values(
+                    action,
+                    constraints,
+                    allow_anonymize,
+                    required_ops,
+                    delete_after_seconds,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn canonical_json_bytes(value: &Value) -> std::result::Result<Vec<u8>, serde_json::Error> {
@@ -228,75 +241,27 @@ fn canonicalize_json(value: &Value) -> Value {
     }
 }
 
-fn parse_actions(value: Option<&Value>) -> Result<Vec<String>> {
-    let value = value.ok_or_else(|| {
-        LsdcError::OdrlParse("permission must declare an action in the prototype subset".into())
-    })?;
-
+fn parse_string_list_value(value: &Value) -> Result<Vec<String>> {
     match value {
-        Value::Array(items) => items
-            .iter()
-            .map(|item| parse_action_value(Some(item)))
-            .collect(),
-        _ => Ok(vec![parse_action_value(Some(value))?]),
-    }
-}
-
-fn parse_action_value(value: Option<&Value>) -> Result<String> {
-    let value = value.ok_or_else(|| LsdcError::OdrlParse("missing action value".into()))?;
-    match value {
-        Value::String(action) => Ok(action.to_ascii_lowercase()),
-        Value::Object(map) => {
-            if let Some(action) = map.get("type").and_then(Value::as_str) {
-                Ok(action.to_ascii_lowercase())
-            } else if let Some(action) = map.get("value").and_then(Value::as_str) {
-                Ok(action.to_ascii_lowercase())
-            } else {
-                Err(LsdcError::OdrlParse(
-                    "action objects must declare `type` or `value`".into(),
-                ))
-            }
-        }
-        _ => Err(LsdcError::OdrlParse(
-            "action must be a string or action object".into(),
-        )),
-    }
-}
-
-fn required_string(value: &Value, field: &str) -> Result<String> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| LsdcError::OdrlParse(format!("missing string field `{field}`")))
-}
-
-fn parse_string_list_right_operand(value: &Value) -> Result<Vec<String>> {
-    let right_operand = value
-        .get("rightOperand")
-        .ok_or_else(|| LsdcError::OdrlParse("missing `rightOperand`".into()))?;
-
-    match right_operand {
         Value::String(item) => Ok(vec![item.to_owned()]),
         Value::Array(items) => items
             .iter()
             .map(|item| {
                 item.as_str().map(ToOwned::to_owned).ok_or_else(|| {
-                    LsdcError::OdrlParse("string array expected for `rightOperand`".into())
+                    LsdcError::OdrlParse("string array expected for constraint value".into())
                 })
             })
             .collect(),
         _ => Err(LsdcError::OdrlParse(
-            "`rightOperand` must be a string or array of strings".into(),
+            "constraint value must be a string or array of strings".into(),
         )),
     }
 }
 
-fn parse_u64_right_operand(value: &Value) -> Result<u64> {
+fn parse_u64_value(value: &Value) -> Result<u64> {
     value
-        .get("rightOperand")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| LsdcError::OdrlParse("`rightOperand` must be an unsigned integer".into()))
+        .as_u64()
+        .ok_or_else(|| LsdcError::OdrlParse("constraint value must be an unsigned integer".into()))
 }
 
 fn parse_datetime_value(value: &Value) -> Result<DateTime<Utc>> {
@@ -318,6 +283,21 @@ fn parse_transform_kind(value: &str) -> Result<CsvTransformOpKind> {
             "unsupported transform-required op `{other}`"
         ))),
     }
+}
+
+fn logical_operator_name(operator: NormalizedLogicalOperator) -> &'static str {
+    match operator {
+        NormalizedLogicalOperator::And => "and",
+        NormalizedLogicalOperator::Or => "or",
+        NormalizedLogicalOperator::Xone => "xone",
+    }
+}
+
+fn parse_duration_value(value: &Value) -> Result<u64> {
+    let duration = value
+        .as_str()
+        .ok_or_else(|| LsdcError::OdrlParse("duration duty values must be strings".into()))?;
+    parse_duration_seconds(duration)
 }
 
 fn parse_duration_seconds(value: &str) -> Result<u64> {

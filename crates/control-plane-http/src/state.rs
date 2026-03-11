@@ -20,7 +20,9 @@ use lsdc_common::execution_overlay::{
     TruthfulnessMode as OverlayTruthfulnessMode, LOCAL_TRANSPARENCY_PROFILE,
     LSDC_EXECUTION_PROTOCOL_VERSION,
 };
-use lsdc_common::profile::{normalize_policy, RuntimeCapabilities, TruthfulnessMode};
+use lsdc_common::profile::{
+    normalize_policy, NormalizedConstraint, RuntimeCapabilities, TruthfulnessMode,
+};
 use lsdc_common::runtime_model::{
     DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus,
 };
@@ -404,6 +406,8 @@ impl ApiState {
             evidence_requirements_hash: overlay.evidence_requirements_hash.clone(),
             resolved_selector_hash: None,
             requester_ephemeral_pubkey: request.requester_ephemeral_pubkey,
+            expected_attestation_recipient_public_key: request
+                .expected_attestation_recipient_public_key,
             state: ExecutionSessionState::Created,
             created_at: now,
             expires_at: request
@@ -499,11 +503,13 @@ impl ApiState {
                 "attestation result nonce mismatch".into(),
             ));
         }
-        if attestation_result.public_key.as_deref()
-            != Some(session.requester_ephemeral_pubkey.as_slice())
+        if session
+            .expected_attestation_recipient_public_key
+            .as_deref()
+            .is_some_and(|expected| attestation_result.public_key.as_deref() != Some(expected))
         {
             return Err(lsdc_common::error::LsdcError::PolicyCompile(
-                "attestation result requester public key binding mismatch".into(),
+                "attestation result attested recipient public key binding mismatch".into(),
             ));
         }
         if attestation_result.user_data_hash.as_ref() != Some(&challenge.resolved_selector_hash) {
@@ -631,6 +637,7 @@ impl ApiState {
             } else {
                 self.default_requester_ephemeral_pubkey.clone()
             },
+            expected_attestation_recipient_public_key: None,
             expires_in_seconds: Some(900),
         })?;
 
@@ -952,22 +959,49 @@ fn validate_live_attestation_policy(
 
     let normalized = normalize_policy(&agreement.odrl_policy)?;
     for permission in &normalized.permissions {
-        for constraint in &permission.constraints {
-            if constraint.clause_id != "teeImageSha384" {
-                continue;
+        let mut result = Ok(());
+        for_each_simple_constraint(&permission.constraints, &mut |clause_id, right_operand| {
+            if clause_id != "teeImageSha384" || result.is_err() {
+                return;
             }
-            let expected = constraint.right_operand.as_str().ok_or_else(|| {
-                lsdc_common::error::LsdcError::PolicyCompile(
-                    "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
-                )
-            })?;
-            if !expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
-                return Err(lsdc_common::error::LsdcError::PolicyCompile(
-                    "attestation result image hash does not satisfy teeImageSha384 policy".into(),
-                ));
-            }
-        }
+            result = right_operand
+                .as_str()
+                .ok_or_else(|| {
+                    lsdc_common::error::LsdcError::PolicyCompile(
+                        "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
+                    )
+                })
+                .and_then(|expected| {
+                    if expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
+                        Ok(())
+                    } else {
+                        Err(lsdc_common::error::LsdcError::PolicyCompile(
+                            "attestation result image hash does not satisfy teeImageSha384 policy"
+                                .into(),
+                        ))
+                    }
+                });
+        });
+        result?;
     }
 
     Ok(())
+}
+
+fn for_each_simple_constraint(
+    constraints: &[NormalizedConstraint],
+    visitor: &mut impl FnMut(&str, &serde_json::Value),
+) {
+    for constraint in constraints {
+        match constraint {
+            NormalizedConstraint::Simple {
+                clause_id,
+                right_operand,
+                ..
+            } => visitor(clause_id, right_operand),
+            NormalizedConstraint::Logical { constraints, .. } => {
+                for_each_simple_constraint(constraints, visitor);
+            }
+        }
+    }
 }
