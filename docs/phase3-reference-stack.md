@@ -70,6 +70,6 @@ The integration test `apps/control-plane-api/tests/http_api_tests.rs` exercises 
 
 - Default multi-hop sovereignty is demonstrated with `DevReceiptProofEngine`.
 - `RISC Zero` is feature-gated. Recursive transform chaining and receipt composition are implemented behind `risc0`, but the default reference stack does not enable that path.
-- `nitro-live` validates pinned attestation material only; the reference stack does not launch real enclaves.
+- `nitro-live` validates AWS Nitro attestation material, optional attestation-key pins, and AWS KMS-backed key release when configured; the reference stack still does not launch real enclaves.
 - Pricing stays advisory-only.
 - Sanctions remain proposal artifacts and do not mutate DIDs or registries.

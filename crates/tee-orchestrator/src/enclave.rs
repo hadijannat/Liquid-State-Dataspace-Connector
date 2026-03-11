@@ -116,9 +116,7 @@ impl EnclaveManager for NitroEnclaveManager {
                     .and_then(|bindings| bindings.challenge.as_ref())
                     .map(|challenge| AttestationBinding {
                         challenge_nonce_hex: &challenge.challenge_nonce_hex,
-                        public_key: challenge
-                            .expected_attestation_recipient_public_key
-                            .as_deref(),
+                        public_key: Some(challenge.requester_ephemeral_pubkey.as_slice()),
                         user_data_hash: Some(&challenge.resolved_selector_hash),
                     });
                 let attestation = match binding {
@@ -842,7 +840,7 @@ mod tests {
             evidence_requirements_hash: overlay_commitment.evidence_requirements_hash.clone(),
             resolved_selector_hash: Some(selector_hash.clone()),
             requester_ephemeral_pubkey: vec![1, 2, 3, 4],
-            expected_attestation_recipient_public_key: Some(vec![9, 8, 7, 6]),
+            expected_attestation_public_key_hash: None,
             state: ExecutionSessionState::Challenged,
             created_at: now,
             expires_at: Some(now + chrono::Duration::minutes(5)),

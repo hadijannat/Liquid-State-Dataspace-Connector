@@ -89,6 +89,9 @@ impl Store {
                 ],
             )
             .map_err(sqlite_error)?;
+        if let Some(challenge) = challenge {
+            self.update_execution_challenge(&session.session_id.to_string(), session, challenge)?;
+        }
         Ok(())
     }
 
@@ -118,16 +121,18 @@ impl Store {
                     nonce_hash,
                     resolved_selector_hash,
                     requester_ephemeral_pubkey_hash,
+                    expected_attestation_public_key_hash,
                     issued_at,
                     expires_at,
                     consumed_at,
                     status
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                 ON CONFLICT(challenge_id) DO UPDATE SET
                     challenge_json = excluded.challenge_json,
                     nonce_hash = excluded.nonce_hash,
                     resolved_selector_hash = excluded.resolved_selector_hash,
                     requester_ephemeral_pubkey_hash = excluded.requester_ephemeral_pubkey_hash,
+                    expected_attestation_public_key_hash = excluded.expected_attestation_public_key_hash,
                     issued_at = excluded.issued_at,
                     expires_at = excluded.expires_at,
                     consumed_at = excluded.consumed_at,
@@ -144,6 +149,10 @@ impl Store {
                         )
                         .to_hex()
                     }),
+                    challenge
+                        .expected_attestation_public_key_hash
+                        .as_ref()
+                        .map(lsdc_common::crypto::Sha256Hash::to_hex),
                     challenge.issued_at.to_rfc3339(),
                     challenge.expires_at.to_rfc3339(),
                     challenge.consumed_at.map(|value| value.to_rfc3339()),

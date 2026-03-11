@@ -9,16 +9,14 @@ use lsdc_common::crypto::{
 };
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::execution::{
-    ActualExecutionProfile, PolicyExecutionClassification, PricingMode, ProofBackend, TeeBackend,
+    runtime_capability_semantics, ActualExecutionProfile, PolicyExecutionClassification,
+    PricingMode, ProofBackend, RuntimeCapabilityContext, RuntimeCapabilitySemantics, TeeBackend,
     TransportBackend,
 };
 use lsdc_common::execution_overlay::{
-    domain_hash, AdvertisedProfiles, CapabilitySupportLevel, ExecutionCapabilityDescriptor,
-    ExecutionEvidenceRequirements, ExecutionOverlayCommitment, ExecutionSession,
-    ExecutionSessionChallenge, ExecutionSessionState, ExecutionStatement, ExecutionStatementKind,
-    ProofCompositionMode, TransparencyMode, TransparencyReceipt,
-    TruthfulnessMode as OverlayTruthfulnessMode, LOCAL_TRANSPARENCY_PROFILE,
-    LSDC_EXECUTION_PROTOCOL_VERSION,
+    domain_hash, ExecutionOverlayCommitment, ExecutionSession, ExecutionSessionChallenge,
+    ExecutionSessionState, ExecutionStatement, ExecutionStatementKind, TransparencyReceipt,
+    TruthfulnessMode as OverlayTruthfulnessMode,
 };
 use lsdc_common::profile::{
     normalize_policy, NormalizedConstraint, RuntimeCapabilities, TruthfulnessMode,
@@ -166,16 +164,13 @@ impl ApiState {
 
     pub fn health_payload(&self) -> serde_json::Value {
         let capabilities = self.execution_capabilities();
+        let semantics = self.runtime_capability_semantics();
         serde_json::json!({
             "status": "ok",
             "node_name": &self.node_name,
             "configured_backends": self.configured_backends,
             "actual_backends": self.actual_backends(),
-            "policy_truthfulness": PolicyExecutionClassification::for_runtime_capabilities(
-                self.actual_transport_backend,
-                self.proof_engine.proof_backend(),
-                self.actual_tee_backend,
-            ),
+            "policy_truthfulness": semantics.classification,
             "execution_overlay": capabilities,
             "enabled_features": {
                 "risc0": cfg!(feature = "risc0")
@@ -196,128 +191,83 @@ impl ApiState {
         }
     }
 
-    pub fn capability_support_summary(
-        &self,
-    ) -> std::collections::BTreeMap<String, CapabilitySupportLevel> {
-        use CapabilitySupportLevel::{Experimental, Implemented, ModeledOnly, Unsupported};
-        let risc0_recursive_supported =
-            cfg!(feature = "risc0") && self.proof_engine.proof_backend() == ProofBackend::RiscZero;
-
-        std::collections::BTreeMap::from([
-            (
-                "attestation.nitro_dev".into(),
-                if self.actual_tee_backend == TeeBackend::NitroDev {
-                    Implemented
-                } else {
-                    Unsupported
-                },
-            ),
-            (
-                "attestation.nitro_live_verified".into(),
-                if self.actual_tee_backend == TeeBackend::NitroLive {
-                    Experimental
-                } else {
-                    Unsupported
-                },
-            ),
-            (
-                "key_release.kms_attested".into(),
-                if self.attested_key_release_supported {
-                    Experimental
-                } else if self.actual_tee_backend == TeeBackend::NitroLive {
-                    ModeledOnly
-                } else {
-                    Unsupported
-                },
-            ),
-            (
-                "proof.dev_receipt_dag".into(),
-                if self.proof_engine.proof_backend() == ProofBackend::DevReceipt {
-                    Implemented
-                } else {
-                    Unsupported
-                },
-            ),
-            (
-                "proof.risc0_single_hop".into(),
-                if risc0_recursive_supported {
-                    Implemented
-                } else {
-                    Unsupported
-                },
-            ),
-            (
-                "proof.risc0_recursive".into(),
-                if risc0_recursive_supported {
-                    Implemented
-                } else {
-                    Unsupported
-                },
-            ),
-            ("transparency.local_merkle".into(), Implemented),
-            (
-                "teardown.dev_deletion".into(),
-                if allow_dev_defaults() {
-                    Implemented
-                } else {
-                    Experimental
-                },
-            ),
-            (
-                "teardown.kms_erasure".into(),
-                if self.attested_teardown_supported {
-                    Experimental
-                } else if self.actual_tee_backend == TeeBackend::NitroLive {
-                    ModeledOnly
-                } else {
-                    Unsupported
-                },
-            ),
-        ])
+    pub fn runtime_capability_context(&self) -> RuntimeCapabilityContext {
+        RuntimeCapabilityContext {
+            transport_backend: self.actual_transport_backend,
+            proof_backend: self.proof_engine.proof_backend(),
+            tee_backend: self.actual_tee_backend,
+            dev_backends_allowed: allow_dev_defaults(),
+            attested_key_release_supported: self.attested_key_release_supported,
+            attested_teardown_supported: self.attested_teardown_supported,
+        }
     }
 
-    pub fn execution_evidence_requirements(&self) -> ExecutionEvidenceRequirements {
-        ExecutionEvidenceRequirements {
+    pub fn runtime_capability_semantics(&self) -> RuntimeCapabilitySemantics {
+        runtime_capability_semantics(self.runtime_capability_context())
+    }
+
+    pub fn execution_evidence_requirements(
+        &self,
+    ) -> lsdc_common::execution_overlay::ExecutionEvidenceRequirements {
+        let semantics = self.runtime_capability_semantics();
+        lsdc_common::execution_overlay::ExecutionEvidenceRequirements {
             challenge_nonce_required: true,
             selector_hash_binding_required: true,
-            transparency_registration_mode: TransparencyMode::Required,
-            proof_composition_mode: match self.proof_engine.proof_backend() {
-                ProofBackend::DevReceipt => ProofCompositionMode::Dag,
-                ProofBackend::RiscZero => ProofCompositionMode::Recursive,
-                ProofBackend::None => ProofCompositionMode::None,
+            transparency_registration_mode:
+                lsdc_common::execution_overlay::TransparencyMode::Required,
+            proof_composition_mode: match semantics.proof_composition_mode {
+                lsdc_common::execution::RuntimeProofCompositionMode::None => {
+                    lsdc_common::execution_overlay::ProofCompositionMode::None
+                }
+                lsdc_common::execution::RuntimeProofCompositionMode::Dag => {
+                    lsdc_common::execution_overlay::ProofCompositionMode::Dag
+                }
+                lsdc_common::execution::RuntimeProofCompositionMode::Recursive => {
+                    lsdc_common::execution_overlay::ProofCompositionMode::Recursive
+                }
             },
         }
     }
 
     pub fn execution_capability_descriptor(
         &self,
-    ) -> lsdc_common::error::Result<ExecutionCapabilityDescriptor> {
-        Ok(ExecutionCapabilityDescriptor {
-            overlay_version: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
-            truthfulness_default: OverlayTruthfulnessMode::Permissive,
-            advertised_profiles: AdvertisedProfiles {
-                attestation_profile: match self.actual_tee_backend {
-                    TeeBackend::NitroDev => "nitro-dev-attestation-result-v1",
-                    TeeBackend::NitroLive => "nitro-live-attestation-result-v1",
-                    TeeBackend::None => "none",
-                }
-                .into(),
-                proof_profile: match self.proof_engine.proof_backend() {
-                    ProofBackend::DevReceipt => "dev-receipt-dag-v1",
-                    ProofBackend::RiscZero => "risc0-recursive-dag-v1",
-                    ProofBackend::None => "none",
-                }
-                .into(),
-                transparency_profile: LOCAL_TRANSPARENCY_PROFILE.into(),
-                teardown_profile: if self.actual_tee_backend == TeeBackend::NitroLive {
-                    "kms-key-erasure-v1"
-                } else {
-                    "dev-deletion-v1"
-                }
-                .into(),
+    ) -> lsdc_common::error::Result<lsdc_common::execution_overlay::ExecutionCapabilityDescriptor>
+    {
+        let semantics = self.runtime_capability_semantics();
+        Ok(
+            lsdc_common::execution_overlay::ExecutionCapabilityDescriptor {
+                overlay_version: lsdc_common::execution_overlay::LSDC_EXECUTION_PROTOCOL_VERSION
+                    .into(),
+                truthfulness_default: lsdc_common::execution_overlay::TruthfulnessMode::Permissive,
+                advertised_profiles: lsdc_common::execution_overlay::AdvertisedProfiles {
+                    attestation_profile: semantics.advertised_profiles.attestation_profile,
+                    proof_profile: semantics.advertised_profiles.proof_profile,
+                    transparency_profile: semantics.advertised_profiles.transparency_profile,
+                    teardown_profile: semantics.advertised_profiles.teardown_profile,
+                },
+                support: semantics
+                    .support
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let overlay_value = match value {
+                            lsdc_common::execution::RuntimeCapabilityLevel::Implemented => {
+                                lsdc_common::execution_overlay::CapabilitySupportLevel::Implemented
+                            }
+                            lsdc_common::execution::RuntimeCapabilityLevel::Experimental => {
+                                lsdc_common::execution_overlay::CapabilitySupportLevel::Experimental
+                            }
+                            lsdc_common::execution::RuntimeCapabilityLevel::ModeledOnly => {
+                                lsdc_common::execution_overlay::CapabilitySupportLevel::ModeledOnly
+                            }
+                            lsdc_common::execution::RuntimeCapabilityLevel::Unsupported => {
+                                lsdc_common::execution_overlay::CapabilitySupportLevel::Unsupported
+                            }
+                        };
+                        (key, overlay_value)
+                    })
+                    .collect(),
             },
-            support: self.capability_support_summary(),
-        })
+        )
     }
 
     pub fn execution_capabilities(&self) -> ExecutionCapabilitiesResponse {
@@ -386,32 +336,38 @@ impl ApiState {
         &self,
         request: CreateExecutionSessionRequest,
     ) -> lsdc_common::error::Result<CreateExecutionSessionResponse> {
+        let CreateExecutionSessionRequest {
+            agreement_id,
+            requester_ephemeral_pubkey,
+            expected_attestation_public_key,
+            expires_in_seconds,
+        } = request;
         let (agreement, _) = self
             .store
-            .get_agreement(&request.agreement_id)?
+            .get_agreement(&agreement_id)?
             .ok_or_else(|| lsdc_common::error::LsdcError::Database("agreement not found".into()))?;
         let overlay = self
             .store
-            .get_agreement_overlay(&request.agreement_id)?
+            .get_agreement_overlay(&agreement_id)?
             .unwrap_or(self.execution_overlay_for(&agreement)?);
         self.store
-            .upsert_agreement_overlay(&request.agreement_id, &overlay)?;
+            .upsert_agreement_overlay(&agreement_id, &overlay)?;
 
         let now = chrono::Utc::now();
         let session = ExecutionSession {
             session_id: uuid::Uuid::new_v4(),
-            agreement_id: request.agreement_id,
+            agreement_id,
             agreement_commitment_hash: overlay.agreement_commitment_hash.clone(),
             capability_descriptor_hash: overlay.capability_descriptor_hash.clone(),
             evidence_requirements_hash: overlay.evidence_requirements_hash.clone(),
             resolved_selector_hash: None,
-            requester_ephemeral_pubkey: request.requester_ephemeral_pubkey,
-            expected_attestation_recipient_public_key: request
-                .expected_attestation_recipient_public_key,
+            requester_ephemeral_pubkey,
+            expected_attestation_public_key_hash: normalize_expected_attestation_public_key_hash(
+                expected_attestation_public_key,
+            )?,
             state: ExecutionSessionState::Created,
             created_at: now,
-            expires_at: request
-                .expires_in_seconds
+            expires_at: expires_in_seconds
                 .map(|seconds| now + chrono::Duration::seconds(seconds.max(1))),
         };
         self.store.upsert_execution_session(&session, None)?;
@@ -503,13 +459,12 @@ impl ApiState {
                 "attestation result nonce mismatch".into(),
             ));
         }
-        if session
-            .expected_attestation_recipient_public_key
-            .as_deref()
-            .is_some_and(|expected| attestation_result.public_key.as_deref() != Some(expected))
-        {
+        if !attested_public_key_hash_matches(
+            challenge.expected_attestation_public_key_hash.as_ref(),
+            attestation_result.public_key.as_deref(),
+        ) {
             return Err(lsdc_common::error::LsdcError::PolicyCompile(
-                "attestation result attested recipient public key binding mismatch".into(),
+                "attestation result attested public key pin mismatch".into(),
             ));
         }
         if attestation_result.user_data_hash.as_ref() != Some(&challenge.resolved_selector_hash) {
@@ -637,7 +592,7 @@ impl ApiState {
             } else {
                 self.default_requester_ephemeral_pubkey.clone()
             },
-            expected_attestation_recipient_public_key: None,
+            expected_attestation_public_key: None,
             expires_in_seconds: Some(900),
         })?;
 
@@ -932,6 +887,36 @@ fn map_truthfulness_mode_back(mode: OverlayTruthfulnessMode) -> TruthfulnessMode
     match mode {
         OverlayTruthfulnessMode::Permissive => TruthfulnessMode::Permissive,
         OverlayTruthfulnessMode::Strict => TruthfulnessMode::Strict,
+    }
+}
+
+fn normalize_expected_attestation_public_key_hash(
+    expected_attestation_public_key: Option<Vec<u8>>,
+) -> lsdc_common::error::Result<Option<Sha256Hash>> {
+    match expected_attestation_public_key {
+        Some(public_key) if public_key.is_empty() => {
+            Err(lsdc_common::error::LsdcError::PolicyCompile(
+                "expected attestation public key must not be empty".into(),
+            ))
+        }
+        Some(public_key) => Ok(Some(Sha256Hash::digest_bytes(&public_key))),
+        None => Ok(None),
+    }
+}
+
+fn attested_public_key_hash_matches(
+    expected_attestation_public_key_hash: Option<&Sha256Hash>,
+    attested_public_key: Option<&[u8]>,
+) -> bool {
+    match expected_attestation_public_key_hash {
+        Some(expected_hash) => {
+            attested_public_key
+                .filter(|public_key| !public_key.is_empty())
+                .map(Sha256Hash::digest_bytes)
+                .as_ref()
+                == Some(expected_hash)
+        }
+        None => true,
     }
 }
 

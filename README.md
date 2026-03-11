@@ -8,7 +8,7 @@ The Liquid-State Dataspace Connector (LSDC) is a Rust-first dataspace runtime wi
 
 - Default reference stack: three `control-plane-api` nodes, three simulated `liquid-agent` nodes, and the Python pricing oracle.
 - Public surface: DSP contract and transfer routes plus additive `/lsdc/v1/*` execution-overlay routes.
-- Implemented non-default modes: Linux Aya/XDP transport, feature-gated `RISC Zero` recursive transform chaining and receipt composition, `nitro_live`, AWS Nitro attestation verification, and AWS KMS-backed attested key release when configured.
+- Implemented non-default modes: Linux Aya/XDP transport, feature-gated `RISC Zero` recursive transform chaining and receipt composition, `nitro_live`, AWS Nitro attestation verification, optional attestation-key pinning, and AWS KMS-backed attested key release when configured.
 - Explicit future work: live enclave lifecycle orchestration, autonomous contract mutation or settlement, and richer enforcement beyond the implemented executable subset.
 
 ## Architecture
@@ -51,7 +51,7 @@ The default Phase 3 demo runs this flow with simulated transport, `dev_receipt`,
 | --- | --- | --- |
 | Transport | `simulated` via `liquid-agent` | Aya/XDP on privileged Linux runners |
 | Proof | `dev_receipt` | Feature-gated `RISC Zero` recursive transform chaining and receipt composition |
-| TEE | `nitro_dev` | `nitro_live` with AWS Nitro attestation verification and AWS KMS-backed attested key release when configured |
+| TEE | `nitro_dev` | `nitro_live` with AWS Nitro attestation verification, optional attestation-key pinning, and AWS KMS-backed attested key release when configured |
 | Pricing | Advisory gRPC decisions | Same advisory model; no autonomous mutation or billing settlement |
 | Public APIs | DSP compatibility routes plus lineage, evidence, and settlement compatibility views | `/lsdc/v1/*` execution-overlay routes for capabilities, sessions, attestation evidence, transparency receipts, and DAG verification |
 
@@ -133,7 +133,7 @@ The older lineage, evidence, and settlement routes remain available as compatibi
 
 - Transport: `liquid-agent` defaults to simulated enforcement. Aya/XDP is available on Linux and built with `cargo xtask build-ebpf`.
 - Proof: `proof_backend = "dev_receipt"` is the default. `risc_zero` is supported behind the `risc0` feature and the external guest toolchain, including recursive transform chaining and receipt composition on prepared runners.
-- TEE: `tee_backend = "nitro_dev"` is the default. `nitro_live` is supported as a non-default mode with AWS Nitro attestation verification and optional AWS KMS-backed attested key release.
+- TEE: `tee_backend = "nitro_dev"` is the default. `nitro_live` is supported as a non-default mode with AWS Nitro attestation verification, optional attestation-key pinning, and optional AWS KMS-backed attested key release.
 - Pricing: the pricing plane is advisory-only gRPC. Insecure `http://` pricing endpoints are development-only and must stay on loopback with `LSDC_ALLOW_DEV_DEFAULTS=1`.
 
 Non-default `nitro_live` configuration uses the existing control-plane config knobs:

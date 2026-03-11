@@ -6,9 +6,11 @@ pub mod profile;
 
 pub use error::{LsdcError, Result};
 pub use execution::{
-    ActualExecutionProfile, AgreementExecutionView, PolicyClauseClassification, PolicyClauseStatus,
-    PolicyExecutionClassification, PricingMode, ProofBackend, RequestedExecutionProfile,
-    RequestedProofProfile, RequestedTeeProfile, RequestedTransportProfile, TeeBackend,
+    runtime_capability_semantics, ActualExecutionProfile, AgreementExecutionView,
+    PolicyClauseClassification, PolicyClauseStatus, PolicyExecutionClassification, PricingMode,
+    ProofBackend, RequestedExecutionProfile, RequestedProofProfile, RequestedTeeProfile,
+    RequestedTransportProfile, RuntimeAdvertisedProfiles, RuntimeCapabilityContext,
+    RuntimeCapabilityLevel, RuntimeCapabilitySemantics, RuntimeProofCompositionMode, TeeBackend,
     TransportBackend, TransportSelector,
 };
 pub use liquid::{

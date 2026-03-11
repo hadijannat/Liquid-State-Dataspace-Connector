@@ -120,7 +120,7 @@ fn recursive_execution_bindings() -> ExecutionBindings {
         evidence_requirements_hash: overlay_commitment.evidence_requirements_hash.clone(),
         resolved_selector_hash: Some(selector_hash.clone()),
         requester_ephemeral_pubkey: vec![1, 2, 3, 4],
-        expected_attestation_recipient_public_key: None,
+        expected_attestation_public_key_hash: None,
         state: ExecutionSessionState::Challenged,
         created_at: now,
         expires_at: Some(now + chrono::Duration::minutes(5)),

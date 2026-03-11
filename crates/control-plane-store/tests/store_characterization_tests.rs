@@ -272,13 +272,36 @@ fn test_execution_overlay_session_and_evidence_round_trip() {
         .unwrap()
         .expect("expected persisted execution session");
     assert_eq!(persisted_session.session_id, session.session_id);
+    let persisted_challenge = persisted_challenge.expect("challenge");
     assert_eq!(
-        persisted_challenge.expect("challenge").challenge_nonce_hash,
+        persisted_challenge.challenge_nonce_hash,
         challenge.challenge_nonce_hash
+    );
+    assert_eq!(
+        persisted_challenge.expected_attestation_public_key_hash,
+        challenge.expected_attestation_public_key_hash
     );
     assert_eq!(
         persisted_attestation.expect("attestation").doc_hash,
         attestation_result.doc_hash
+    );
+
+    let connection = Connection::open(&db_path).unwrap();
+    let persisted_pin_hash = connection
+        .query_row(
+            "SELECT expected_attestation_public_key_hash
+             FROM session_challenges
+             WHERE challenge_id = ?1",
+            [challenge.challenge_id.to_string()],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        persisted_pin_hash,
+        challenge
+            .expected_attestation_public_key_hash
+            .as_ref()
+            .map(Sha256Hash::to_hex)
     );
 
     store
@@ -624,7 +647,9 @@ fn sample_execution_session(overlay: &ExecutionOverlaySummary) -> ExecutionSessi
         evidence_requirements_hash: overlay.evidence_requirements_hash.clone(),
         resolved_selector_hash: Some(Sha256Hash::digest_bytes(b"selector")),
         requester_ephemeral_pubkey: vec![1, 2, 3, 4],
-        expected_attestation_recipient_public_key: Some(vec![7, 8, 9, 10]),
+        expected_attestation_public_key_hash: Some(Sha256Hash::digest_bytes(
+            b"attested-public-key",
+        )),
         state: ExecutionSessionState::Created,
         created_at: Utc::now(),
         expires_at: Some(Utc::now() + Duration::minutes(15)),
