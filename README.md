@@ -158,35 +158,9 @@ The lineage endpoint accepts:
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    Client["External DSP and ODRL clients"]
-    API["control-plane-api"]
-    DSP["DSP compatibility routes<br/>contracts and transfers"]
-    Overlay["LSDC execution overlay<br/>/lsdc/v1 capabilities, sessions, evidence"]
-    Services["Control-plane services<br/>agreements, lineage, pricing, breach handling"]
-    Transport["Liquid agent<br/>simulated or Aya/XDP"]
-    Proof["Proof plane<br/>dev_receipt or RISC Zero"]
-    TEE["TEE orchestrator<br/>nitro_dev or nitro_live"]
-    Pricing["Pricing oracle<br/>advisory gRPC"]
-    Outputs["Transfer, lineage,<br/>evidence, settlement"]
+![LSDC architecture overview](docs/architecture.svg)
 
-    Client --> API
-    API --> DSP
-    API --> Overlay
-    DSP --> Services
-    Overlay --> Services
-    Services --> Transport
-    Services --> Proof
-    Services --> TEE
-    Services --> Pricing
-    Transport --> Outputs
-    Proof --> Outputs
-    TEE --> Outputs
-    Pricing --> Outputs
-```
-
-Static fallback: [docs/architecture.svg](docs/architecture.svg) for renderers that do not support Mermaid.
+Rendered from [docs/architecture.svg](docs/architecture.svg).
 
 The default Phase 3 demo runs this graph with simulated transport, `dev_receipt`, `nitro_dev`, local transparency receipts, and advisory pricing. Negotiated intent is not treated as proof that `RISC Zero` or `nitro_live` actually ran.
 
