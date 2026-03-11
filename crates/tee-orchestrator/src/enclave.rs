@@ -312,17 +312,23 @@ fn derive_key_release_policy(
     let normalized = normalize_policy(&agreement.odrl_policy)?;
     let mut key_release_profile = None;
     let mut deletion_mode = None;
-    for permission in &normalized.permissions {
-        for constraint in &permission.constraints {
-            match constraint.clause_id.as_str() {
-                "keyReleaseProfile" => {
-                    key_release_profile = constraint.right_operand.as_str().map(str::to_string);
-                }
-                "deletionMode" => {
-                    deletion_mode = constraint.right_operand.as_str().map(str::to_string);
-                }
-                _ => {}
+    for constraint in normalized.constraint_leaves() {
+        match constraint.left_operand.as_str() {
+            "keyReleaseProfile" => {
+                key_release_profile = constraint
+                    .right_operand
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
             }
+            "deletionMode" => {
+                deletion_mode = constraint
+                    .right_operand
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+            }
+            _ => {}
         }
     }
 
@@ -405,22 +411,21 @@ fn validate_live_attestation_policy(
     }
 
     let normalized = normalize_policy(&agreement.odrl_policy)?;
-    for permission in &normalized.permissions {
-        for constraint in &permission.constraints {
-            if constraint.clause_id != "teeImageSha384" {
-                continue;
-            }
-            let expected = constraint.right_operand.as_str().ok_or_else(|| {
+    for constraint in normalized.constraint_leaves_by_operand("teeImageSha384") {
+        let expected = constraint
+            .right_operand
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
                 LsdcError::PolicyCompile(
                     "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
                 )
             })?;
-            if !expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
-                return Err(LsdcError::Attestation(
-                    "nitro-live attestation image hash does not satisfy teeImageSha384 policy"
-                        .into(),
-                ));
-            }
+        if !expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
+            return Err(LsdcError::Attestation(
+                "nitro-live attestation image hash does not satisfy teeImageSha384 policy"
+                    .into(),
+            ));
         }
     }
 
@@ -800,6 +805,7 @@ mod tests {
         let overlay_commitment = ExecutionOverlayCommitment::build(
             "agreement-live",
             TruthfulnessMode::Strict,
+            lsdc_common::execution_overlay::LSDC_POLICY_COMMITMENT_PROFILE_V2,
             Sha256Hash::digest_bytes(b"policy"),
             capability_descriptor,
             evidence_requirements,

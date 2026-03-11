@@ -74,7 +74,7 @@ fn test_parse_invalid_json_returns_error() {
 }
 
 #[test]
-fn test_lower_rejects_unsupported_action() {
+fn test_lower_rejects_when_no_supported_executable_actions_exist() {
     let policy = json!({
         "permission": [{
             "action": "stream"
@@ -86,7 +86,19 @@ fn test_lower_rejects_unsupported_action() {
 }
 
 #[test]
-fn test_multi_constraint_delete_duty_is_rejected() {
+fn test_lower_accepts_prohibitions_but_ignores_them_in_executable_subset() {
+    let policy = json!({
+        "permission": [{"action": "read"}],
+        "prohibition": [{"action": "transfer"}]
+    });
+
+    let lowered = lower_policy(&policy, &[]).unwrap();
+    assert!(lowered.transport_guard.allow_read);
+    assert!(!lowered.transport_guard.allow_transfer);
+}
+
+#[test]
+fn test_lower_accepts_multi_constraint_delete_duty_by_taking_the_tightest_window() {
     let policy = serde_json::json!({
         "permission": [{
             "action": "transfer",
@@ -99,20 +111,17 @@ fn test_multi_constraint_delete_duty_is_rejected() {
             }]
         }]
     });
-    let err = lsdc_common::odrl::parser::lower_policy(
+    let lowered = lower_policy(
         &policy,
         &[lsdc_common::dsp::EvidenceRequirement::ProvenanceReceipt],
     )
-    .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("delete duty must have exactly one constraint, got 2"),
-        "unexpected error: {err}"
-    );
+    .unwrap();
+
+    assert_eq!(lowered.runtime_guard.delete_after_seconds, Some(7 * 24 * 60 * 60));
 }
 
 #[test]
-fn test_multi_constraint_anonymize_duty_is_rejected() {
+fn test_lower_accepts_multi_constraint_anonymize_duty() {
     let policy = serde_json::json!({
         "permission": [{
             "action": "anonymize",
@@ -125,25 +134,16 @@ fn test_multi_constraint_anonymize_duty_is_rejected() {
             }]
         }]
     });
-    let err = lsdc_common::odrl::parser::lower_policy(
+    let lowered = lower_policy(
         &policy,
         &[lsdc_common::dsp::EvidenceRequirement::ProvenanceReceipt],
     )
-    .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("anonymize duty must have exactly one constraint, got 2"),
-        "unexpected error: {err}"
+    .unwrap();
+
+    let mut required_ops = lowered.transform_guard.required_ops;
+    required_ops.sort_by_key(|item| format!("{item:?}"));
+    assert_eq!(
+        required_ops,
+        vec![CsvTransformOpKind::HashColumns, CsvTransformOpKind::RedactColumns]
     );
-}
-
-#[test]
-fn test_lower_rejects_prohibitions() {
-    let policy = json!({
-        "permission": [{"action": "read"}],
-        "prohibition": [{"action": "transfer"}]
-    });
-
-    let result = lower_policy(&policy, &[]);
-    assert!(result.is_err());
 }

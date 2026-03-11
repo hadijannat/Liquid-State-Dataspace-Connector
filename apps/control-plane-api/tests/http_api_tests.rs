@@ -113,6 +113,10 @@ async fn test_contract_finalize_transfer_and_settlement_surface() {
         execution_overlay.overlay_version,
         LSDC_EXECUTION_PROTOCOL_VERSION
     );
+    assert_eq!(
+        execution_overlay.policy_commitment_profile,
+        lsdc_common::profile::LSDC_POLICY_COMMITMENT_PROFILE_V2
+    );
     assert!(execution_overlay
         .support_summary
         .contains_key("proof.dev_receipt_dag"));
@@ -333,6 +337,10 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
         .execution_overlay
         .clone()
         .expect("expected execution overlay summary");
+    assert_eq!(
+        finalized_overlay.policy_commitment_profile,
+        lsdc_common::profile::LSDC_POLICY_COMMITMENT_PROFILE_V2
+    );
 
     let capabilities: ExecutionCapabilitiesResponse = get_json(
         &app,

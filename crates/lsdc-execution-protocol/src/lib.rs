@@ -7,6 +7,8 @@ use uuid::Uuid;
 pub const LSDC_EXECUTION_PROTOCOL_VERSION: &str = "lsdc-execution-overlay/v1";
 pub const LOCAL_TRANSPARENCY_PROFILE: &str = "lsdc-local-merkle-v1";
 pub const HASH_ALGORITHM_SHA256: &str = "sha-256";
+pub const LSDC_POLICY_COMMITMENT_PROFILE_V1: &str = "lsdc.policy.v1";
+pub const LSDC_POLICY_COMMITMENT_PROFILE_V2: &str = "lsdc.policy.v2";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
@@ -84,6 +86,8 @@ pub struct ExecutionOverlayCommitment {
     pub overlay_version: String,
     pub hash_alg: String,
     pub truthfulness_mode: TruthfulnessMode,
+    #[serde(default = "default_policy_commitment_profile")]
+    pub policy_commitment_profile: String,
     pub policy_commitment_hash: Sha256Hash,
     pub capability_descriptor_hash: Sha256Hash,
     pub evidence_requirements_hash: Sha256Hash,
@@ -96,10 +100,12 @@ impl ExecutionOverlayCommitment {
     pub fn build(
         agreement_id: &str,
         truthfulness_mode: TruthfulnessMode,
+        policy_commitment_profile: impl Into<String>,
         policy_commitment_hash: Sha256Hash,
         capability_descriptor: ExecutionCapabilityDescriptor,
         evidence_requirements: ExecutionEvidenceRequirements,
     ) -> Result<Self, serde_json::Error> {
+        let policy_commitment_profile = policy_commitment_profile.into();
         let capability_descriptor_hash = domain_hash(
             "lsdc.capability-descriptor.v1",
             &[&canonical_bytes(&capability_descriptor)?],
@@ -114,6 +120,7 @@ impl ExecutionOverlayCommitment {
                 agreement_id.as_bytes(),
                 LSDC_EXECUTION_PROTOCOL_VERSION.as_bytes(),
                 serde_json::to_string(&truthfulness_mode)?.as_bytes(),
+                policy_commitment_profile.as_bytes(),
                 &policy_commitment_hash.0,
                 &capability_descriptor_hash.0,
                 &evidence_requirements_hash.0,
@@ -124,6 +131,7 @@ impl ExecutionOverlayCommitment {
             overlay_version: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
             hash_alg: HASH_ALGORITHM_SHA256.into(),
             truthfulness_mode,
+            policy_commitment_profile,
             policy_commitment_hash,
             capability_descriptor_hash,
             evidence_requirements_hash,
@@ -132,6 +140,10 @@ impl ExecutionOverlayCommitment {
             evidence_requirements,
         })
     }
+}
+
+fn default_policy_commitment_profile() -> String {
+    LSDC_POLICY_COMMITMENT_PROFILE_V1.into()
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

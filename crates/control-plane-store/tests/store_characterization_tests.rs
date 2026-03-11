@@ -607,6 +607,7 @@ fn sample_execution_overlay() -> ExecutionOverlaySummary {
     };
     ExecutionOverlaySummary {
         overlay_version: LSDC_EXECUTION_PROTOCOL_VERSION.into(),
+        policy_commitment_profile: lsdc_common::profile::LSDC_POLICY_COMMITMENT_PROFILE_V2.into(),
         capability_descriptor_hash: capability_descriptor.canonical_hash().unwrap(),
         agreement_commitment_hash: Sha256Hash::digest_bytes(b"agreement-commitment"),
         truthfulness_mode: lsdc_common::profile::TruthfulnessMode::Permissive,

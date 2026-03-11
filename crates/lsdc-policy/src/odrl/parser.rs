@@ -4,9 +4,11 @@ use crate::liquid::{
     CsvTransformOpKind, EvidenceRequirement, LiquidPolicyIr, RuntimeGuard, TransformGuard,
     TransportGuard, TransportProtocol,
 };
-use crate::profile::LSDC_PROFILE_OPERANDS;
-use chrono::{DateTime, Utc};
-use serde_json::{Map, Value};
+use crate::profile::{
+    canonical_policy_json, normalize_policy, NormalizedConstraintLeaf, NormalizedDuty,
+    NormalizedPolicy, NormalizedRule,
+};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub fn parse_legacy_policy_json(json: &str) -> Result<PolicyAgreement> {
@@ -26,29 +28,14 @@ pub fn lower_policy(
     policy: &Value,
     evidence_requirements: &[EvidenceRequirement],
 ) -> Result<LiquidPolicyIr> {
-    let permissions = policy
-        .get("permission")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            LsdcError::OdrlParse("ODRL policy must contain a permission array".into())
-        })?;
+    let normalized = normalize_policy(policy)?;
+    lower_normalized_policy(&normalized, evidence_requirements)
+}
 
-    if permissions.is_empty() {
-        return Err(LsdcError::PolicyCompile(
-            "ODRL policy must contain at least one permission".into(),
-        ));
-    }
-
-    if policy
-        .get("prohibition")
-        .and_then(Value::as_array)
-        .is_some_and(|items| !items.is_empty())
-    {
-        return Err(LsdcError::PolicyCompile(
-            "prototype ODRL subset does not support prohibitions".into(),
-        ));
-    }
-
+pub fn lower_normalized_policy(
+    normalized_policy: &NormalizedPolicy,
+    evidence_requirements: &[EvidenceRequirement],
+) -> Result<LiquidPolicyIr> {
     let mut allow_read = false;
     let mut allow_transfer = false;
     let mut allow_anonymize = false;
@@ -59,120 +46,31 @@ pub fn lower_policy(
     let mut required_ops = Vec::new();
     let mut delete_after_seconds = None;
 
-    for permission in permissions {
-        for action in parse_actions(permission.get("action"))? {
-            match action.as_str() {
-                "read" => allow_read = true,
-                "transfer" => allow_transfer = true,
-                "anonymize" => allow_anonymize = true,
-                other => {
-                    return Err(LsdcError::PolicyCompile(format!(
-                        "unsupported ODRL action `{other}`"
-                    )))
-                }
-            }
-        }
-
-        if let Some(constraints) = permission.get("constraint").and_then(Value::as_array) {
-            for constraint in constraints {
-                let operand = required_string(constraint, "leftOperand")?;
-                match operand.as_str() {
-                    "count" => packet_caps.push(parse_u64_right_operand(constraint)?),
-                    "spatial" => extend_unique(
-                        &mut allowed_regions,
-                        parse_string_list_right_operand(constraint)?,
-                    ),
-                    "maxEgressBytes" => byte_caps.push(parse_u64_right_operand(constraint)?),
-                    "purpose" => extend_unique(
-                        &mut allowed_purposes,
-                        parse_string_list_right_operand(constraint)?,
-                    ),
-                    other if LSDC_PROFILE_OPERANDS.contains(&other) => {}
-                    other => {
-                        return Err(LsdcError::PolicyCompile(format!(
-                            "unsupported ODRL constraint `{other}`"
-                        )))
-                    }
-                }
-            }
-        }
-
-        if let Some(duties) = permission.get("duty").and_then(Value::as_array) {
-            for duty in duties {
-                let action = parse_action_value(duty.get("action"))?;
-                match action.as_str() {
-                    "delete" => {
-                        let constraints = duty
-                            .get("constraint")
-                            .and_then(Value::as_array)
-                            .ok_or_else(|| {
-                                LsdcError::PolicyCompile(
-                                    "delete duty must contain a constraint".into(),
-                                )
-                            })?;
-                        if constraints.len() != 1 {
-                            return Err(LsdcError::PolicyCompile(format!(
-                                "delete duty must have exactly one constraint, got {}",
-                                constraints.len()
-                            )));
-                        }
-                        let constraint = &constraints[0];
-                        let operand = required_string(constraint, "leftOperand")?;
-                        if operand != "delete-after" {
-                            return Err(LsdcError::PolicyCompile(format!(
-                                "unsupported delete duty operand `{operand}`"
-                            )));
-                        }
-                        delete_after_seconds = Some(parse_duration_seconds(&required_string(
-                            constraint,
-                            "rightOperand",
-                        )?)?);
-                    }
-                    "anonymize" => {
-                        allow_anonymize = true;
-                        let constraints = duty
-                            .get("constraint")
-                            .and_then(Value::as_array)
-                            .ok_or_else(|| {
-                                LsdcError::PolicyCompile(
-                                    "anonymize duty must contain a constraint".into(),
-                                )
-                            })?;
-                        if constraints.len() != 1 {
-                            return Err(LsdcError::PolicyCompile(format!(
-                                "anonymize duty must have exactly one constraint, got {}",
-                                constraints.len()
-                            )));
-                        }
-                        let constraint = &constraints[0];
-                        let operand = required_string(constraint, "leftOperand")?;
-                        if operand != "transform-required" {
-                            if LSDC_PROFILE_OPERANDS.contains(&operand.as_str()) {
-                                continue;
-                            }
-                            return Err(LsdcError::PolicyCompile(format!(
-                                "unsupported anonymize duty operand `{operand}`"
-                            )));
-                        }
-                        required_ops.push(parse_transform_kind(&required_string(
-                            constraint,
-                            "rightOperand",
-                        )?)?);
-                    }
-                    other => {
-                        return Err(LsdcError::PolicyCompile(format!(
-                            "unsupported ODRL duty action `{other}`"
-                        )))
-                    }
-                }
-            }
-        }
+    for permission in &normalized_policy.permissions {
+        lower_permission_actions(permission, &mut allow_read, &mut allow_transfer, &mut allow_anonymize);
+        lower_permission_constraints(
+            permission,
+            &mut packet_caps,
+            &mut byte_caps,
+            &mut allowed_regions,
+            &mut allowed_purposes,
+        )?;
+        lower_permission_duties(
+            permission,
+            &mut allow_anonymize,
+            &mut required_ops,
+            &mut delete_after_seconds,
+        )?;
     }
 
-    let valid_until = match policy.get("validUntil") {
-        Some(value) => Some(parse_datetime_value(value)?),
-        None => None,
-    };
+    for obligation in &normalized_policy.obligations {
+        lower_duty(
+            obligation,
+            &mut allow_anonymize,
+            &mut required_ops,
+            &mut delete_after_seconds,
+        )?;
+    }
 
     if !allow_read && !allow_transfer && !allow_anonymize {
         return Err(LsdcError::PolicyCompile(
@@ -187,7 +85,7 @@ pub fn lower_policy(
             packet_cap: packet_caps.into_iter().min(),
             byte_cap: byte_caps.into_iter().min(),
             allowed_regions,
-            valid_until,
+            valid_until: normalized_policy.valid_until,
             protocol: TransportProtocol::Udp,
             session_port: None,
         },
@@ -206,74 +104,111 @@ pub fn lower_policy(
     })
 }
 
+fn lower_permission_actions(
+    permission: &NormalizedRule,
+    allow_read: &mut bool,
+    allow_transfer: &mut bool,
+    allow_anonymize: &mut bool,
+) {
+    for action in &permission.actions {
+        match action.as_str() {
+            "read" => *allow_read = true,
+            "transfer" => *allow_transfer = true,
+            "anonymize" => *allow_anonymize = true,
+            _ => {}
+        }
+    }
+}
+
+fn lower_permission_constraints(
+    permission: &NormalizedRule,
+    packet_caps: &mut Vec<u64>,
+    byte_caps: &mut Vec<u64>,
+    allowed_regions: &mut Vec<String>,
+    allowed_purposes: &mut Vec<String>,
+) -> Result<()> {
+    for leaf in permission.constraint_leaves() {
+        match leaf.left_operand.as_str() {
+            "count" => packet_caps.push(parse_u64_operand(leaf)?),
+            "spatial" => extend_unique(allowed_regions, parse_string_list_operand(leaf)?),
+            "maxEgressBytes" => byte_caps.push(parse_u64_operand(leaf)?),
+            "purpose" => extend_unique(allowed_purposes, parse_string_list_operand(leaf)?),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn lower_permission_duties(
+    permission: &NormalizedRule,
+    allow_anonymize: &mut bool,
+    required_ops: &mut Vec<CsvTransformOpKind>,
+    delete_after_seconds: &mut Option<u64>,
+) -> Result<()> {
+    for duty in &permission.duties {
+        lower_duty(duty, allow_anonymize, required_ops, delete_after_seconds)?;
+    }
+    Ok(())
+}
+
+fn lower_duty(
+    duty: &NormalizedDuty,
+    allow_anonymize: &mut bool,
+    required_ops: &mut Vec<CsvTransformOpKind>,
+    delete_after_seconds: &mut Option<u64>,
+) -> Result<()> {
+    match duty.action.as_str() {
+        "delete" => {
+            for leaf in duty.constraint_leaves() {
+                if leaf.left_operand != "delete-after" {
+                    continue;
+                }
+                let duration = parse_duration_seconds(&parse_string_operand(leaf)?)?;
+                *delete_after_seconds = Some(match *delete_after_seconds {
+                    Some(current) => current.min(duration),
+                    None => duration,
+                });
+            }
+        }
+        "anonymize" => {
+            *allow_anonymize = true;
+            for leaf in duty.constraint_leaves() {
+                if leaf.left_operand != "transform-required" {
+                    continue;
+                }
+                required_ops.push(parse_transform_kind(&parse_string_operand(leaf)?)?);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn canonical_json_bytes(value: &Value) -> std::result::Result<Vec<u8>, serde_json::Error> {
-    serde_json::to_vec(&canonicalize_json(value))
+    serde_json::to_vec(&canonical_policy_json(value))
 }
 
-fn canonicalize_json(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut keys: Vec<_> = map.keys().cloned().collect();
-            keys.sort();
-
-            let mut canonical = Map::new();
-            for key in keys {
-                canonical.insert(key.clone(), canonicalize_json(&map[&key]));
-            }
-
-            Value::Object(canonical)
-        }
-        Value::Array(values) => Value::Array(values.iter().map(canonicalize_json).collect()),
-        _ => value.clone(),
-    }
+fn parse_u64_operand(leaf: &NormalizedConstraintLeaf) -> Result<u64> {
+    leaf.right_operand
+        .as_ref()
+        .and_then(Value::as_u64)
+        .ok_or_else(|| LsdcError::OdrlParse("`rightOperand` must be an unsigned integer".into()))
 }
 
-fn parse_actions(value: Option<&Value>) -> Result<Vec<String>> {
-    let value = value.ok_or_else(|| {
-        LsdcError::OdrlParse("permission must declare an action in the prototype subset".into())
-    })?;
-
-    match value {
-        Value::Array(items) => items
-            .iter()
-            .map(|item| parse_action_value(Some(item)))
-            .collect(),
-        _ => Ok(vec![parse_action_value(Some(value))?]),
-    }
-}
-
-fn parse_action_value(value: Option<&Value>) -> Result<String> {
-    let value = value.ok_or_else(|| LsdcError::OdrlParse("missing action value".into()))?;
-    match value {
-        Value::String(action) => Ok(action.to_ascii_lowercase()),
-        Value::Object(map) => {
-            if let Some(action) = map.get("type").and_then(Value::as_str) {
-                Ok(action.to_ascii_lowercase())
-            } else if let Some(action) = map.get("value").and_then(Value::as_str) {
-                Ok(action.to_ascii_lowercase())
-            } else {
-                Err(LsdcError::OdrlParse(
-                    "action objects must declare `type` or `value`".into(),
-                ))
-            }
-        }
-        _ => Err(LsdcError::OdrlParse(
-            "action must be a string or action object".into(),
-        )),
-    }
-}
-
-fn required_string(value: &Value, field: &str) -> Result<String> {
-    value
-        .get(field)
+fn parse_string_operand(leaf: &NormalizedConstraintLeaf) -> Result<String> {
+    leaf.right_operand
+        .as_ref()
         .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| LsdcError::OdrlParse(format!("missing string field `{field}`")))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            LsdcError::OdrlParse("`rightOperand` must be a string for this operand".into())
+        })
 }
 
-fn parse_string_list_right_operand(value: &Value) -> Result<Vec<String>> {
-    let right_operand = value
-        .get("rightOperand")
+fn parse_string_list_operand(leaf: &NormalizedConstraintLeaf) -> Result<Vec<String>> {
+    let right_operand = leaf
+        .right_operand
+        .as_ref()
         .ok_or_else(|| LsdcError::OdrlParse("missing `rightOperand`".into()))?;
 
     match right_operand {
@@ -290,22 +225,6 @@ fn parse_string_list_right_operand(value: &Value) -> Result<Vec<String>> {
             "`rightOperand` must be a string or array of strings".into(),
         )),
     }
-}
-
-fn parse_u64_right_operand(value: &Value) -> Result<u64> {
-    value
-        .get("rightOperand")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| LsdcError::OdrlParse("`rightOperand` must be an unsigned integer".into()))
-}
-
-fn parse_datetime_value(value: &Value) -> Result<DateTime<Utc>> {
-    let timestamp = value
-        .as_str()
-        .ok_or_else(|| LsdcError::OdrlParse("`validUntil` must be an RFC3339 string".into()))?;
-    DateTime::parse_from_rfc3339(timestamp)
-        .map(|value| value.with_timezone(&Utc))
-        .map_err(|err| LsdcError::OdrlParse(format!("invalid `validUntil`: {err}")))
 }
 
 fn parse_transform_kind(value: &str) -> Result<CsvTransformOpKind> {

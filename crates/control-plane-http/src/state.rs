@@ -20,7 +20,10 @@ use lsdc_common::execution_overlay::{
     TruthfulnessMode as OverlayTruthfulnessMode, LOCAL_TRANSPARENCY_PROFILE,
     LSDC_EXECUTION_PROTOCOL_VERSION,
 };
-use lsdc_common::profile::{normalize_policy, RuntimeCapabilities, TruthfulnessMode};
+use lsdc_common::profile::{
+    canonical_normalized_policy_bytes, normalize_policy, RuntimeCapabilities, TruthfulnessMode,
+    LSDC_POLICY_COMMITMENT_PROFILE_V2,
+};
 use lsdc_common::runtime_model::{
     DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus,
 };
@@ -346,18 +349,17 @@ impl ApiState {
         agreement: &ContractAgreement,
     ) -> lsdc_common::error::Result<ExecutionOverlayCommitment> {
         let normalized_policy = normalize_policy(&agreement.odrl_policy)?;
-        let policy_canonical_bytes = canonical_json_bytes(
-            &serde_json::to_value(&normalized_policy)
-                .map_err(lsdc_common::error::LsdcError::from)?,
-        )
-        .map_err(lsdc_common::error::LsdcError::from)?;
-        let policy_canonical_hash = domain_hash("lsdc.policy.v1", &[&policy_canonical_bytes]);
+        let policy_canonical_bytes = canonical_normalized_policy_bytes(&normalized_policy)
+            .map_err(lsdc_common::error::LsdcError::from)?;
+        let policy_canonical_hash =
+            domain_hash(LSDC_POLICY_COMMITMENT_PROFILE_V2, &[&policy_canonical_bytes]);
         let capability_descriptor = self.execution_capability_descriptor()?;
         let evidence_requirements = self.execution_evidence_requirements();
 
         ExecutionOverlayCommitment::build(
             &agreement.agreement_id.0,
             map_truthfulness_mode(normalized_policy.truthfulness_mode),
+            LSDC_POLICY_COMMITMENT_PROFILE_V2,
             policy_canonical_hash,
             capability_descriptor,
             evidence_requirements,
@@ -373,6 +375,7 @@ impl ApiState {
         Ok(ExecutionOverlaySummary {
             overlay_version: overlay.overlay_version,
             truthfulness_mode: map_truthfulness_mode_back(overlay.truthfulness_mode),
+            policy_commitment_profile: overlay.policy_commitment_profile,
             capability_descriptor_hash: overlay.capability_descriptor_hash,
             agreement_commitment_hash: overlay.agreement_commitment_hash,
             evidence_requirements_hash: overlay.evidence_requirements_hash,
@@ -951,21 +954,20 @@ fn validate_live_attestation_policy(
     }
 
     let normalized = normalize_policy(&agreement.odrl_policy)?;
-    for permission in &normalized.permissions {
-        for constraint in &permission.constraints {
-            if constraint.clause_id != "teeImageSha384" {
-                continue;
-            }
-            let expected = constraint.right_operand.as_str().ok_or_else(|| {
+    for constraint in normalized.constraint_leaves_by_operand("teeImageSha384") {
+        let expected = constraint
+            .right_operand
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
                 lsdc_common::error::LsdcError::PolicyCompile(
                     "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
                 )
             })?;
-            if !expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
-                return Err(lsdc_common::error::LsdcError::PolicyCompile(
-                    "attestation result image hash does not satisfy teeImageSha384 policy".into(),
-                ));
-            }
+        if !expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
+            return Err(lsdc_common::error::LsdcError::PolicyCompile(
+                "attestation result image hash does not satisfy teeImageSha384 policy".into(),
+            ));
         }
     }
 
