@@ -8,7 +8,7 @@ The Liquid-State Dataspace Connector (LSDC) is a Rust-first dataspace runtime wi
 
 - Default reference stack: three `control-plane-api` nodes, three simulated `liquid-agent` nodes, and the Python pricing oracle.
 - Public surface: DSP contract and transfer routes plus additive `/lsdc/v1/*` execution-overlay routes.
-- Implemented non-default modes: Linux Aya/XDP transport, feature-gated recursive `RISC Zero`, `nitro_live`, AWS Nitro attestation verification, and AWS KMS-backed attested key release when configured.
+- Implemented non-default modes: Linux Aya/XDP transport, feature-gated `RISC Zero` recursive transform chaining and receipt composition, `nitro_live`, AWS Nitro attestation verification, and AWS KMS-backed attested key release when configured.
 - Explicit future work: live enclave lifecycle orchestration, autonomous contract mutation or settlement, and richer enforcement beyond the implemented executable subset.
 
 ## Architecture
@@ -132,7 +132,7 @@ The older lineage, evidence, and settlement routes remain available as compatibi
 ## Runtime Modes
 
 - Transport: `liquid-agent` defaults to simulated enforcement. Aya/XDP is available on Linux and built with `cargo xtask build-ebpf`.
-- Proof: `proof_backend = "dev_receipt"` is the default. `risc_zero` is supported behind the `risc0` feature and the external guest toolchain, including recursive transform chaining and receipt composition; the default local stack still runs `dev_receipt`.
+- Proof: `proof_backend = "dev_receipt"` is the default. `risc_zero` is supported behind the `risc0` feature and the external guest toolchain, including recursive transform chaining and receipt composition on prepared runners.
 - TEE: `tee_backend = "nitro_dev"` is the default. `nitro_live` is supported as a non-default mode with AWS Nitro attestation verification and optional AWS KMS-backed attested key release.
 - Pricing: the pricing plane is advisory-only gRPC. Insecure `http://` pricing endpoints are development-only and must stay on loopback with `LSDC_ALLOW_DEV_DEFAULTS=1`.
 
@@ -162,4 +162,4 @@ Those are supported runtime configuration fields, not new public schema work. Th
 - [docs/phase3-reference-stack.md](docs/phase3-reference-stack.md): local three-node demo topology and flow
 - [docs/roadmap.md](docs/roadmap.md): active delivery sequence
 - [docs/vision.md](docs/vision.md): long-horizon architecture without implying current runtime support
-- [docs/research/README.md](docs/research/README.md): RFC-style research track for transport, recursive proofs, TEE brokering, and pricing
+- [docs/research/README.md](docs/research/README.md): RFC-style research track for transport, advanced proof systems, TEE brokering, and pricing

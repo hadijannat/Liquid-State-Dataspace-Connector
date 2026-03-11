@@ -10,6 +10,7 @@ use lsdc_common::crypto::{
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::TeeBackend;
 use lsdc_common::profile::normalize_policy;
+use lsdc_common::profile::NormalizedConstraint;
 use lsdc_evidence::DevDeletionEvidence;
 use lsdc_ports::{
     AttestationVerifier, EnclaveJobRequest, EnclaveJobResult, EnclaveManager, EphemeralKeyHandle,
@@ -313,17 +314,17 @@ fn derive_key_release_policy(
     let mut key_release_profile = None;
     let mut deletion_mode = None;
     for permission in &normalized.permissions {
-        for constraint in &permission.constraints {
-            match constraint.clause_id.as_str() {
+        for_each_simple_constraint(&permission.constraints, &mut |clause_id, right_operand| {
+            match clause_id {
                 "keyReleaseProfile" => {
-                    key_release_profile = constraint.right_operand.as_str().map(str::to_string);
+                    key_release_profile = right_operand.as_str().map(str::to_string);
                 }
                 "deletionMode" => {
-                    deletion_mode = constraint.right_operand.as_str().map(str::to_string);
+                    deletion_mode = right_operand.as_str().map(str::to_string);
                 }
                 _ => {}
             }
-        }
+        });
     }
 
     let live_profile_requested = key_release_profile.as_deref() == Some("kms-attested")
@@ -406,25 +407,51 @@ fn validate_live_attestation_policy(
 
     let normalized = normalize_policy(&agreement.odrl_policy)?;
     for permission in &normalized.permissions {
-        for constraint in &permission.constraints {
-            if constraint.clause_id != "teeImageSha384" {
-                continue;
+        let mut result = Ok(());
+        for_each_simple_constraint(&permission.constraints, &mut |clause_id, right_operand| {
+            if clause_id != "teeImageSha384" || result.is_err() {
+                return;
             }
-            let expected = constraint.right_operand.as_str().ok_or_else(|| {
-                LsdcError::PolicyCompile(
-                    "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
-                )
-            })?;
-            if !expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
-                return Err(LsdcError::Attestation(
-                    "nitro-live attestation image hash does not satisfy teeImageSha384 policy"
-                        .into(),
-                ));
-            }
-        }
+            result = right_operand
+                .as_str()
+                .ok_or_else(|| {
+                    LsdcError::PolicyCompile(
+                        "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
+                    )
+                })
+                .and_then(|expected| {
+                    if expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
+                        Ok(())
+                    } else {
+                        Err(LsdcError::Attestation(
+                            "nitro-live attestation image hash does not satisfy teeImageSha384 policy"
+                                .into(),
+                        ))
+                    }
+                });
+        });
+        result?;
     }
 
     Ok(())
+}
+
+fn for_each_simple_constraint(
+    constraints: &[NormalizedConstraint],
+    visitor: &mut impl FnMut(&str, &serde_json::Value),
+) {
+    for constraint in constraints {
+        match constraint {
+            NormalizedConstraint::Simple {
+                clause_id,
+                right_operand,
+                ..
+            } => visitor(clause_id, right_operand),
+            NormalizedConstraint::Logical { constraints, .. } => {
+                for_each_simple_constraint(constraints, visitor);
+            }
+        }
+    }
 }
 
 fn teardown_hash(teardown_evidence: &TeardownEvidence) -> Sha256Hash {

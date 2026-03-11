@@ -18,7 +18,9 @@ use lsdc_common::execution_overlay::{
     ExecutionSessionState, ExecutionStatement, ExecutionStatementKind, TransparencyReceipt,
     TruthfulnessMode as OverlayTruthfulnessMode,
 };
-use lsdc_common::profile::{normalize_policy, RuntimeCapabilities, TruthfulnessMode};
+use lsdc_common::profile::{
+    normalize_policy, NormalizedConstraint, RuntimeCapabilities, TruthfulnessMode,
+};
 use lsdc_common::runtime_model::{
     DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus,
 };
@@ -942,22 +944,49 @@ fn validate_live_attestation_policy(
 
     let normalized = normalize_policy(&agreement.odrl_policy)?;
     for permission in &normalized.permissions {
-        for constraint in &permission.constraints {
-            if constraint.clause_id != "teeImageSha384" {
-                continue;
+        let mut result = Ok(());
+        for_each_simple_constraint(&permission.constraints, &mut |clause_id, right_operand| {
+            if clause_id != "teeImageSha384" || result.is_err() {
+                return;
             }
-            let expected = constraint.right_operand.as_str().ok_or_else(|| {
-                lsdc_common::error::LsdcError::PolicyCompile(
-                    "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
-                )
-            })?;
-            if !expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
-                return Err(lsdc_common::error::LsdcError::PolicyCompile(
-                    "attestation result image hash does not satisfy teeImageSha384 policy".into(),
-                ));
-            }
-        }
+            result = right_operand
+                .as_str()
+                .ok_or_else(|| {
+                    lsdc_common::error::LsdcError::PolicyCompile(
+                        "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
+                    )
+                })
+                .and_then(|expected| {
+                    if expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
+                        Ok(())
+                    } else {
+                        Err(lsdc_common::error::LsdcError::PolicyCompile(
+                            "attestation result image hash does not satisfy teeImageSha384 policy"
+                                .into(),
+                        ))
+                    }
+                });
+        });
+        result?;
     }
 
     Ok(())
+}
+
+fn for_each_simple_constraint(
+    constraints: &[NormalizedConstraint],
+    visitor: &mut impl FnMut(&str, &serde_json::Value),
+) {
+    for constraint in constraints {
+        match constraint {
+            NormalizedConstraint::Simple {
+                clause_id,
+                right_operand,
+                ..
+            } => visitor(clause_id, right_operand),
+            NormalizedConstraint::Logical { constraints, .. } => {
+                for_each_simple_constraint(constraints, visitor);
+            }
+        }
+    }
 }

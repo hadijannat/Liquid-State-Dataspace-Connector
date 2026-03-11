@@ -6,7 +6,7 @@ The Phase 3 stack turns the Phase 2 crates into a runnable three-node reference 
 - `apps/liquid-agent`: node-local gRPC daemon for transport enforcement
 - `python/pricing-oracle`: advisory pricing sidecar
 
-This is still a truthful prototype. The stack demonstrates guarded transfer, protected CSV transforms, provenance receipts, proof-of-forgetting, and advisory pricing without claiming live enclave orchestration or autonomous contract mutation in the default local stack.
+This is still a truthful prototype. The default local stack demonstrates guarded transfer, protected CSV transforms, provenance receipts, proof-of-forgetting, and advisory pricing with `dev_receipt`. The feature-gated `RISC Zero` backend now implements recursive transform chaining and receipt composition on prepared runners, but that path is not enabled in the default local demo.
 
 ## Local Topology
 
@@ -68,8 +68,8 @@ The integration test `apps/control-plane-api/tests/http_api_tests.rs` exercises 
 
 ## Truthfulness Boundary
 
-- Default multi-hop sovereignty is demonstrated with `DevReceiptProofEngine`; the local demo does not switch the proof backend to `RISC Zero`.
-- `RISC Zero` is feature-gated and, when enabled with the external guest toolchain, supports recursive transform chaining and receipt composition through the execution-overlay surface.
-- `nitro-live` validates AWS Nitro attestation material, optional attested-recipient-key pins, and AWS KMS-backed key release when configured; the reference stack still does not launch real enclaves.
+- Default multi-hop sovereignty is demonstrated with `DevReceiptProofEngine`.
+- `RISC Zero` is feature-gated. Recursive transform chaining and receipt composition are implemented behind `risc0`, but the default reference stack does not enable that path.
+- `nitro-live` validates AWS Nitro attestation material, optional attestation-key pins, and AWS KMS-backed key release when configured; the reference stack still does not launch real enclaves.
 - Pricing stays advisory-only.
 - Sanctions remain proposal artifacts and do not mutate DIDs or registries.

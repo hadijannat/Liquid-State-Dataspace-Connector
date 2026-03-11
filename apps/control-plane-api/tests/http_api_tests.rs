@@ -1127,6 +1127,7 @@ async fn test_submit_attestation_evidence_rejects_attested_public_key_pin_mismat
         .unwrap_err();
 
     assert!(err.to_string().contains("attested public key pin mismatch"));
+    assert!(err.to_string().contains("attested public key pin mismatch"));
 }
 
 #[tokio::test]

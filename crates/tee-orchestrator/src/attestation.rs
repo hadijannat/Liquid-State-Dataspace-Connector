@@ -414,7 +414,7 @@ impl AttestationVerifier for LocalAttestationVerifier {
     fn appraise_attestation_evidence(
         &self,
         evidence: &AttestationEvidence,
-        challenge: Option<&lsdc_common::execution_overlay::ExecutionSessionChallenge>,
+        challenge: Option<&ExecutionSessionChallenge>,
     ) -> Result<AttestationResult> {
         let doc = &evidence.document;
         let document_valid = verify_attestation(doc)?;
@@ -468,7 +468,7 @@ impl AttestationVerifier for AwsNitroAttestationVerifier {
     fn appraise_attestation_evidence(
         &self,
         evidence: &AttestationEvidence,
-        challenge: Option<&lsdc_common::execution_overlay::ExecutionSessionChallenge>,
+        challenge: Option<&ExecutionSessionChallenge>,
     ) -> Result<AttestationResult> {
         let document = build_aws_nitro_attestation_document(
             self.expected_image_sha384_hex.as_deref(),
