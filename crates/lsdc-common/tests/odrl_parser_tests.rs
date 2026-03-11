@@ -142,19 +142,31 @@ fn test_multi_constraint_anonymize_duty_collects_required_ops() {
 }
 
 #[test]
-fn test_lower_accepts_prohibitions_while_deriving_executable_subset() {
+fn test_lower_rejects_prohibitions() {
     let policy = json!({
         "permission": [{"action": "read"}],
         "prohibition": [{"action": "transfer"}]
     });
 
-    let lowered = lower_policy(&policy, &[]).unwrap();
-    assert!(lowered.transport_guard.allow_read);
-    assert!(!lowered.transport_guard.allow_transfer);
+    let result = lower_policy(&policy, &[]);
+    assert!(result.is_err());
 }
 
 #[test]
-fn test_lower_collects_logical_constraint_values_and_normalized_geography() {
+fn test_lower_rejects_top_level_obligations() {
+    let policy = json!({
+        "obligation": [{
+            "action": "anonymize",
+            "constraint": [{"leftOperand": "transform-required", "rightOperand": "redact_columns"}]
+        }]
+    });
+
+    let result = lower_policy(&policy, &[]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_lower_collects_and_constraint_values_and_normalized_geography() {
     let policy = json!({
         "permission": [{
             "action": "read",
@@ -162,13 +174,8 @@ fn test_lower_collects_logical_constraint_values_and_normalized_geography() {
                 "operator": "and",
                 "constraint": [
                     {"leftOperand": "count", "operator": "lteq", "rightOperand": 25},
-                    {
-                        "operator": "or",
-                        "constraints": [
-                            {"leftOperand": "spatial", "operator": "eq", "rightOperand": ["US", "EU", "US"]},
-                            {"leftOperand": "spatial", "operator": "eq", "rightOperand": ["EU", "CA"]}
-                        ]
-                    },
+                    {"leftOperand": "spatial", "operator": "eq", "rightOperand": ["US", "EU", "US"]},
+                    {"leftOperand": "spatial", "operator": "eq", "rightOperand": ["EU", "CA"]},
                     {"leftOperand": "purpose", "operator": "eq", "rightOperand": ["fraud", "analytics", "fraud"]}
                 ]
             }]
@@ -185,4 +192,23 @@ fn test_lower_collects_logical_constraint_values_and_normalized_geography() {
         lowered.transform_guard.allowed_purposes,
         vec!["analytics".to_string(), "fraud".to_string()]
     );
+}
+
+#[test]
+fn test_lower_rejects_logical_disjunctions() {
+    let policy = json!({
+        "permission": [{
+            "action": "read",
+            "constraint": [{
+                "operator": "or",
+                "constraint": [
+                    {"leftOperand": "spatial", "operator": "eq", "rightOperand": ["US"]},
+                    {"leftOperand": "spatial", "operator": "eq", "rightOperand": ["CA"]}
+                ]
+            }]
+        }]
+    });
+
+    let result = lower_policy(&policy, &[]);
+    assert!(result.is_err());
 }

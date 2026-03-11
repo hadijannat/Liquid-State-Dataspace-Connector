@@ -4,7 +4,7 @@ use crate::liquid::{
     CsvTransformOpKind, EvidenceRequirement, LiquidPolicyIr, RuntimeGuard, TransformGuard,
     TransportGuard, TransportProtocol,
 };
-use crate::profile::{normalize_policy, NormalizedConstraint};
+use crate::profile::{normalize_policy, NormalizedConstraint, NormalizedLogicalOperator};
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -27,6 +27,17 @@ pub fn lower_policy(
     evidence_requirements: &[EvidenceRequirement],
 ) -> Result<LiquidPolicyIr> {
     let normalized = normalize_policy(policy)?;
+
+    if !normalized.prohibitions.is_empty() {
+        return Err(LsdcError::PolicyCompile(
+            "executable lowering does not support prohibition rules".into(),
+        ));
+    }
+    if !normalized.obligations.is_empty() {
+        return Err(LsdcError::PolicyCompile(
+            "executable lowering does not support top-level obligations".into(),
+        ));
+    }
 
     let mut allow_read = false;
     let mut allow_transfer = false;
@@ -67,16 +78,6 @@ pub fn lower_policy(
                 &mut delete_after_seconds,
             )?;
         }
-    }
-
-    for duty in &normalized.obligations {
-        collect_duty_values(
-            duty.action.as_str(),
-            &duty.constraints,
-            &mut allow_anonymize,
-            &mut required_ops,
-            &mut delete_after_seconds,
-        )?;
     }
 
     let valid_until = match policy.get("validUntil") {
@@ -135,7 +136,16 @@ fn collect_constraint_values(
             "purpose" => extend_unique(allowed_purposes, parse_string_list_value(right_operand)?),
             _ => {}
         },
-        NormalizedConstraint::Logical { constraints, .. } => {
+        NormalizedConstraint::Logical {
+            operator,
+            constraints,
+        } => {
+            if *operator != NormalizedLogicalOperator::And {
+                return Err(LsdcError::PolicyCompile(format!(
+                    "executable lowering does not support logical `{}` groups",
+                    logical_operator_name(*operator)
+                )));
+            }
             for child in constraints {
                 collect_constraint_values(
                     child,
@@ -161,7 +171,11 @@ fn collect_duty_values(
     match action {
         "anonymize" => *allow_anonymize = true,
         "delete" => {}
-        _ => {}
+        other => {
+            return Err(LsdcError::PolicyCompile(format!(
+                "unsupported executable duty action `{other}`"
+            )))
+        }
     }
 
     for constraint in constraints {
@@ -181,7 +195,16 @@ fn collect_duty_values(
                 }
                 _ => {}
             },
-            NormalizedConstraint::Logical { constraints, .. } => {
+            NormalizedConstraint::Logical {
+                operator,
+                constraints,
+            } => {
+                if *operator != NormalizedLogicalOperator::And {
+                    return Err(LsdcError::PolicyCompile(format!(
+                        "executable lowering does not support logical `{}` groups",
+                        logical_operator_name(*operator)
+                    )));
+                }
                 collect_duty_values(
                     action,
                     constraints,
@@ -259,6 +282,14 @@ fn parse_transform_kind(value: &str) -> Result<CsvTransformOpKind> {
         other => Err(LsdcError::PolicyCompile(format!(
             "unsupported transform-required op `{other}`"
         ))),
+    }
+}
+
+fn logical_operator_name(operator: NormalizedLogicalOperator) -> &'static str {
+    match operator {
+        NormalizedLogicalOperator::And => "and",
+        NormalizedLogicalOperator::Or => "or",
+        NormalizedLogicalOperator::Xone => "xone",
     }
 }
 
