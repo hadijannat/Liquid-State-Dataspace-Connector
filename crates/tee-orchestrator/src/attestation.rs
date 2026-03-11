@@ -796,7 +796,9 @@ mod tests {
             timestamp,
             Some(AttestationBinding {
                 challenge_nonce_hex: &challenge.challenge_nonce_hex,
-                public_key: challenge.expected_attestation_recipient_public_key.as_deref(),
+                public_key: challenge
+                    .expected_attestation_recipient_public_key
+                    .as_deref(),
                 user_data_hash: Some(&challenge.resolved_selector_hash),
             }),
         )
@@ -809,7 +811,9 @@ mod tests {
         );
         assert_eq!(
             doc.public_key.as_deref(),
-            challenge.expected_attestation_recipient_public_key.as_deref()
+            challenge
+                .expected_attestation_recipient_public_key
+                .as_deref()
         );
         assert_eq!(
             doc.user_data_hash.as_ref(),
@@ -869,7 +873,9 @@ mod tests {
             timestamp,
             Some(AttestationBinding {
                 challenge_nonce_hex: &challenge.challenge_nonce_hex,
-                public_key: challenge.expected_attestation_recipient_public_key.as_deref(),
+                public_key: challenge
+                    .expected_attestation_recipient_public_key
+                    .as_deref(),
                 user_data_hash: Some(&challenge.resolved_selector_hash),
             }),
         )

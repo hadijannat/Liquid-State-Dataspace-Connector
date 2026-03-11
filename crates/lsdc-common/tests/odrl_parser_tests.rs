@@ -131,18 +131,14 @@ fn test_multi_constraint_anonymize_duty_collects_required_ops() {
     .unwrap();
     assert!(lowered.transform_guard.allow_anonymize);
     assert_eq!(lowered.transform_guard.required_ops.len(), 2);
-    assert!(
-        lowered
-            .transform_guard
-            .required_ops
-            .contains(&lsdc_common::liquid::CsvTransformOpKind::HashColumns)
-    );
-    assert!(
-        lowered
-            .transform_guard
-            .required_ops
-            .contains(&lsdc_common::liquid::CsvTransformOpKind::RedactColumns)
-    );
+    assert!(lowered
+        .transform_guard
+        .required_ops
+        .contains(&lsdc_common::liquid::CsvTransformOpKind::HashColumns));
+    assert!(lowered
+        .transform_guard
+        .required_ops
+        .contains(&lsdc_common::liquid::CsvTransformOpKind::RedactColumns));
 }
 
 #[test]

@@ -9,8 +9,8 @@ use lsdc_common::crypto::{
 };
 use lsdc_common::error::{LsdcError, Result};
 use lsdc_common::execution::TeeBackend;
-use lsdc_common::profile::NormalizedConstraint;
 use lsdc_common::profile::normalize_policy;
+use lsdc_common::profile::NormalizedConstraint;
 use lsdc_evidence::DevDeletionEvidence;
 use lsdc_ports::{
     AttestationVerifier, EnclaveJobRequest, EnclaveJobResult, EnclaveManager, EphemeralKeyHandle,

@@ -20,7 +20,9 @@ use lsdc_common::execution_overlay::{
     TruthfulnessMode as OverlayTruthfulnessMode, LOCAL_TRANSPARENCY_PROFILE,
     LSDC_EXECUTION_PROTOCOL_VERSION,
 };
-use lsdc_common::profile::{normalize_policy, NormalizedConstraint, RuntimeCapabilities, TruthfulnessMode};
+use lsdc_common::profile::{
+    normalize_policy, NormalizedConstraint, RuntimeCapabilities, TruthfulnessMode,
+};
 use lsdc_common::runtime_model::{
     DependencyType, EvidenceDag, EvidenceEdge, EvidenceNode, NodeStatus,
 };
@@ -974,7 +976,8 @@ fn validate_live_attestation_policy(
                         Ok(())
                     } else {
                         Err(lsdc_common::error::LsdcError::PolicyCompile(
-                            "attestation result image hash does not satisfy teeImageSha384 policy".into(),
+                            "attestation result image hash does not satisfy teeImageSha384 policy"
+                                .into(),
                         ))
                     }
                 });

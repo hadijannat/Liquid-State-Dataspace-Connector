@@ -398,7 +398,8 @@ fn capability_solver_surfaces_prohibitions_and_disjunctions_truthfully() {
         attested_teardown_supported: true,
     };
 
-    let realizations = capabilities.clause_realizations(&normalized, &[EvidenceRequirement::PriceApproval]);
+    let realizations =
+        capabilities.clause_realizations(&normalized, &[EvidenceRequirement::PriceApproval]);
 
     let logical_or = realizations
         .iter()

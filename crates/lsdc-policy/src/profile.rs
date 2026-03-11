@@ -109,7 +109,11 @@ impl RuntimeCapabilities {
                 &mut clauses,
             );
             for duty in &permission.duties {
-                self.collect_duty_realizations(duty, normalized_policy.truthfulness_mode, &mut clauses);
+                self.collect_duty_realizations(
+                    duty,
+                    normalized_policy.truthfulness_mode,
+                    &mut clauses,
+                );
             }
         }
 
@@ -255,11 +259,7 @@ impl RuntimeCapabilities {
         }
     }
 
-    fn leaf_clause_realization(
-        &self,
-        clause_id: &str,
-        right_operand: &Value,
-    ) -> ClauseRealization {
+    fn leaf_clause_realization(&self, clause_id: &str, right_operand: &Value) -> ClauseRealization {
         match clause_id {
             "count" => ClauseRealization {
                 clause_id: clause_id.into(),
@@ -541,7 +541,10 @@ fn normalize_actions(value: Option<&Value>, required: bool) -> Result<Vec<String
     };
 
     let actions = match value {
-        Value::Array(items) => items.iter().map(normalize_action).collect::<Result<Vec<_>>>()?,
+        Value::Array(items) => items
+            .iter()
+            .map(normalize_action)
+            .collect::<Result<Vec<_>>>()?,
         other => vec![normalize_action(other)?],
     };
 
@@ -640,9 +643,7 @@ fn parse_logical_constraint(
 fn normalize_right_operand(clause_id: &str, value: &Value) -> Value {
     let normalized = canonicalize_json(value);
     match (clause_id, normalized) {
-        ("purpose" | "spatial", Value::Array(items)) => {
-            Value::Array(sorted_unique_json(items))
-        }
+        ("purpose" | "spatial", Value::Array(items)) => Value::Array(sorted_unique_json(items)),
         (_, other) => other,
     }
 }

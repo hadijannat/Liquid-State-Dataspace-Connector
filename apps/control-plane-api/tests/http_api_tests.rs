@@ -1167,10 +1167,16 @@ async fn test_submit_attestation_evidence_accepts_attested_recipient_key_without
         Some(challenged.challenge.resolved_selector_hash.clone()),
     );
     let response = state
-        .submit_attestation_evidence(&created.session.session_id.to_string(), &attestation_evidence)
+        .submit_attestation_evidence(
+            &created.session.session_id.to_string(),
+            &attestation_evidence,
+        )
         .expect("attestation should be accepted without a recipient key pin");
 
-    assert_eq!(response.session.state, ExecutionSessionState::AttestationVerified);
+    assert_eq!(
+        response.session.state,
+        ExecutionSessionState::AttestationVerified
+    );
 }
 
 async fn start_simulated_agent() -> String {
