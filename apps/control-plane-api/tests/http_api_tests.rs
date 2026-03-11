@@ -361,6 +361,7 @@ async fn test_execution_overlay_session_and_evidence_endpoints() {
         Some(CreateExecutionSessionRequest {
             agreement_id: finalized.agreement.agreement_id.0.clone(),
             requester_ephemeral_pubkey: vec![1, 2, 3],
+            expected_attestation_public_key: None,
             expires_in_seconds: Some(120),
         }),
         StatusCode::CREATED,
@@ -561,6 +562,7 @@ async fn test_submit_attestation_evidence_rejects_expired_and_mismatched_challen
         .create_execution_session(CreateExecutionSessionRequest {
             agreement_id: finalized.agreement.agreement_id.0.clone(),
             requester_ephemeral_pubkey: vec![4, 5, 6],
+            expected_attestation_public_key: None,
             expires_in_seconds: Some(120),
         })
         .expect("execution session");
@@ -1043,6 +1045,7 @@ async fn test_submit_attestation_evidence_rejects_invalid_and_replayed_submissio
         .create_execution_session(CreateExecutionSessionRequest {
             agreement_id: finalized.agreement.agreement_id.0.clone(),
             requester_ephemeral_pubkey: vec![1, 2, 3],
+            expected_attestation_public_key: None,
             expires_in_seconds: Some(120),
         })
         .expect("execution session");
@@ -1085,7 +1088,7 @@ async fn test_submit_attestation_evidence_rejects_invalid_and_replayed_submissio
 }
 
 #[tokio::test]
-async fn test_submit_attestation_evidence_rejects_requester_key_mismatch() {
+async fn test_submit_attestation_evidence_rejects_attested_public_key_pin_mismatch() {
     ensure_test_env();
     let agent_endpoint = start_simulated_agent().await;
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
@@ -1098,6 +1101,7 @@ async fn test_submit_attestation_evidence_rejects_requester_key_mismatch() {
         .create_execution_session(CreateExecutionSessionRequest {
             agreement_id: finalized.agreement.agreement_id.0.clone(),
             requester_ephemeral_pubkey: vec![1, 2, 3],
+            expected_attestation_public_key: Some(vec![1, 2, 3, 4]),
             expires_in_seconds: Some(120),
         })
         .expect("execution session");
@@ -1124,7 +1128,90 @@ async fn test_submit_attestation_evidence_rejects_requester_key_mismatch() {
 
     assert!(err
         .to_string()
-        .contains("requester public key binding mismatch"));
+        .contains("attested public key pin mismatch"));
+}
+
+#[tokio::test]
+async fn test_submit_attestation_evidence_accepts_attested_public_key_without_pin() {
+    ensure_test_env();
+    let agent_endpoint = start_simulated_agent().await;
+    let store = control_plane_api::store::Store::new(":memory:").unwrap();
+    let state = build_test_state(agent_endpoint, store);
+    let app = router(state.clone());
+    let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
+    let finalized = finalize_offer(&app, &offer).await;
+
+    let created = state
+        .create_execution_session(CreateExecutionSessionRequest {
+            agreement_id: finalized.agreement.agreement_id.0.clone(),
+            requester_ephemeral_pubkey: vec![1, 2, 3],
+            expected_attestation_public_key: None,
+            expires_in_seconds: Some(120),
+        })
+        .expect("execution session");
+    let challenged = state
+        .issue_execution_challenge(
+            &created.session.session_id.to_string(),
+            &IssueExecutionChallengeRequest {
+                resolved_transport: sample_resolved_transport(&finalized.agreement.agreement_id.0),
+            },
+        )
+        .expect("execution challenge");
+
+    let accepted = state
+        .submit_attestation_evidence(
+            &created.session.session_id.to_string(),
+            &sample_valid_attestation_evidence(
+                Some(challenged.challenge.challenge_nonce_hex.clone()),
+                Some(vec![9, 8, 7, 6]),
+                Some(challenged.challenge.resolved_selector_hash.clone()),
+            ),
+        )
+        .expect("attestation without pin should succeed");
+
+    assert_eq!(accepted.session.state, ExecutionSessionState::AttestationVerified);
+}
+
+#[tokio::test]
+async fn test_submit_attestation_evidence_accepts_matching_attested_public_key_pin() {
+    ensure_test_env();
+    let agent_endpoint = start_simulated_agent().await;
+    let store = control_plane_api::store::Store::new(":memory:").unwrap();
+    let state = build_test_state(agent_endpoint, store);
+    let app = router(state.clone());
+    let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
+    let finalized = finalize_offer(&app, &offer).await;
+
+    let pinned_public_key = vec![9, 8, 7, 6];
+    let created = state
+        .create_execution_session(CreateExecutionSessionRequest {
+            agreement_id: finalized.agreement.agreement_id.0.clone(),
+            requester_ephemeral_pubkey: vec![1, 2, 3],
+            expected_attestation_public_key: Some(pinned_public_key.clone()),
+            expires_in_seconds: Some(120),
+        })
+        .expect("execution session");
+    let challenged = state
+        .issue_execution_challenge(
+            &created.session.session_id.to_string(),
+            &IssueExecutionChallengeRequest {
+                resolved_transport: sample_resolved_transport(&finalized.agreement.agreement_id.0),
+            },
+        )
+        .expect("execution challenge");
+
+    let accepted = state
+        .submit_attestation_evidence(
+            &created.session.session_id.to_string(),
+            &sample_valid_attestation_evidence(
+                Some(challenged.challenge.challenge_nonce_hex.clone()),
+                Some(pinned_public_key),
+                Some(challenged.challenge.resolved_selector_hash.clone()),
+            ),
+        )
+        .expect("matching pin should succeed");
+
+    assert_eq!(accepted.session.state, ExecutionSessionState::AttestationVerified);
 }
 
 async fn start_simulated_agent() -> String {

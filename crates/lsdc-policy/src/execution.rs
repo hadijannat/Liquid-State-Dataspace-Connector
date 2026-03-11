@@ -1,5 +1,6 @@
 use crate::liquid::{EvidenceRequirement, LiquidPolicyIr, TransportProtocol};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub trait AgreementExecutionView {
     fn liquid_policy(&self) -> &LiquidPolicyIr;
@@ -98,6 +99,50 @@ pub enum RequestedProofProfile {
 pub enum RequestedTeeProfile {
     None,
     AttestedExecution,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeCapabilityContext {
+    pub transport_backend: TransportBackend,
+    pub proof_backend: ProofBackend,
+    pub tee_backend: TeeBackend,
+    pub dev_backends_allowed: bool,
+    pub attested_key_release_supported: bool,
+    pub attested_teardown_supported: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCapabilityLevel {
+    Implemented,
+    Experimental,
+    ModeledOnly,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeProofCompositionMode {
+    #[default]
+    None,
+    Dag,
+    Recursive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeAdvertisedProfiles {
+    pub attestation_profile: String,
+    pub proof_profile: String,
+    pub transparency_profile: String,
+    pub teardown_profile: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeCapabilitySemantics {
+    pub support: BTreeMap<String, RuntimeCapabilityLevel>,
+    pub advertised_profiles: RuntimeAdvertisedProfiles,
+    pub proof_composition_mode: RuntimeProofCompositionMode,
+    pub classification: PolicyExecutionClassification,
 }
 
 impl RequestedExecutionProfile {
@@ -333,79 +378,18 @@ impl PolicyExecutionClassification {
         proof_backend: ProofBackend,
         tee_backend: TeeBackend,
     ) -> Self {
-        let mut classification = Self::default();
-        classification.push(
-            "transport.selector",
-            PolicyClauseStatus::Executable,
-            Some(match transport_backend {
-                TransportBackend::AyaXdp => {
-                    "protocol and destination port selectors are enforced by Aya/XDP"
-                }
-                TransportBackend::Simulated => {
-                    "protocol and destination port selectors are enforced by the simulated agent"
-                }
-            }),
-        );
-        classification.push(
-            "transport.packet_cap",
-            PolicyClauseStatus::Executable,
-            Some("packet counters are supported by all current transport backends"),
-        );
-        classification.push(
-            "transport.byte_cap",
-            PolicyClauseStatus::Executable,
-            Some("byte counters are supported by all current transport backends"),
-        );
-        classification.push(
-            "transport.valid_until",
-            PolicyClauseStatus::Executable,
-            Some("agreement expiry dissolves the installed transport guard"),
-        );
-        classification.push(
-            "transport.allowed_regions",
-            PolicyClauseStatus::MetadataOnly,
-            Some("no current backend provides transport geofencing"),
-        );
-        classification.push(
-            "proof.recursive_rollups",
-            PolicyClauseStatus::MetadataOnly,
-            Some(match proof_backend {
-                ProofBackend::RiscZero => {
-                    "single-hop proving only; recursive rollups are not implemented"
-                }
-                ProofBackend::DevReceipt => {
-                    "receipt chains verify lineage, but recursive zk rollups are not implemented"
-                }
-                ProofBackend::None => "no proof backend is configured",
-            }),
-        );
-        classification.push(
-            "tee.live_enclave_orchestration",
-            PolicyClauseStatus::MetadataOnly,
-            Some(match tee_backend {
-                TeeBackend::NitroLive => {
-                    "Nitro live mode validates pinned attestation material only"
-                }
-                TeeBackend::NitroDev => "Nitro dev mode emits deterministic local attestation",
-                TeeBackend::None => "no TEE backend is configured",
-            }),
-        );
-        classification.push(
-            "pricing.autonomous_mutation",
-            PolicyClauseStatus::MetadataOnly,
-            Some("pricing decisions are advisory-only and do not mutate contracts or ledgers"),
-        );
-        classification.push(
-            "overlay.transparency_receipts",
-            PolicyClauseStatus::Executable,
-            Some("the execution overlay can anchor local transparency receipts"),
-        );
-        classification.push(
-            "overlay.truthfulness_modes",
-            PolicyClauseStatus::Executable,
-            Some("permissive and strict overlay truthfulness modes are recognized"),
-        );
-        classification
+        Self::from_runtime_capability_context(RuntimeCapabilityContext {
+            transport_backend,
+            proof_backend,
+            tee_backend,
+            dev_backends_allowed: false,
+            attested_key_release_supported: false,
+            attested_teardown_supported: false,
+        })
+    }
+
+    pub fn from_runtime_capability_context(context: RuntimeCapabilityContext) -> Self {
+        runtime_capability_semantics(context).classification
     }
 
     fn push(
@@ -431,5 +415,194 @@ impl PolicyExecutionClassification {
         if condition {
             self.push(clause, status, detail);
         }
+    }
+}
+
+pub fn runtime_capability_semantics(context: RuntimeCapabilityContext) -> RuntimeCapabilitySemantics {
+    use RuntimeCapabilityLevel::{Experimental, Implemented, ModeledOnly, Unsupported};
+
+    let risc0_recursive_supported = context.proof_backend == ProofBackend::RiscZero;
+    let support = BTreeMap::from([
+        (
+            "attestation.nitro_dev".into(),
+            if context.tee_backend == TeeBackend::NitroDev {
+                Implemented
+            } else {
+                Unsupported
+            },
+        ),
+        (
+            "attestation.nitro_live_verified".into(),
+            if context.tee_backend == TeeBackend::NitroLive {
+                Experimental
+            } else {
+                Unsupported
+            },
+        ),
+        (
+            "key_release.kms_attested".into(),
+            if context.attested_key_release_supported {
+                Experimental
+            } else if context.tee_backend == TeeBackend::NitroLive {
+                ModeledOnly
+            } else {
+                Unsupported
+            },
+        ),
+        (
+            "proof.dev_receipt_dag".into(),
+            if context.proof_backend == ProofBackend::DevReceipt {
+                Implemented
+            } else {
+                Unsupported
+            },
+        ),
+        (
+            "proof.risc0_single_hop".into(),
+            if risc0_recursive_supported {
+                Implemented
+            } else {
+                Unsupported
+            },
+        ),
+        (
+            "proof.risc0_recursive".into(),
+            if risc0_recursive_supported {
+                Implemented
+            } else {
+                Unsupported
+            },
+        ),
+        ("transparency.local_merkle".into(), Implemented),
+        (
+            "teardown.dev_deletion".into(),
+            if context.dev_backends_allowed {
+                Implemented
+            } else {
+                Experimental
+            },
+        ),
+        (
+            "teardown.kms_erasure".into(),
+            if context.attested_teardown_supported {
+                Experimental
+            } else if context.tee_backend == TeeBackend::NitroLive {
+                ModeledOnly
+            } else {
+                Unsupported
+            },
+        ),
+    ]);
+
+    let proof_composition_mode = match context.proof_backend {
+        ProofBackend::DevReceipt => RuntimeProofCompositionMode::Dag,
+        ProofBackend::RiscZero => RuntimeProofCompositionMode::Recursive,
+        ProofBackend::None => RuntimeProofCompositionMode::None,
+    };
+
+    let advertised_profiles = RuntimeAdvertisedProfiles {
+        attestation_profile: match context.tee_backend {
+            TeeBackend::NitroDev => "nitro-dev-attestation-result-v1",
+            TeeBackend::NitroLive => "nitro-live-attestation-result-v1",
+            TeeBackend::None => "none",
+        }
+        .into(),
+        proof_profile: match context.proof_backend {
+            ProofBackend::DevReceipt => "dev-receipt-dag-v1",
+            ProofBackend::RiscZero => "risc0-recursive-dag-v1",
+            ProofBackend::None => "none",
+        }
+        .into(),
+        transparency_profile: "lsdc-local-merkle-v1".into(),
+        teardown_profile: if context.tee_backend == TeeBackend::NitroLive {
+            "kms-key-erasure-v1"
+        } else {
+            "dev-deletion-v1"
+        }
+        .into(),
+    };
+
+    let mut classification = PolicyExecutionClassification::default();
+    classification.push(
+        "transport.selector",
+        PolicyClauseStatus::Executable,
+        Some(match context.transport_backend {
+            TransportBackend::AyaXdp => {
+                "protocol and destination port selectors are enforced by Aya/XDP"
+            }
+            TransportBackend::Simulated => {
+                "protocol and destination port selectors are enforced by the simulated agent"
+            }
+        }),
+    );
+    classification.push(
+        "transport.packet_cap",
+        PolicyClauseStatus::Executable,
+        Some("packet counters are supported by all current transport backends"),
+    );
+    classification.push(
+        "transport.byte_cap",
+        PolicyClauseStatus::Executable,
+        Some("byte counters are supported by all current transport backends"),
+    );
+    classification.push(
+        "transport.valid_until",
+        PolicyClauseStatus::Executable,
+        Some("agreement expiry dissolves the installed transport guard"),
+    );
+    classification.push(
+        "transport.allowed_regions",
+        PolicyClauseStatus::MetadataOnly,
+        Some("no current backend provides transport geofencing"),
+    );
+    classification.push(
+        "proof.recursive_rollups",
+        match context.proof_backend {
+            ProofBackend::RiscZero => PolicyClauseStatus::Executable,
+            ProofBackend::DevReceipt => PolicyClauseStatus::MetadataOnly,
+            ProofBackend::None => PolicyClauseStatus::Rejected,
+        },
+        Some(match context.proof_backend {
+            ProofBackend::RiscZero => {
+                "recursive transform chaining and receipt composition are implemented for the risc0 backend"
+            }
+            ProofBackend::DevReceipt => {
+                "receipt chains verify lineage, but recursive zk rollups are not implemented"
+            }
+            ProofBackend::None => "no proof backend is configured",
+        }),
+    );
+    classification.push(
+        "tee.live_enclave_orchestration",
+        PolicyClauseStatus::MetadataOnly,
+        Some(match context.tee_backend {
+            TeeBackend::NitroLive => {
+                "Nitro live mode validates external attestation material and AWS-backed key release but does not orchestrate real enclave lifecycle"
+            }
+            TeeBackend::NitroDev => "Nitro dev mode emits deterministic local attestation",
+            TeeBackend::None => "no TEE backend is configured",
+        }),
+    );
+    classification.push(
+        "pricing.autonomous_mutation",
+        PolicyClauseStatus::MetadataOnly,
+        Some("pricing decisions are advisory-only and do not mutate contracts or ledgers"),
+    );
+    classification.push(
+        "overlay.transparency_receipts",
+        PolicyClauseStatus::Executable,
+        Some("the execution overlay can anchor local transparency receipts"),
+    );
+    classification.push(
+        "overlay.truthfulness_modes",
+        PolicyClauseStatus::Executable,
+        Some("permissive and strict overlay truthfulness modes are recognized"),
+    );
+
+    RuntimeCapabilitySemantics {
+        support,
+        advertised_profiles,
+        proof_composition_mode,
+        classification,
     }
 }

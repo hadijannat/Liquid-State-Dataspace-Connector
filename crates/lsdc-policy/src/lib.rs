@@ -8,8 +8,10 @@ pub use error::{LsdcError, Result};
 pub use execution::{
     ActualExecutionProfile, AgreementExecutionView, PolicyClauseClassification, PolicyClauseStatus,
     PolicyExecutionClassification, PricingMode, ProofBackend, RequestedExecutionProfile,
-    RequestedProofProfile, RequestedTeeProfile, RequestedTransportProfile, TeeBackend,
-    TransportBackend, TransportSelector,
+    RequestedProofProfile, RequestedTeeProfile, RequestedTransportProfile,
+    RuntimeAdvertisedProfiles, RuntimeCapabilityContext, RuntimeCapabilityLevel,
+    RuntimeCapabilitySemantics, RuntimeProofCompositionMode, TeeBackend, TransportBackend,
+    TransportSelector, runtime_capability_semantics,
 };
 pub use liquid::{
     validate_transform_manifest, CsvTransformManifest, CsvTransformOp, CsvTransformOpKind,
