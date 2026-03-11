@@ -156,6 +156,8 @@ pub struct ExecutionSession {
     pub resolved_selector_hash: Option<Sha256Hash>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requester_ephemeral_pubkey: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_attestation_recipient_public_key: Option<Vec<u8>>,
     pub state: ExecutionSessionState,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -170,6 +172,8 @@ pub struct ExecutionSessionChallenge {
     pub challenge_nonce_hash: Sha256Hash,
     pub resolved_selector_hash: Sha256Hash,
     pub requester_ephemeral_pubkey: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_attestation_recipient_public_key: Option<Vec<u8>>,
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -198,6 +202,9 @@ impl ExecutionSessionChallenge {
             challenge_nonce_hash: Sha256Hash::digest_bytes(&raw_nonce),
             resolved_selector_hash,
             requester_ephemeral_pubkey: session.requester_ephemeral_pubkey.clone(),
+            expected_attestation_recipient_public_key: session
+                .expected_attestation_recipient_public_key
+                .clone(),
             issued_at: now,
             expires_at: session
                 .expires_at

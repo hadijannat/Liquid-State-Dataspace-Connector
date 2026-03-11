@@ -359,6 +359,7 @@ async fn assert_recursive_risc0_two_hop_lineage_via_http_api() {
         CreateExecutionSessionRequest {
             agreement_id: finalized.agreement.agreement_id.0.clone(),
             requester_ephemeral_pubkey: vec![1, 2, 3, 4],
+            expected_attestation_recipient_public_key: None,
             expires_in_seconds: Some(900),
         },
         StatusCode::CREATED,

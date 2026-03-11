@@ -371,7 +371,7 @@ impl PolicyExecutionClassification {
             PolicyClauseStatus::MetadataOnly,
             Some(match proof_backend {
                 ProofBackend::RiscZero => {
-                    "single-hop proving only; recursive rollups are not implemented"
+                    "recursive transform chaining and receipt composition are implemented for the risc0 backend"
                 }
                 ProofBackend::DevReceipt => {
                     "receipt chains verify lineage, but recursive zk rollups are not implemented"

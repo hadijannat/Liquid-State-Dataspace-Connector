@@ -12,11 +12,11 @@
 
 1. Finish migrating callers from `lsdc-common`/`proof-plane-host` onto `lsdc-policy`, `lsdc-contracts`, `lsdc-evidence`, `proof-plane-core`, `proof-plane-dev`, and `proof-plane-risc0`.
 2. Expand parity and characterization coverage around planner/projection/backend boundaries, `evidence_records`, and startup lineage-job recovery.
-3. Stabilize the feature-gated `RISC Zero` single-hop path on a runner with the external toolchain installed.
+3. Stabilize the feature-gated `RISC Zero` recursive transform chaining and receipt composition path on a runner with the external toolchain installed.
 4. Harden `nitro-live` around real attestation material and move from dev deletion evidence toward attested teardown evidence on Nitro-capable infrastructure.
 
 ## Later
 
-1. Recursive proof rollups.
+1. Broaden the recursive `RISC Zero` path from prepared-runner support into routinely exercised CI and demo coverage.
 2. Real enclave launch orchestration.
 3. Non-advisory pricing and contract mutation.

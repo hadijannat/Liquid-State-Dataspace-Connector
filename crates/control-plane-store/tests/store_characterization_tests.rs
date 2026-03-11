@@ -624,6 +624,7 @@ fn sample_execution_session(overlay: &ExecutionOverlaySummary) -> ExecutionSessi
         evidence_requirements_hash: overlay.evidence_requirements_hash.clone(),
         resolved_selector_hash: Some(Sha256Hash::digest_bytes(b"selector")),
         requester_ephemeral_pubkey: vec![1, 2, 3, 4],
+        expected_attestation_recipient_public_key: Some(vec![7, 8, 9, 10]),
         state: ExecutionSessionState::Created,
         created_at: Utc::now(),
         expires_at: Some(Utc::now() + Duration::minutes(15)),

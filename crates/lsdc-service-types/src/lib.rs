@@ -55,6 +55,8 @@ pub struct CreateExecutionSessionRequest {
     #[serde(default)]
     pub requester_ephemeral_pubkey: Vec<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_attestation_recipient_public_key: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_in_seconds: Option<i64>,
 }
 

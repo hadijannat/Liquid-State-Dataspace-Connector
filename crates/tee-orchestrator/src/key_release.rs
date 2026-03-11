@@ -136,11 +136,13 @@ impl KeyBroker for AwsKmsKeyBroker {
                 "aws kms key release requires an attested recipient public key".into(),
             ));
         }
-        if attestation_result.public_key.as_deref()
-            != Some(session.requester_ephemeral_pubkey.as_slice())
+        if session
+            .expected_attestation_recipient_public_key
+            .as_deref()
+            .is_some_and(|expected| attestation_result.public_key.as_deref() != Some(expected))
         {
             return Err(LsdcError::Attestation(
-                "aws kms key release requester public key binding mismatch".into(),
+                "aws kms key release attested recipient public key binding mismatch".into(),
             ));
         }
         if attestation_result.user_data_hash.as_ref() != Some(&session.resolved_selector_hash) {
@@ -287,6 +289,7 @@ mod tests {
             challenge_nonce_hash: Sha256Hash::digest_bytes(&[0xaa, 0xbb, 0xcc]),
             resolved_selector_hash: Sha256Hash::digest_bytes(b"selector"),
             requester_ephemeral_pubkey: vec![1, 2, 3],
+            expected_attestation_recipient_public_key: Some(vec![7, 8, 9]),
             issued_at: chrono::Utc::now(),
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
             consumed_at: None,
@@ -306,7 +309,7 @@ mod tests {
                     debug: false,
                 },
                 nonce: Some(challenge.challenge_nonce_hex.clone()),
-                public_key: Some(challenge.requester_ephemeral_pubkey.clone()),
+                public_key: challenge.expected_attestation_recipient_public_key.clone(),
                 user_data_hash: Some(challenge.resolved_selector_hash.clone()),
                 document_hash: Sha256Hash::digest_bytes(b"document"),
                 timestamp: chrono::Utc::now(),
@@ -325,7 +328,7 @@ mod tests {
             nonce: Some(challenge.challenge_nonce_hex.clone()),
             image_sha384: "abcd".into(),
             pcrs: BTreeMap::new(),
-            public_key: Some(challenge.requester_ephemeral_pubkey.clone()),
+            public_key: challenge.expected_attestation_recipient_public_key.clone(),
             user_data_hash: Some(challenge.resolved_selector_hash.clone()),
             cert_chain_verified: true,
             freshness_ok: true,
@@ -503,7 +506,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_release_key_rejects_requester_public_key_mismatch() {
+    async fn test_release_key_rejects_attested_recipient_public_key_mismatch() {
         let challenge = sample_challenge();
         let fake = Arc::new(FakeKmsClient::succeed(GenerateDataKeyResponse {
             key_id: "kms-key".into(),
@@ -525,7 +528,30 @@ mod tests {
 
         assert!(err
             .to_string()
-            .contains("requester public key binding mismatch"));
+            .contains("attested recipient public key binding mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_release_key_accepts_attested_recipient_public_key_without_pin() {
+        let mut challenge = sample_challenge();
+        challenge.expected_attestation_recipient_public_key = None;
+        challenge.requester_ephemeral_pubkey = vec![0, 0, 0];
+        let fake = Arc::new(FakeKmsClient::succeed(GenerateDataKeyResponse {
+            key_id: "kms-key".into(),
+            ciphertext_for_recipient: vec![4, 5, 6],
+        }));
+        let broker = AwsKmsKeyBroker::new("arn:aws:kms:eu-central-1:123:key/test", fake);
+        let mut evidence = sample_evidence(&challenge);
+        evidence.document.public_key = Some(vec![9, 8, 7, 6]);
+        let mut result = sample_result(&challenge);
+        result.public_key = Some(vec![9, 8, 7, 6]);
+
+        let released = broker
+            .release_key(&sample_policy(), &evidence, &result, &challenge)
+            .await
+            .unwrap();
+
+        assert!(released.key_id.starts_with("kms-key:"));
     }
 
     #[tokio::test]
