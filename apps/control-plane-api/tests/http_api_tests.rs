@@ -1126,9 +1126,7 @@ async fn test_submit_attestation_evidence_rejects_attested_public_key_pin_mismat
         )
         .unwrap_err();
 
-    assert!(err
-        .to_string()
-        .contains("attested public key pin mismatch"));
+    assert!(err.to_string().contains("attested public key pin mismatch"));
 }
 
 #[tokio::test]
@@ -1169,7 +1167,10 @@ async fn test_submit_attestation_evidence_accepts_attested_public_key_without_pi
         )
         .expect("attestation without pin should succeed");
 
-    assert_eq!(accepted.session.state, ExecutionSessionState::AttestationVerified);
+    assert_eq!(
+        accepted.session.state,
+        ExecutionSessionState::AttestationVerified
+    );
 }
 
 #[tokio::test]
@@ -1211,7 +1212,10 @@ async fn test_submit_attestation_evidence_accepts_matching_attested_public_key_p
         )
         .expect("matching pin should succeed");
 
-    assert_eq!(accepted.session.state, ExecutionSessionState::AttestationVerified);
+    assert_eq!(
+        accepted.session.state,
+        ExecutionSessionState::AttestationVerified
+    );
 }
 
 async fn start_simulated_agent() -> String {

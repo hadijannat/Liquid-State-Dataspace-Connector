@@ -273,7 +273,10 @@ fn test_execution_overlay_session_and_evidence_round_trip() {
         .expect("expected persisted execution session");
     assert_eq!(persisted_session.session_id, session.session_id);
     let persisted_challenge = persisted_challenge.expect("challenge");
-    assert_eq!(persisted_challenge.challenge_nonce_hash, challenge.challenge_nonce_hash);
+    assert_eq!(
+        persisted_challenge.challenge_nonce_hash,
+        challenge.challenge_nonce_hash
+    );
     assert_eq!(
         persisted_challenge.expected_attestation_public_key_hash,
         challenge.expected_attestation_public_key_hash
@@ -644,7 +647,9 @@ fn sample_execution_session(overlay: &ExecutionOverlaySummary) -> ExecutionSessi
         evidence_requirements_hash: overlay.evidence_requirements_hash.clone(),
         resolved_selector_hash: Some(Sha256Hash::digest_bytes(b"selector")),
         requester_ephemeral_pubkey: vec![1, 2, 3, 4],
-        expected_attestation_public_key_hash: Some(Sha256Hash::digest_bytes(b"attested-public-key")),
+        expected_attestation_public_key_hash: Some(Sha256Hash::digest_bytes(
+            b"attested-public-key",
+        )),
         state: ExecutionSessionState::Created,
         created_at: Utc::now(),
         expires_at: Some(Utc::now() + Duration::minutes(15)),

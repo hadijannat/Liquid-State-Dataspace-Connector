@@ -146,6 +146,7 @@ pub enum ExecutionSessionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(from = "ExecutionSessionCompat")]
 pub struct ExecutionSession {
     pub session_id: Uuid,
     pub agreement_id: String,
@@ -164,6 +165,7 @@ pub struct ExecutionSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(from = "ExecutionSessionChallengeCompat")]
 pub struct ExecutionSessionChallenge {
     pub challenge_id: Uuid,
     pub agreement_hash: Sha256Hash,
@@ -178,6 +180,88 @@ pub struct ExecutionSessionChallenge {
     pub expires_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExecutionSessionCompat {
+    session_id: Uuid,
+    agreement_id: String,
+    agreement_commitment_hash: Sha256Hash,
+    capability_descriptor_hash: Sha256Hash,
+    evidence_requirements_hash: Sha256Hash,
+    #[serde(default)]
+    resolved_selector_hash: Option<Sha256Hash>,
+    #[serde(default)]
+    requester_ephemeral_pubkey: Vec<u8>,
+    #[serde(default)]
+    expected_attestation_public_key_hash: Option<Sha256Hash>,
+    #[serde(default)]
+    expected_attestation_recipient_public_key: Option<Vec<u8>>,
+    state: ExecutionSessionState,
+    created_at: DateTime<Utc>,
+    expires_at: Option<DateTime<Utc>>,
+}
+
+impl From<ExecutionSessionCompat> for ExecutionSession {
+    fn from(value: ExecutionSessionCompat) -> Self {
+        Self {
+            session_id: value.session_id,
+            agreement_id: value.agreement_id,
+            agreement_commitment_hash: value.agreement_commitment_hash,
+            capability_descriptor_hash: value.capability_descriptor_hash,
+            evidence_requirements_hash: value.evidence_requirements_hash,
+            resolved_selector_hash: value.resolved_selector_hash,
+            requester_ephemeral_pubkey: value.requester_ephemeral_pubkey,
+            expected_attestation_public_key_hash: normalize_expected_attestation_public_key_hash(
+                value.expected_attestation_public_key_hash,
+                value.expected_attestation_recipient_public_key,
+            ),
+            state: value.state,
+            created_at: value.created_at,
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExecutionSessionChallengeCompat {
+    challenge_id: Uuid,
+    agreement_hash: Sha256Hash,
+    session_id: Uuid,
+    challenge_nonce_hex: String,
+    challenge_nonce_hash: Sha256Hash,
+    resolved_selector_hash: Sha256Hash,
+    #[serde(default)]
+    requester_ephemeral_pubkey: Vec<u8>,
+    #[serde(default)]
+    expected_attestation_public_key_hash: Option<Sha256Hash>,
+    #[serde(default)]
+    expected_attestation_recipient_public_key: Option<Vec<u8>>,
+    issued_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+    #[serde(default)]
+    consumed_at: Option<DateTime<Utc>>,
+}
+
+impl From<ExecutionSessionChallengeCompat> for ExecutionSessionChallenge {
+    fn from(value: ExecutionSessionChallengeCompat) -> Self {
+        Self {
+            challenge_id: value.challenge_id,
+            agreement_hash: value.agreement_hash,
+            session_id: value.session_id,
+            challenge_nonce_hex: value.challenge_nonce_hex,
+            challenge_nonce_hash: value.challenge_nonce_hash,
+            resolved_selector_hash: value.resolved_selector_hash,
+            requester_ephemeral_pubkey: value.requester_ephemeral_pubkey,
+            expected_attestation_public_key_hash: normalize_expected_attestation_public_key_hash(
+                value.expected_attestation_public_key_hash,
+                value.expected_attestation_recipient_public_key,
+            ),
+            issued_at: value.issued_at,
+            expires_at: value.expires_at,
+            consumed_at: value.consumed_at,
+        }
+    }
 }
 
 impl ExecutionSessionChallenge {
@@ -317,4 +401,71 @@ pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::E
 
 pub fn hash_canonical<T: Serialize>(value: &T) -> Result<Sha256Hash, serde_json::Error> {
     Ok(Sha256Hash::digest_bytes(&canonical_bytes(value)?))
+}
+
+fn normalize_expected_attestation_public_key_hash(
+    hash: Option<Sha256Hash>,
+    legacy_public_key: Option<Vec<u8>>,
+) -> Option<Sha256Hash> {
+    hash.or_else(|| {
+        legacy_public_key.map(|public_key| Sha256Hash::digest_bytes(public_key.as_slice()))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExecutionSession, ExecutionSessionChallenge};
+    use lsdc_evidence::Sha256Hash;
+
+    fn hash_bytes(fill: u8) -> Vec<u8> {
+        vec![fill; 32]
+    }
+
+    #[test]
+    fn execution_session_accepts_legacy_attestation_pin_field() {
+        let legacy_public_key = vec![7, 8, 9];
+        let session: ExecutionSession = serde_json::from_value(serde_json::json!({
+            "session_id": "5a5926b3-7c26-49b6-a8dd-757ca35a37cd",
+            "agreement_id": "agreement-1",
+            "agreement_commitment_hash": hash_bytes(0),
+            "capability_descriptor_hash": hash_bytes(1),
+            "evidence_requirements_hash": hash_bytes(2),
+            "requester_ephemeral_pubkey": [1, 2, 3],
+            "expected_attestation_recipient_public_key": legacy_public_key,
+            "state": "created",
+            "created_at": "2026-03-11T00:00:00Z",
+            "expires_at": null
+        }))
+        .expect("legacy session should deserialize");
+
+        assert_eq!(
+            session.expected_attestation_public_key_hash,
+            Some(Sha256Hash::digest_bytes(&[7, 8, 9]))
+        );
+    }
+
+    #[test]
+    fn execution_session_challenge_accepts_legacy_attestation_pin_field() {
+        let challenge: ExecutionSessionChallenge = serde_json::from_value(serde_json::json!({
+            "challenge_id": "c9d6c1ba-f52f-4466-b585-72d3ff030b32",
+            "agreement_hash": hash_bytes(3),
+            "session_id": "5a5926b3-7c26-49b6-a8dd-757ca35a37cd",
+            "challenge_nonce_hex": "abcd",
+            "challenge_nonce_hash": hash_bytes(4),
+            "resolved_selector_hash": hash_bytes(5),
+            "requester_ephemeral_pubkey": [1, 2, 3],
+            "expected_attestation_recipient_public_key": [9, 8, 7],
+            "issued_at": "2026-03-11T00:00:00Z",
+            "expires_at": "2026-03-11T00:15:00Z",
+            "consumed_at": null
+        }))
+        .expect("legacy challenge should deserialize");
+
+        assert_eq!(
+            challenge.expected_attestation_public_key_hash,
+            Some(Sha256Hash::digest_bytes(&[9, 8, 7]))
+        );
+        assert_eq!(challenge.challenge_nonce_hex, "abcd");
+        assert_eq!(challenge.consumed_at, None);
+    }
 }

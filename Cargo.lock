@@ -3155,6 +3155,7 @@ dependencies = [
  "lsdc-common",
  "lsdc-ports",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

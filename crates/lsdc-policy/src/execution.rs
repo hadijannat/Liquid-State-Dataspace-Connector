@@ -418,7 +418,9 @@ impl PolicyExecutionClassification {
     }
 }
 
-pub fn runtime_capability_semantics(context: RuntimeCapabilityContext) -> RuntimeCapabilitySemantics {
+pub fn runtime_capability_semantics(
+    context: RuntimeCapabilityContext,
+) -> RuntimeCapabilitySemantics {
     use RuntimeCapabilityLevel::{Experimental, Implemented, ModeledOnly, Unsupported};
 
     let risc0_recursive_supported = context.proof_backend == ProofBackend::RiscZero;

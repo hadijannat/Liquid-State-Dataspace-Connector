@@ -8,3 +8,6 @@ lsdc-common = { path = "../lsdc-common" }
 lsdc-ports = { path = "../lsdc-ports" }
 serde = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

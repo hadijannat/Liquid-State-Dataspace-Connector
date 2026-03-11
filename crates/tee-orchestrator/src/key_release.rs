@@ -103,11 +103,13 @@ fn expected_attestation_public_key_hash_matches(
     public_key: Option<&[u8]>,
 ) -> bool {
     match challenge.expected_attestation_public_key_hash.as_ref() {
-        Some(expected_hash) => public_key
-            .filter(|public_key| !public_key.is_empty())
-            .map(lsdc_common::crypto::Sha256Hash::digest_bytes)
-            .as_ref()
-            == Some(expected_hash),
+        Some(expected_hash) => {
+            public_key
+                .filter(|public_key| !public_key.is_empty())
+                .map(lsdc_common::crypto::Sha256Hash::digest_bytes)
+                .as_ref()
+                == Some(expected_hash)
+        }
         None => true,
     }
 }

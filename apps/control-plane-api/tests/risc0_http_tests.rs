@@ -202,19 +202,24 @@ async fn assert_risc0_capabilities_advertise_recursive_support() {
         "recursive"
     );
     assert_eq!(
-        health["execution_overlay"]["capability_descriptor"]["advertised_profiles"]["proof_profile"],
+        health["execution_overlay"]["capability_descriptor"]["advertised_profiles"]
+            ["proof_profile"],
         "risc0-recursive-dag-v1"
     );
 
-    let classification = lsdc_common::execution::PolicyExecutionClassification::from_runtime_capability_context(
-        state.runtime_capability_context(),
-    );
+    let classification =
+        lsdc_common::execution::PolicyExecutionClassification::from_runtime_capability_context(
+            state.runtime_capability_context(),
+        );
     let recursive_rollups = classification
         .clauses
         .iter()
         .find(|clause| clause.clause == "proof.recursive_rollups")
         .expect("proof.recursive_rollups classification");
-    assert_eq!(recursive_rollups.status, lsdc_common::execution::PolicyClauseStatus::Executable);
+    assert_eq!(
+        recursive_rollups.status,
+        lsdc_common::execution::PolicyClauseStatus::Executable
+    );
     assert_eq!(
         recursive_rollups.detail.as_deref(),
         Some("recursive transform chaining and receipt composition are implemented for the risc0 backend")

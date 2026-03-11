@@ -9,9 +9,9 @@ use lsdc_common::crypto::{
 };
 use lsdc_common::dsp::ContractAgreement;
 use lsdc_common::execution::{
-    ActualExecutionProfile, PolicyExecutionClassification, PricingMode, ProofBackend, TeeBackend,
-    TransportBackend, RuntimeCapabilityContext, RuntimeCapabilitySemantics,
-    runtime_capability_semantics,
+    runtime_capability_semantics, ActualExecutionProfile, PolicyExecutionClassification,
+    PricingMode, ProofBackend, RuntimeCapabilityContext, RuntimeCapabilitySemantics, TeeBackend,
+    TransportBackend,
 };
 use lsdc_common::execution_overlay::{
     domain_hash, ExecutionOverlayCommitment, ExecutionSession, ExecutionSessionChallenge,
@@ -211,7 +211,8 @@ impl ApiState {
         lsdc_common::execution_overlay::ExecutionEvidenceRequirements {
             challenge_nonce_required: true,
             selector_hash_binding_required: true,
-            transparency_registration_mode: lsdc_common::execution_overlay::TransparencyMode::Required,
+            transparency_registration_mode:
+                lsdc_common::execution_overlay::TransparencyMode::Required,
             proof_composition_mode: match semantics.proof_composition_mode {
                 lsdc_common::execution::RuntimeProofCompositionMode::None => {
                     lsdc_common::execution_overlay::ProofCompositionMode::None
@@ -231,37 +232,40 @@ impl ApiState {
     ) -> lsdc_common::error::Result<lsdc_common::execution_overlay::ExecutionCapabilityDescriptor>
     {
         let semantics = self.runtime_capability_semantics();
-        Ok(lsdc_common::execution_overlay::ExecutionCapabilityDescriptor {
-            overlay_version: lsdc_common::execution_overlay::LSDC_EXECUTION_PROTOCOL_VERSION.into(),
-            truthfulness_default: lsdc_common::execution_overlay::TruthfulnessMode::Permissive,
-            advertised_profiles: lsdc_common::execution_overlay::AdvertisedProfiles {
-                attestation_profile: semantics.advertised_profiles.attestation_profile,
-                proof_profile: semantics.advertised_profiles.proof_profile,
-                transparency_profile: semantics.advertised_profiles.transparency_profile,
-                teardown_profile: semantics.advertised_profiles.teardown_profile,
+        Ok(
+            lsdc_common::execution_overlay::ExecutionCapabilityDescriptor {
+                overlay_version: lsdc_common::execution_overlay::LSDC_EXECUTION_PROTOCOL_VERSION
+                    .into(),
+                truthfulness_default: lsdc_common::execution_overlay::TruthfulnessMode::Permissive,
+                advertised_profiles: lsdc_common::execution_overlay::AdvertisedProfiles {
+                    attestation_profile: semantics.advertised_profiles.attestation_profile,
+                    proof_profile: semantics.advertised_profiles.proof_profile,
+                    transparency_profile: semantics.advertised_profiles.transparency_profile,
+                    teardown_profile: semantics.advertised_profiles.teardown_profile,
+                },
+                support: semantics
+                    .support
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let overlay_value = match value {
+                            lsdc_common::execution::RuntimeCapabilityLevel::Implemented => {
+                                lsdc_common::execution_overlay::CapabilitySupportLevel::Implemented
+                            }
+                            lsdc_common::execution::RuntimeCapabilityLevel::Experimental => {
+                                lsdc_common::execution_overlay::CapabilitySupportLevel::Experimental
+                            }
+                            lsdc_common::execution::RuntimeCapabilityLevel::ModeledOnly => {
+                                lsdc_common::execution_overlay::CapabilitySupportLevel::ModeledOnly
+                            }
+                            lsdc_common::execution::RuntimeCapabilityLevel::Unsupported => {
+                                lsdc_common::execution_overlay::CapabilitySupportLevel::Unsupported
+                            }
+                        };
+                        (key, overlay_value)
+                    })
+                    .collect(),
             },
-            support: semantics
-                .support
-                .into_iter()
-                .map(|(key, value)| {
-                    let overlay_value = match value {
-                        lsdc_common::execution::RuntimeCapabilityLevel::Implemented => {
-                            lsdc_common::execution_overlay::CapabilitySupportLevel::Implemented
-                        }
-                        lsdc_common::execution::RuntimeCapabilityLevel::Experimental => {
-                            lsdc_common::execution_overlay::CapabilitySupportLevel::Experimental
-                        }
-                        lsdc_common::execution::RuntimeCapabilityLevel::ModeledOnly => {
-                            lsdc_common::execution_overlay::CapabilitySupportLevel::ModeledOnly
-                        }
-                        lsdc_common::execution::RuntimeCapabilityLevel::Unsupported => {
-                            lsdc_common::execution_overlay::CapabilitySupportLevel::Unsupported
-                        }
-                    };
-                    (key, overlay_value)
-                })
-                .collect(),
-        })
+        )
     }
 
     pub fn execution_capabilities(&self) -> ExecutionCapabilitiesResponse {
@@ -888,9 +892,11 @@ fn normalize_expected_attestation_public_key_hash(
     expected_attestation_public_key: Option<Vec<u8>>,
 ) -> lsdc_common::error::Result<Option<Sha256Hash>> {
     match expected_attestation_public_key {
-        Some(public_key) if public_key.is_empty() => Err(lsdc_common::error::LsdcError::PolicyCompile(
-            "expected attestation public key must not be empty".into(),
-        )),
+        Some(public_key) if public_key.is_empty() => {
+            Err(lsdc_common::error::LsdcError::PolicyCompile(
+                "expected attestation public key must not be empty".into(),
+            ))
+        }
         Some(public_key) => Ok(Some(Sha256Hash::digest_bytes(&public_key))),
         None => Ok(None),
     }
@@ -901,11 +907,13 @@ fn attested_public_key_hash_matches(
     attested_public_key: Option<&[u8]>,
 ) -> bool {
     match expected_attestation_public_key_hash {
-        Some(expected_hash) => attested_public_key
-            .filter(|public_key| !public_key.is_empty())
-            .map(Sha256Hash::digest_bytes)
-            .as_ref()
-            == Some(expected_hash),
+        Some(expected_hash) => {
+            attested_public_key
+                .filter(|public_key| !public_key.is_empty())
+                .map(Sha256Hash::digest_bytes)
+                .as_ref()
+                == Some(expected_hash)
+        }
         None => true,
     }
 }
