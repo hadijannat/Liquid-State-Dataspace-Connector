@@ -56,6 +56,12 @@ pub struct CreateExecutionSessionRequest {
     pub agreement_id: String,
     #[serde(default)]
     pub requester_ephemeral_pubkey: Vec<u8>,
+    #[serde(
+        default,
+        alias = "expected_attestation_recipient_public_key",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expected_attestation_public_key: Option<Vec<u8>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_in_seconds: Option<i64>,
 }
@@ -238,4 +244,21 @@ pub struct SettlementDecision {
 pub struct ContractRequestRecord {
     pub offer: ContractOffer,
     pub requested_profile: RequestedExecutionProfile,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CreateExecutionSessionRequest;
+
+    #[test]
+    fn create_execution_session_request_accepts_legacy_pin_field_name() {
+        let request: CreateExecutionSessionRequest = serde_json::from_value(serde_json::json!({
+            "agreement_id": "agreement-1",
+            "requester_ephemeral_pubkey": [1, 2, 3],
+            "expected_attestation_recipient_public_key": [4, 5, 6],
+        }))
+        .expect("legacy request should deserialize");
+
+        assert_eq!(request.expected_attestation_public_key, Some(vec![4, 5, 6]));
+    }
 }

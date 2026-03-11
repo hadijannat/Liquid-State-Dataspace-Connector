@@ -312,25 +312,23 @@ fn derive_key_release_policy(
     let normalized = normalize_policy(&agreement.odrl_policy)?;
     let mut key_release_profile = None;
     let mut deletion_mode = None;
-    for constraint in normalized.constraint_leaves() {
-        match constraint.left_operand.as_str() {
-            "keyReleaseProfile" => {
-                key_release_profile = constraint
-                    .right_operand
-                    .as_ref()
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-            }
-            "deletionMode" => {
-                deletion_mode = constraint
-                    .right_operand
-                    .as_ref()
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-            }
-            _ => {}
+    normalized.for_each_constraint_leaf(&mut |constraint| match constraint.left_operand.as_str() {
+        "keyReleaseProfile" => {
+            key_release_profile = constraint
+                .right_operand
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
         }
-    }
+        "deletionMode" => {
+            deletion_mode = constraint
+                .right_operand
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+        }
+        _ => {}
+    });
 
     let live_profile_requested = key_release_profile.as_deref() == Some("kms-attested")
         || deletion_mode.as_deref() == Some("kms_erasure");
@@ -411,8 +409,12 @@ fn validate_live_attestation_policy(
     }
 
     let normalized = normalize_policy(&agreement.odrl_policy)?;
-    for constraint in normalized.constraint_leaves_by_operand("teeImageSha384") {
-        let expected = constraint
+    let mut result = Ok(());
+    normalized.for_each_constraint_leaf_by_operand("teeImageSha384", &mut |constraint| {
+        if result.is_err() {
+            return;
+        }
+        result = constraint
             .right_operand
             .as_ref()
             .and_then(serde_json::Value::as_str)
@@ -420,16 +422,19 @@ fn validate_live_attestation_policy(
                 LsdcError::PolicyCompile(
                     "teeImageSha384 must be expressed as a SHA-384 hex string".into(),
                 )
-            })?;
-        if !expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
-            return Err(LsdcError::Attestation(
-                "nitro-live attestation image hash does not satisfy teeImageSha384 policy"
-                    .into(),
-            ));
-        }
-    }
-
-    Ok(())
+            })
+            .and_then(|expected| {
+                if expected.eq_ignore_ascii_case(attestation_result.image_sha384.as_str()) {
+                    Ok(())
+                } else {
+                    Err(LsdcError::Attestation(
+                        "nitro-live attestation image hash does not satisfy teeImageSha384 policy"
+                            .into(),
+                    ))
+                }
+            });
+    });
+    result
 }
 
 fn teardown_hash(teardown_evidence: &TeardownEvidence) -> Sha256Hash {
@@ -819,6 +824,7 @@ mod tests {
             evidence_requirements_hash: overlay_commitment.evidence_requirements_hash.clone(),
             resolved_selector_hash: Some(selector_hash.clone()),
             requester_ephemeral_pubkey: vec![1, 2, 3, 4],
+            expected_attestation_public_key_hash: None,
             state: ExecutionSessionState::Challenged,
             created_at: now,
             expires_at: Some(now + chrono::Duration::minutes(5)),

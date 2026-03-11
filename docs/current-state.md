@@ -95,6 +95,7 @@ That layering is implemented as an additive change: the new `/lsdc/v1/*` overlay
   - submitted `AttestationEvidence` is appraised server-side into `AttestationResult`
   - verifier-produced `AttestationResult` is the canonical execution appraisal object
   - challenge nonce and resolved transport guard bindings are part of the execution-session model
+  - optional attested-recipient-key pinning is stored as a challenge-bound SHA-256 hash rather than as replicated raw key material
   - the live Nitro path now wires an AWS-backed attestation verifier plus AWS KMS key broker when `tee_backend = nitro_live`
   - `TeardownEvidence` still defaults to `DevDeletionEvidence` outside the live Nitro path, but the live KMS-attested execution flow can emit `KeyErasureEvidence`
   - the current live path is still not a complete end-to-end confidential dataflow because plaintext transform inputs remain in the runtime path

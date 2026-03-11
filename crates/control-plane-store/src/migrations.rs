@@ -1,5 +1,6 @@
 use crate::{sqlite_error, Store};
 use lsdc_common::error::Result;
+use rusqlite::params;
 
 impl Store {
     pub(crate) fn migrate(&self) -> Result<()> {
@@ -92,6 +93,7 @@ impl Store {
                     nonce_hash TEXT NOT NULL,
                     resolved_selector_hash TEXT NOT NULL,
                     requester_ephemeral_pubkey_hash TEXT,
+                    expected_attestation_public_key_hash TEXT,
                     issued_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     consumed_at TEXT,
@@ -145,6 +147,42 @@ impl Store {
                 ",
             )
             .map_err(sqlite_error)?;
+
+        let mut connection = self.lock()?;
+        ensure_column_exists(
+            &mut connection,
+            "session_challenges",
+            "expected_attestation_public_key_hash",
+            "TEXT",
+        )?;
         Ok(())
     }
+}
+
+fn ensure_column_exists(
+    connection: &mut rusqlite::Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(sqlite_error)?;
+    let columns = statement
+        .query_map(params![], |row| row.get::<_, String>(1))
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+
+    if columns.iter().any(|existing| existing == column) {
+        return Ok(());
+    }
+
+    connection
+        .execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            params![],
+        )
+        .map_err(sqlite_error)?;
+    Ok(())
 }

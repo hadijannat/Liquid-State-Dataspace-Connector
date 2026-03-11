@@ -163,7 +163,7 @@ fn recursive_manifest() -> CsvTransformManifest {
 }
 
 async fn assert_risc0_capabilities_advertise_recursive_support() {
-    let app = build_risc0_app().await;
+    let (state, _store, app) = build_risc0_state_and_app().await;
     let capabilities: ExecutionCapabilitiesResponse = get_json(
         &app,
         Method::GET,
@@ -187,6 +187,51 @@ async fn assert_risc0_capabilities_advertise_recursive_support() {
     assert_eq!(
         capabilities.capability_descriptor.support["proof.risc0_recursive"],
         CapabilitySupportLevel::Implemented
+    );
+
+    let health: serde_json::Value = get_json(
+        &app,
+        Method::GET,
+        "/health",
+        None::<serde_json::Value>,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        health["execution_overlay"]["evidence_requirements"]["proof_composition_mode"],
+        "recursive"
+    );
+    assert_eq!(
+        health["execution_overlay"]["capability_descriptor"]["advertised_profiles"]
+            ["proof_profile"],
+        "risc0-recursive-dag-v1"
+    );
+
+    let classification =
+        lsdc_common::execution::PolicyExecutionClassification::from_runtime_capability_context(
+            state.runtime_capability_context(),
+        );
+    let recursive_rollups = classification
+        .clauses
+        .iter()
+        .find(|clause| clause.clause == "proof.recursive_rollups")
+        .expect("proof.recursive_rollups classification");
+    assert_eq!(
+        recursive_rollups.status,
+        lsdc_common::execution::PolicyClauseStatus::Executable
+    );
+    assert_eq!(
+        recursive_rollups.detail.as_deref(),
+        Some("recursive transform chaining and receipt composition are implemented for the risc0 backend")
+    );
+    assert_eq!(
+        health["policy_truthfulness"]["clauses"]
+            .as_array()
+            .expect("health truthfulness clauses")
+            .iter()
+            .find(|clause| clause["clause"] == "proof.recursive_rollups")
+            .expect("health recursive rollups clause")["status"],
+        "executable"
     );
 }
 
@@ -359,6 +404,7 @@ async fn assert_recursive_risc0_two_hop_lineage_via_http_api() {
         CreateExecutionSessionRequest {
             agreement_id: finalized.agreement.agreement_id.0.clone(),
             requester_ephemeral_pubkey: vec![1, 2, 3, 4],
+            expected_attestation_public_key: None,
             expires_in_seconds: Some(900),
         },
         StatusCode::CREATED,

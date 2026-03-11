@@ -3,8 +3,8 @@ use lsdc_execution_protocol::{
     AdvertisedProfiles, CapabilitySupportLevel, ExecutionCapabilityDescriptor,
     ExecutionEvidenceRequirements, ExecutionOverlayCommitment, ProofCompositionMode,
     TransparencyMode, TruthfulnessMode, LOCAL_TRANSPARENCY_PROFILE,
-    LSDC_POLICY_COMMITMENT_PROFILE_V1, LSDC_POLICY_COMMITMENT_PROFILE_V2,
-    LSDC_EXECUTION_PROTOCOL_VERSION,
+    LSDC_EXECUTION_PROTOCOL_VERSION, LSDC_POLICY_COMMITMENT_PROFILE_V1,
+    LSDC_POLICY_COMMITMENT_PROFILE_V2,
 };
 use std::collections::BTreeMap;
 
@@ -113,8 +113,14 @@ fn overlay_commitment_hash_changes_when_policy_commitment_profile_changes() {
     .expect("v2 commitment");
 
     assert_ne!(v1.agreement_commitment_hash, v2.agreement_commitment_hash);
-    assert_eq!(v1.policy_commitment_profile, LSDC_POLICY_COMMITMENT_PROFILE_V1);
-    assert_eq!(v2.policy_commitment_profile, LSDC_POLICY_COMMITMENT_PROFILE_V2);
+    assert_eq!(
+        v1.policy_commitment_profile,
+        LSDC_POLICY_COMMITMENT_PROFILE_V1
+    );
+    assert_eq!(
+        v2.policy_commitment_profile,
+        LSDC_POLICY_COMMITMENT_PROFILE_V2
+    );
 }
 
 #[test]
@@ -133,5 +139,8 @@ fn old_overlay_commitments_deserialize_as_v1_profile() {
 
     let parsed: ExecutionOverlayCommitment =
         serde_json::from_value(legacy).expect("legacy v1 overlay");
-    assert_eq!(parsed.policy_commitment_profile, LSDC_POLICY_COMMITMENT_PROFILE_V1);
+    assert_eq!(
+        parsed.policy_commitment_profile,
+        LSDC_POLICY_COMMITMENT_PROFILE_V1
+    );
 }

@@ -33,7 +33,7 @@ pub struct NormalizedExtensionFragment {
     pub value: Value,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum NormalizedLogicalOperator {
     And,
@@ -131,12 +131,15 @@ pub type NormalizedConstraint = NormalizedConstraintLeaf;
 pub type NormalizedPermission = NormalizedRule;
 
 impl NormalizedConstraintExpr {
-    fn collect_leaf_constraints<'a>(&'a self, output: &mut Vec<&'a NormalizedConstraintLeaf>) {
+    fn for_each_leaf_constraint<'a>(
+        &'a self,
+        visitor: &mut impl FnMut(&'a NormalizedConstraintLeaf),
+    ) {
         match self {
-            Self::Leaf(leaf) => output.push(leaf),
+            Self::Leaf(leaf) => visitor(leaf),
             Self::Logical(logical) => {
                 for child in &logical.children {
-                    child.collect_leaf_constraints(output);
+                    child.for_each_leaf_constraint(visitor);
                 }
             }
         }
@@ -144,50 +147,80 @@ impl NormalizedConstraintExpr {
 }
 
 impl NormalizedDuty {
+    pub fn for_each_constraint_leaf<'a>(
+        &'a self,
+        visitor: &mut impl FnMut(&'a NormalizedConstraintLeaf),
+    ) {
+        for constraint in &self.constraints {
+            constraint.for_each_leaf_constraint(visitor);
+        }
+    }
+
     pub fn constraint_leaves(&self) -> Vec<&NormalizedConstraintLeaf> {
         let mut leaves = Vec::new();
-        for constraint in &self.constraints {
-            constraint.collect_leaf_constraints(&mut leaves);
-        }
+        self.for_each_constraint_leaf(&mut |leaf| leaves.push(leaf));
         leaves
     }
 }
 
 impl NormalizedRule {
-    pub fn constraint_leaves(&self) -> Vec<&NormalizedConstraintLeaf> {
-        let mut leaves = Vec::new();
+    pub fn for_each_constraint_leaf<'a>(
+        &'a self,
+        visitor: &mut impl FnMut(&'a NormalizedConstraintLeaf),
+    ) {
         for constraint in &self.constraints {
-            constraint.collect_leaf_constraints(&mut leaves);
+            constraint.for_each_leaf_constraint(visitor);
         }
         for duty in &self.duties {
-            for constraint in &duty.constraints {
-                constraint.collect_leaf_constraints(&mut leaves);
-            }
+            duty.for_each_constraint_leaf(visitor);
         }
+    }
+
+    pub fn constraint_leaves(&self) -> Vec<&NormalizedConstraintLeaf> {
+        let mut leaves = Vec::new();
+        self.for_each_constraint_leaf(&mut |leaf| leaves.push(leaf));
         leaves
     }
 }
 
 impl NormalizedPolicyV2 {
-    pub fn constraint_leaves(&self) -> Vec<&NormalizedConstraintLeaf> {
-        let mut leaves = Vec::new();
+    pub fn for_each_constraint_leaf<'a>(
+        &'a self,
+        visitor: &mut impl FnMut(&'a NormalizedConstraintLeaf),
+    ) {
         for rule in &self.permissions {
-            leaves.extend(rule.constraint_leaves());
+            rule.for_each_constraint_leaf(visitor);
         }
         for rule in &self.prohibitions {
-            leaves.extend(rule.constraint_leaves());
+            rule.for_each_constraint_leaf(visitor);
         }
         for obligation in &self.obligations {
-            leaves.extend(obligation.constraint_leaves());
+            obligation.for_each_constraint_leaf(visitor);
         }
+    }
+
+    pub fn for_each_constraint_leaf_by_operand<'a>(
+        &'a self,
+        operand: &str,
+        visitor: &mut impl FnMut(&'a NormalizedConstraintLeaf),
+    ) {
+        self.for_each_constraint_leaf(&mut |leaf| {
+            if leaf.left_operand == operand {
+                visitor(leaf);
+            }
+        });
+    }
+
+    pub fn constraint_leaves(&self) -> Vec<&NormalizedConstraintLeaf> {
+        let mut leaves = Vec::new();
+        self.for_each_constraint_leaf(&mut |leaf| leaves.push(leaf));
         leaves
     }
 
     pub fn constraint_leaves_by_operand(&self, operand: &str) -> Vec<&NormalizedConstraintLeaf> {
-        self.constraint_leaves()
-            .into_iter()
-            .filter(|leaf| leaf.left_operand == operand)
-            .collect()
+        let mut leaves = Vec::new();
+        self.for_each_constraint_leaf_by_operand(operand, &mut |leaf| leaves.push(leaf));
+        leaves
     }
 }
 
@@ -263,14 +296,17 @@ impl RuntimeCapabilities {
             .iter()
             .any(|item| item == &EvidenceRequirement::PriceApproval)
         {
-            clauses.push(self.apply_truthfulness(ClauseRealization {
-                clause_id: "pricing.autonomous_mutation".into(),
-                semantic_key: "pricing.autonomous_mutation".into(),
-                status: PolicyClauseStatus::MetadataOnly,
-                required_primitives: vec!["pricing.oracle".into()],
-                required_evidence: vec!["price_decision".into()],
-                reason_code: Some("pricing_advisory_only".into()),
-            }, normalized_policy.truthfulness_mode));
+            clauses.push(self.apply_truthfulness(
+                ClauseRealization {
+                    clause_id: "pricing.autonomous_mutation".into(),
+                    semantic_key: "pricing.autonomous_mutation".into(),
+                    status: PolicyClauseStatus::MetadataOnly,
+                    required_primitives: vec!["pricing.oracle".into()],
+                    required_evidence: vec!["price_decision".into()],
+                    reason_code: Some("pricing_advisory_only".into()),
+                },
+                normalized_policy.truthfulness_mode,
+            ));
         }
 
         clauses.sort_by(|left, right| {
@@ -317,7 +353,11 @@ impl RuntimeCapabilities {
         truthfulness_mode: TruthfulnessMode,
         clauses: &mut Vec<ClauseRealization>,
     ) {
-        if !matches!(duty.action.as_str(), "delete" | "anonymize") || matches!(kind, RuleKind::Obligation)
+        // Permission duties are only executable for the delete/anonymize subset. Other duty
+        // actions remain metadata-only, and top-level obligations never become executable in the
+        // capability report even when they use those same action names.
+        if !matches!(duty.action.as_str(), "delete" | "anonymize")
+            || matches!(kind, RuleKind::Obligation)
         {
             clauses.push(self.apply_truthfulness(
                 ClauseRealization {
@@ -349,10 +389,9 @@ impl RuntimeCapabilities {
     ) {
         match constraint {
             NormalizedConstraintExpr::Leaf(leaf) => {
-                clauses.push(self.apply_truthfulness(
-                    self.realize_constraint_leaf(leaf),
-                    truthfulness_mode,
-                ));
+                clauses.push(
+                    self.apply_truthfulness(self.realize_constraint_leaf(leaf), truthfulness_mode),
+                );
             }
             NormalizedConstraintExpr::Logical(logical) => {
                 clauses.push(self.apply_truthfulness(
@@ -533,7 +572,10 @@ pub fn normalize_policy(policy: &Value) -> Result<NormalizedPolicy> {
     let mut permissions = extract_rule_array(policy.get("permission"), normalize_rule)?;
     let mut prohibitions = extract_rule_array(policy.get("prohibition"), normalize_rule)?;
     let mut obligations = Vec::new();
-    obligations.extend(extract_rule_array(policy.get("obligation"), normalize_duty)?);
+    obligations.extend(extract_rule_array(
+        policy.get("obligation"),
+        normalize_duty,
+    )?);
     obligations.extend(extract_rule_array(policy.get("duty"), normalize_duty)?);
 
     if permissions.is_empty() && prohibitions.is_empty() && obligations.is_empty() {
@@ -580,7 +622,8 @@ pub fn canonical_policy_json(policy: &Value) -> Value {
 pub fn canonical_normalized_policy_bytes(
     normalized_policy: &NormalizedPolicy,
 ) -> std::result::Result<Vec<u8>, serde_json::Error> {
-    serde_json::to_value(normalized_policy).and_then(|value| serde_json::to_vec(&canonicalize_json(&value)))
+    serde_json::to_value(normalized_policy)
+        .and_then(|value| serde_json::to_vec(&canonicalize_json(&value)))
 }
 
 fn normalize_rule(rule: &Value) -> Result<NormalizedRule> {
@@ -668,7 +711,16 @@ fn normalize_constraint_expr(value: &Value) -> Result<NormalizedConstraintExpr> 
     }
 
     if let Some(logical_key) = logical_keys.first() {
-        return normalize_logical_constraint(object, logical_key);
+        return normalize_logical_constraint(object, logical_key, logical_key);
+    }
+
+    if let Some(logical_key) = object
+        .get("operator")
+        .and_then(Value::as_str)
+        .and_then(logical_operator_key)
+        .filter(|_| object.contains_key("constraint"))
+    {
+        return normalize_logical_constraint(object, logical_key, "constraint");
     }
 
     normalize_constraint_leaf(object)
@@ -677,6 +729,7 @@ fn normalize_constraint_expr(value: &Value) -> Result<NormalizedConstraintExpr> 
 fn normalize_logical_constraint(
     object: &Map<String, Value>,
     logical_key: &str,
+    children_key: &str,
 ) -> Result<NormalizedConstraintExpr> {
     let op = match logical_key {
         "and" => NormalizedLogicalOperator::And,
@@ -687,10 +740,12 @@ fn normalize_logical_constraint(
     };
 
     let children = object
-        .get(logical_key)
+        .get(children_key)
         .and_then(Value::as_array)
         .ok_or_else(|| {
-            LsdcError::OdrlParse(format!("logical constraint `{logical_key}` must be an array"))
+            LsdcError::OdrlParse(format!(
+                "logical constraint `{logical_key}` must be an array"
+            ))
         })?;
 
     let mut children = children
@@ -707,7 +762,14 @@ fn normalize_logical_constraint(
         uid: uid.clone(),
         op,
         children,
-        extensions: extract_extensions_from_object(object, &["uid", "and", "or", "xone", "andSequence"]),
+        extensions: extract_extensions_from_object(
+            object,
+            if children_key == "constraint" {
+                &["uid", "operator", "constraint"]
+            } else {
+                &["uid", "and", "or", "xone", "andSequence"]
+            },
+        ),
     };
     normalized.clause_id =
         uid.unwrap_or_else(|| format!("logical:{}", logical_sort_key(&normalized)));
@@ -740,7 +802,10 @@ fn normalize_constraint_leaf(object: &Map<String, Value>) -> Result<NormalizedCo
             .get("rightOperandReference")
             .cloned()
             .map(|value| canonicalize_json(&value)),
-        unit: object.get("unit").cloned().map(|value| canonicalize_json(&value)),
+        unit: object
+            .get("unit")
+            .cloned()
+            .map(|value| canonicalize_json(&value)),
         data_type: object
             .get("dataType")
             .cloned()
@@ -770,7 +835,10 @@ fn normalize_constraint_leaf(object: &Map<String, Value>) -> Result<NormalizedCo
 fn normalize_right_operand(left_operand: &str, value: Value) -> Value {
     match value {
         Value::Array(items) if matches!(left_operand, "spatial" | "purpose") => {
-            let mut items = items.into_iter().map(|item| canonicalize_json(&item)).collect::<Vec<_>>();
+            let mut items = items
+                .into_iter()
+                .map(|item| canonicalize_json(&item))
+                .collect::<Vec<_>>();
             items.sort_by_key(value_sort_key);
             items.dedup();
             Value::Array(items)
@@ -804,8 +872,19 @@ fn optional_string(value: Option<&Value>) -> Option<String> {
     value.and_then(Value::as_str).map(str::to_string)
 }
 
+fn logical_operator_key(value: &str) -> Option<&'static str> {
+    match value {
+        "and" => Some("and"),
+        "or" => Some("or"),
+        "xone" => Some("xone"),
+        "andSequence" | "andsequence" => Some("andSequence"),
+        _ => None,
+    }
+}
+
 fn extract_extensions(value: &Value, known_keys: &[&str]) -> Vec<NormalizedExtensionFragment> {
-    value.as_object()
+    value
+        .as_object()
         .map(|object| extract_extensions_from_object(object, known_keys))
         .unwrap_or_default()
 }

@@ -154,18 +154,18 @@ fn and_sequence_order_changes_commitment_but_and_does_not() {
         }]
     });
 
-    let unordered_a = normalize_policy(&unordered_a).unwrap();
-    let unordered_b = normalize_policy(&unordered_b).unwrap();
-    let ordered_a = normalize_policy(&ordered_a).unwrap();
-    let ordered_b = normalize_policy(&ordered_b).unwrap();
+    let unordered_a_normalized = normalize_policy(&unordered_a).unwrap();
+    let unordered_b_normalized = normalize_policy(&unordered_b).unwrap();
+    let ordered_a_normalized = normalize_policy(&ordered_a).unwrap();
+    let ordered_b_normalized = normalize_policy(&ordered_b).unwrap();
 
     assert_eq!(
-        canonical_normalized_policy_bytes(&unordered_a).unwrap(),
-        canonical_normalized_policy_bytes(&unordered_b).unwrap()
+        canonical_normalized_policy_bytes(&unordered_a_normalized).unwrap(),
+        canonical_normalized_policy_bytes(&unordered_b_normalized).unwrap()
     );
     assert_ne!(
-        canonical_normalized_policy_bytes(&ordered_a).unwrap(),
-        canonical_normalized_policy_bytes(&ordered_b).unwrap()
+        canonical_normalized_policy_bytes(&ordered_a_normalized).unwrap(),
+        canonical_normalized_policy_bytes(&ordered_b_normalized).unwrap()
     );
 }
 

@@ -250,6 +250,10 @@ fn test_execution_overlay_session_and_evidence_round_trip() {
         persisted_overlay.agreement_commitment_hash,
         overlay.agreement_commitment_hash
     );
+    assert_eq!(
+        persisted_overlay.policy_commitment_profile,
+        overlay.policy_commitment_profile
+    );
 
     store
         .upsert_execution_session(&session, Some(&challenge))
@@ -272,13 +276,36 @@ fn test_execution_overlay_session_and_evidence_round_trip() {
         .unwrap()
         .expect("expected persisted execution session");
     assert_eq!(persisted_session.session_id, session.session_id);
+    let persisted_challenge = persisted_challenge.expect("challenge");
     assert_eq!(
-        persisted_challenge.expect("challenge").challenge_nonce_hash,
+        persisted_challenge.challenge_nonce_hash,
         challenge.challenge_nonce_hash
+    );
+    assert_eq!(
+        persisted_challenge.expected_attestation_public_key_hash,
+        challenge.expected_attestation_public_key_hash
     );
     assert_eq!(
         persisted_attestation.expect("attestation").doc_hash,
         attestation_result.doc_hash
+    );
+
+    let connection = Connection::open(&db_path).unwrap();
+    let persisted_pin_hash = connection
+        .query_row(
+            "SELECT expected_attestation_public_key_hash
+             FROM session_challenges
+             WHERE challenge_id = ?1",
+            [challenge.challenge_id.to_string()],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        persisted_pin_hash,
+        challenge
+            .expected_attestation_public_key_hash
+            .as_ref()
+            .map(Sha256Hash::to_hex)
     );
 
     store
@@ -301,6 +328,25 @@ fn test_execution_overlay_session_and_evidence_round_trip() {
     assert_eq!(persisted_receipt.root_hash, receipt.root_hash);
 
     let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn test_legacy_execution_overlay_defaults_policy_commitment_profile() {
+    let legacy = json!({
+        "overlay_version": LSDC_EXECUTION_PROTOCOL_VERSION,
+        "truthfulness_mode": "permissive",
+        "capability_descriptor_hash": Sha256Hash::digest_bytes(b"capability"),
+        "agreement_commitment_hash": Sha256Hash::digest_bytes(b"agreement"),
+        "evidence_requirements_hash": Sha256Hash::digest_bytes(b"requirements"),
+        "support_summary": {}
+    });
+
+    let overlay: ExecutionOverlaySummary =
+        serde_json::from_value(legacy).expect("legacy overlay should deserialize");
+    assert_eq!(
+        overlay.policy_commitment_profile,
+        lsdc_common::profile::LSDC_POLICY_COMMITMENT_PROFILE_V1
+    );
 }
 
 fn temp_db_path(label: &str) -> PathBuf {
@@ -625,6 +671,9 @@ fn sample_execution_session(overlay: &ExecutionOverlaySummary) -> ExecutionSessi
         evidence_requirements_hash: overlay.evidence_requirements_hash.clone(),
         resolved_selector_hash: Some(Sha256Hash::digest_bytes(b"selector")),
         requester_ephemeral_pubkey: vec![1, 2, 3, 4],
+        expected_attestation_public_key_hash: Some(Sha256Hash::digest_bytes(
+            b"attested-public-key",
+        )),
         state: ExecutionSessionState::Created,
         created_at: Utc::now(),
         expires_at: Some(Utc::now() + Duration::minutes(15)),

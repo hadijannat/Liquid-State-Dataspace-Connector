@@ -5,8 +5,8 @@ use crate::liquid::{
     TransportGuard, TransportProtocol,
 };
 use crate::profile::{
-    canonical_policy_json, normalize_policy, NormalizedConstraintLeaf, NormalizedDuty,
-    NormalizedPolicy, NormalizedRule,
+    canonical_policy_json, normalize_policy, NormalizedConstraintExpr, NormalizedConstraintLeaf,
+    NormalizedDuty, NormalizedLogicalOperator, NormalizedPolicy, NormalizedRule,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -36,6 +36,17 @@ pub fn lower_normalized_policy(
     normalized_policy: &NormalizedPolicy,
     evidence_requirements: &[EvidenceRequirement],
 ) -> Result<LiquidPolicyIr> {
+    if !normalized_policy.prohibitions.is_empty() {
+        return Err(LsdcError::PolicyCompile(
+            "executable lowering does not support prohibition rules".into(),
+        ));
+    }
+    if !normalized_policy.obligations.is_empty() {
+        return Err(LsdcError::PolicyCompile(
+            "executable lowering does not support top-level obligations".into(),
+        ));
+    }
+
     let mut allow_read = false;
     let mut allow_transfer = false;
     let mut allow_anonymize = false;
@@ -47,7 +58,12 @@ pub fn lower_normalized_policy(
     let mut delete_after_seconds = None;
 
     for permission in &normalized_policy.permissions {
-        lower_permission_actions(permission, &mut allow_read, &mut allow_transfer, &mut allow_anonymize);
+        lower_permission_actions(
+            permission,
+            &mut allow_read,
+            &mut allow_transfer,
+            &mut allow_anonymize,
+        );
         lower_permission_constraints(
             permission,
             &mut packet_caps,
@@ -63,14 +79,10 @@ pub fn lower_normalized_policy(
         )?;
     }
 
-    for obligation in &normalized_policy.obligations {
-        lower_duty(
-            obligation,
-            &mut allow_anonymize,
-            &mut required_ops,
-            &mut delete_after_seconds,
-        )?;
-    }
+    allowed_regions.sort();
+    allowed_regions.dedup();
+    allowed_purposes.sort();
+    allowed_purposes.dedup();
 
     if !allow_read && !allow_transfer && !allow_anonymize {
         return Err(LsdcError::PolicyCompile(
@@ -127,15 +139,52 @@ fn lower_permission_constraints(
     allowed_regions: &mut Vec<String>,
     allowed_purposes: &mut Vec<String>,
 ) -> Result<()> {
-    for leaf in permission.constraint_leaves() {
-        match leaf.left_operand.as_str() {
+    for constraint in &permission.constraints {
+        collect_constraint_values(
+            constraint,
+            packet_caps,
+            byte_caps,
+            allowed_regions,
+            allowed_purposes,
+        )?;
+    }
+    Ok(())
+}
+
+fn collect_constraint_values(
+    constraint: &NormalizedConstraintExpr,
+    packet_caps: &mut Vec<u64>,
+    byte_caps: &mut Vec<u64>,
+    allowed_regions: &mut Vec<String>,
+    allowed_purposes: &mut Vec<String>,
+) -> Result<()> {
+    match constraint {
+        NormalizedConstraintExpr::Leaf(leaf) => match leaf.left_operand.as_str() {
             "count" => packet_caps.push(parse_u64_operand(leaf)?),
-            "spatial" => extend_unique(allowed_regions, parse_string_list_operand(leaf)?),
             "maxEgressBytes" => byte_caps.push(parse_u64_operand(leaf)?),
+            "spatial" => extend_unique(allowed_regions, parse_string_list_operand(leaf)?),
             "purpose" => extend_unique(allowed_purposes, parse_string_list_operand(leaf)?),
             _ => {}
+        },
+        NormalizedConstraintExpr::Logical(logical) => {
+            if logical.op != NormalizedLogicalOperator::And {
+                return Err(LsdcError::PolicyCompile(format!(
+                    "executable lowering does not support logical `{}` groups",
+                    logical_operator_name(logical.op)
+                )));
+            }
+            for child in &logical.children {
+                collect_constraint_values(
+                    child,
+                    packet_caps,
+                    byte_caps,
+                    allowed_regions,
+                    allowed_purposes,
+                )?;
+            }
         }
     }
+
     Ok(())
 }
 
@@ -158,29 +207,68 @@ fn lower_duty(
     delete_after_seconds: &mut Option<u64>,
 ) -> Result<()> {
     match duty.action.as_str() {
-        "delete" => {
-            for leaf in duty.constraint_leaves() {
-                if leaf.left_operand != "delete-after" {
-                    continue;
-                }
-                let duration = parse_duration_seconds(&parse_string_operand(leaf)?)?;
-                *delete_after_seconds = Some(match *delete_after_seconds {
-                    Some(current) => current.min(duration),
-                    None => duration,
-                });
-            }
+        "anonymize" => *allow_anonymize = true,
+        "delete" => {}
+        other => {
+            return Err(LsdcError::PolicyCompile(format!(
+                "unsupported executable duty action `{other}`"
+            )))
         }
-        "anonymize" => {
-            *allow_anonymize = true;
-            for leaf in duty.constraint_leaves() {
-                if leaf.left_operand != "transform-required" {
-                    continue;
-                }
-                required_ops.push(parse_transform_kind(&parse_string_operand(leaf)?)?);
-            }
-        }
-        _ => {}
     }
+
+    collect_duty_values(
+        duty.action.as_str(),
+        &duty.constraints,
+        allow_anonymize,
+        required_ops,
+        delete_after_seconds,
+    )
+}
+
+fn collect_duty_values(
+    action: &str,
+    constraints: &[NormalizedConstraintExpr],
+    allow_anonymize: &mut bool,
+    required_ops: &mut Vec<CsvTransformOpKind>,
+    delete_after_seconds: &mut Option<u64>,
+) -> Result<()> {
+    if action == "anonymize" {
+        *allow_anonymize = true;
+    }
+
+    for constraint in constraints {
+        match constraint {
+            NormalizedConstraintExpr::Leaf(leaf) => match (action, leaf.left_operand.as_str()) {
+                ("delete", "delete-after") => {
+                    let duration = parse_duration_seconds(&parse_string_operand(leaf)?)?;
+                    *delete_after_seconds = Some(match *delete_after_seconds {
+                        Some(current) => current.min(duration),
+                        None => duration,
+                    });
+                }
+                ("anonymize", "transform-required") => {
+                    required_ops.push(parse_transform_kind(&parse_string_operand(leaf)?)?);
+                }
+                _ => {}
+            },
+            NormalizedConstraintExpr::Logical(logical) => {
+                if logical.op != NormalizedLogicalOperator::And {
+                    return Err(LsdcError::PolicyCompile(format!(
+                        "executable lowering does not support logical `{}` groups",
+                        logical_operator_name(logical.op)
+                    )));
+                }
+                collect_duty_values(
+                    action,
+                    &logical.children,
+                    allow_anonymize,
+                    required_ops,
+                    delete_after_seconds,
+                )?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -236,6 +324,15 @@ fn parse_transform_kind(value: &str) -> Result<CsvTransformOpKind> {
         other => Err(LsdcError::PolicyCompile(format!(
             "unsupported transform-required op `{other}`"
         ))),
+    }
+}
+
+fn logical_operator_name(operator: NormalizedLogicalOperator) -> &'static str {
+    match operator {
+        NormalizedLogicalOperator::And => "and",
+        NormalizedLogicalOperator::Or => "or",
+        NormalizedLogicalOperator::Xone => "xone",
+        NormalizedLogicalOperator::AndSequence => "andSequence",
     }
 }
 
