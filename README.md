@@ -10,7 +10,6 @@
 >
 > - The default local stack is the Phase 3 reference stack.
 > - Advanced modes such as Linux eXpress Data Path (XDP), feature-gated `RISC Zero`, and `nitro_live` are implemented but non-default.
-> - As of March 11, 2026, no GitHub releases are published for this repository.
 > - Rust nightly is required by the checked-in toolchain.
 > - The repo documents what the runtime actually does today and keeps future work clearly separate.
 
@@ -47,9 +46,6 @@ The fastest path is Ubuntu or Debian with the bootstrap script. The default simu
 
 ```bash
 ./scripts/bootstrap-ubuntu.sh
-cargo xtask verify-repo
-cargo test --workspace
-.venv/bin/python -m pytest python/pricing-oracle/tests
 ./scripts/run-phase3-demo.sh
 
 curl http://127.0.0.1:7001/health
@@ -59,14 +55,22 @@ curl -H "Authorization: Bearer phase3-demo-token" \
 
 If you override `LSDC_API_BEARER_TOKEN`, substitute the value printed by `./scripts/run-phase3-demo.sh` in the authenticated `curl` command.
 
+If you want the full validation suite before or after the demo, run:
+
+```bash
+cargo xtask verify-repo
+cargo test --workspace
+.venv/bin/python -m pytest python/pricing-oracle/tests
+```
+
 ### Runtime Matrix
 
 | Mode | Default | Requirements | Verify command | CI lane |
 | --- | --- | --- | --- | --- |
-| Local simulated Phase 3 | Yes | Rust nightly, Python 3.11 virtualenv, no special privileges | `./scripts/run-phase3-demo.sh` | `Host CI` |
+| Local simulated Phase 3 | Yes | Rust nightly, Python 3.11 virtualenv, no special privileges | `./scripts/run-phase3-demo.sh` | `Host CI` for related integration coverage; the demo launcher itself is a manual local check |
 | Linux XDP | No | Privileged Linux, `clang`, `llvm`, `libelf`, `libpcap`, `bpftool` | `cargo xtask build-ebpf` and `sudo cargo test -p liquid-agent --test linux_agent_tests -- --ignored` | `Linux XDP` |
-| `RISC Zero` | No | `rzup`, `cargo-risczero 5.0.0-rc.1`, guest Rust `1.91.1`, `--features risc0` | `cargo test -p proof-plane-host --features risc0` and `cargo test -p control-plane-api --features risc0 --test risc0_http_tests` | `Proof Nightly` |
-| `nitro_live` / Nitro integration | No | Explicit `tee_backend = nitro_live`, `key_broker_backend = aws_kms`, `aws_region`, `kms_key_id`; Nitro runner for the integration lane | `cargo test -p tee-orchestrator` and `cargo test -p control-plane-api --test http_api_tests test_phase3_three_party_demo_flow` | `Host CI` and `Nitro Integration` |
+| `RISC Zero` | No | `rzup`, `cargo-risczero 5.0.0-rc.1`, guest Rust `1.91.1`, `--features risc0` | `cargo test -p proof-plane-host --features risc0` and `cargo test -p control-plane-api --features risc0 --test risc0_http_tests` | `RISC0 CI` and `Proof Nightly` |
+| `nitro_live` / Nitro integration | No | Explicit `tee_backend = nitro_live`, `key_broker_backend = aws_kms`, `aws_region`, `kms_key_id`; Nitro runner only matters for the optional integration lane | `cargo test -p tee-orchestrator`, `cargo test -p control-plane-api --test http_api_tests test_state_from_config_allows_nitro_live_without_fixture_path`, and `cargo test -p control-plane-api --test http_api_tests test_nitro_live_capabilities_endpoint_reports_attested_support` | `Host CI`; `Nitro Integration` separately reruns the protected demo flow on a Nitro-labeled runner |
 
 ## Expected Services And Ports
 
@@ -194,10 +198,10 @@ The default Phase 3 demo runs this graph with simulated transport, `dev_receipt`
 | `LSDC_PROOF_SECRET` | Yes unless `LSDC_ALLOW_DEV_DEFAULTS=1` | Demo exports `phase3-proof-secret` | Proof signing |
 | `LSDC_FORGETTING_SECRET` | Yes unless `LSDC_ALLOW_DEV_DEFAULTS=1` | Demo exports `phase3-forgetting-secret` | Teardown / forgetting evidence |
 | `LSDC_PRICING_SECRET` | Yes unless `LSDC_ALLOW_DEV_DEFAULTS=1` | Demo exports `phase3-pricing-secret` | Pricing oracle signatures |
-| `LSDC_ATTESTATION_SECRET` | No | Demo exports `phase3-attestation-secret`; code also has a built-in dev fallback | Local attestation signing and verification |
+| `LSDC_ATTESTATION_SECRET` | No | Demo exports `phase3-attestation-secret`; code also has a built-in local fallback that should be overridden outside local development | Local attestation signing and verification |
 | `LSDC_ALLOW_DEV_DEFAULTS` | No | Demo sets `1` to enable explicit dev-only fallbacks and loopback-only insecure pricing | Cross-cutting development guard |
 
-Normal mode should provide real secrets explicitly. Development mode is opt-in and should stay limited to local or loopback-only environments.
+Normal mode should provide real secrets explicitly. Development mode is opt-in and should stay limited to local or loopback-only environments, and `LSDC_ATTESTATION_SECRET` should be set explicitly outside local development because its fallback is currently ungated in code.
 
 ## Supported Policy Subset
 
@@ -218,8 +222,8 @@ Session binding and transparency registration requirements live in the execution
 | Backend family | Default stack | Implemented non-default path | Requirements | Verification command | CI lane |
 | --- | --- | --- | --- | --- | --- |
 | Transport | `simulated` via `liquid-agent` | Aya/XDP on privileged Linux | Linux, elevated networking, eBPF toolchain from bootstrap | `cargo xtask build-ebpf` and `sudo cargo test -p liquid-agent --test linux_agent_tests -- --ignored` | `Linux XDP` |
-| Proof | `dev_receipt` plus local transparency receipts | `RISC Zero` recursive transform chaining and receipt composition | `rzup`, `cargo-risczero`, guest Rust toolchain, `--features risc0` | `cargo test -p proof-plane-host --features risc0` and `cargo test -p control-plane-api --features risc0 --test risc0_http_tests` | `Proof Nightly` |
-| TEE | `nitro_dev` | `nitro_live` with AWS Nitro verification and AWS KMS-backed key release | `tee_backend = nitro_live`, `key_broker_backend = aws_kms`, `aws_region`, `kms_key_id`; Nitro runners for the integration lane | `cargo test -p tee-orchestrator` and `cargo test -p control-plane-api --test http_api_tests test_phase3_three_party_demo_flow` | `Host CI` and `Nitro Integration` |
+| Proof | `dev_receipt` plus local transparency receipts | `RISC Zero` recursive transform chaining and receipt composition | `rzup`, `cargo-risczero`, guest Rust toolchain, `--features risc0` | `cargo test -p proof-plane-host --features risc0` and `cargo test -p control-plane-api --features risc0 --test risc0_http_tests` | `RISC0 CI` and `Proof Nightly` |
+| TEE | `nitro_dev` | `nitro_live` with AWS Nitro verification and AWS KMS-backed key release | `tee_backend = nitro_live`, `key_broker_backend = aws_kms`, `aws_region`, `kms_key_id`; Nitro runners matter only for the optional integration lane | `cargo test -p tee-orchestrator`, `cargo test -p control-plane-api --test http_api_tests test_state_from_config_allows_nitro_live_without_fixture_path`, and `cargo test -p control-plane-api --test http_api_tests test_nitro_live_capabilities_endpoint_reports_attested_support` | `Host CI`; `Nitro Integration` separately reruns the protected demo flow on a Nitro-labeled runner |
 | Pricing | Advisory gRPC | Same advisory model on other backends | Loopback-only insecure mode requires `LSDC_ALLOW_DEV_DEFAULTS=1` | `.venv/bin/python -m pytest python/pricing-oracle/tests` | `Host CI` |
 | API surface | DSP compatibility plus compatibility lineage/settlement views | Additive `/lsdc/v1/*` execution overlay | Bearer token on every non-health route | `curl http://127.0.0.1:7001/health` and authenticated `curl ... /lsdc/v1/capabilities` | Local demo plus integration tests in `Host CI` |
 
