@@ -389,7 +389,7 @@ impl PolicyExecutionClassification {
     }
 
     pub fn from_runtime_capability_context(context: RuntimeCapabilityContext) -> Self {
-        runtime_capability_semantics(context).classification
+        runtime_capability_classification(context)
     }
 
     fn push(
@@ -524,6 +524,19 @@ pub fn runtime_capability_semantics(
         .into(),
     };
 
+    let classification = runtime_capability_classification(context);
+
+    RuntimeCapabilitySemantics {
+        support,
+        advertised_profiles,
+        proof_composition_mode,
+        classification,
+    }
+}
+
+fn runtime_capability_classification(
+    context: RuntimeCapabilityContext,
+) -> PolicyExecutionClassification {
     let mut classification = PolicyExecutionClassification::default();
     classification.push(
         "transport.selector",
@@ -601,10 +614,5 @@ pub fn runtime_capability_semantics(
         Some("permissive and strict overlay truthfulness modes are recognized"),
     );
 
-    RuntimeCapabilitySemantics {
-        support,
-        advertised_profiles,
-        proof_composition_mode,
-        classification,
-    }
+    classification
 }

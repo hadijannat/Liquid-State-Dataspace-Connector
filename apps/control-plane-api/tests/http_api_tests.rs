@@ -1092,7 +1092,7 @@ async fn test_submit_attestation_evidence_rejects_attested_public_key_pin_mismat
     ensure_test_env();
     let agent_endpoint = start_simulated_agent().await;
     let store = control_plane_api::store::Store::new(":memory:").unwrap();
-    let state = build_test_state(agent_endpoint, store);
+    let state = build_test_state(agent_endpoint, store.clone());
     let app = router(state.clone());
     let offer = request_offer(&app, "did:web:provider", "did:web:consumer").await;
     let finalized = finalize_offer(&app, &offer).await;
@@ -1127,7 +1127,19 @@ async fn test_submit_attestation_evidence_rejects_attested_public_key_pin_mismat
         .unwrap_err();
 
     assert!(err.to_string().contains("attested public key pin mismatch"));
-    assert!(err.to_string().contains("attested public key pin mismatch"));
+
+    let (persisted_session, persisted_challenge, persisted_attestation) = store
+        .get_execution_session(&created.session.session_id.to_string())
+        .expect("persisted session lookup")
+        .expect("session should remain persisted");
+    assert_eq!(persisted_session.state, ExecutionSessionState::Challenged);
+    assert_eq!(
+        persisted_challenge
+            .expect("challenge should remain persisted")
+            .consumed_at,
+        None
+    );
+    assert!(persisted_attestation.is_none());
 }
 
 #[tokio::test]

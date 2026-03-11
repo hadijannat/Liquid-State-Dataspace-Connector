@@ -445,6 +445,30 @@ mod tests {
     }
 
     #[test]
+    fn execution_session_prefers_explicit_hash_over_legacy_attestation_pin_field() {
+        let expected_hash = Sha256Hash::digest_bytes(b"expected-hash");
+        let session: ExecutionSession = serde_json::from_value(serde_json::json!({
+            "session_id": "5a5926b3-7c26-49b6-a8dd-757ca35a37cd",
+            "agreement_id": "agreement-1",
+            "agreement_commitment_hash": hash_bytes(0),
+            "capability_descriptor_hash": hash_bytes(1),
+            "evidence_requirements_hash": hash_bytes(2),
+            "requester_ephemeral_pubkey": [1, 2, 3],
+            "expected_attestation_public_key_hash": expected_hash,
+            "expected_attestation_recipient_public_key": [7, 8, 9],
+            "state": "created",
+            "created_at": "2026-03-11T00:00:00Z",
+            "expires_at": null
+        }))
+        .expect("session should prefer explicit hash");
+
+        assert_eq!(
+            session.expected_attestation_public_key_hash,
+            Some(Sha256Hash::digest_bytes(b"expected-hash"))
+        );
+    }
+
+    #[test]
     fn execution_session_challenge_accepts_legacy_attestation_pin_field() {
         let challenge: ExecutionSessionChallenge = serde_json::from_value(serde_json::json!({
             "challenge_id": "c9d6c1ba-f52f-4466-b585-72d3ff030b32",
@@ -467,5 +491,30 @@ mod tests {
         );
         assert_eq!(challenge.challenge_nonce_hex, "abcd");
         assert_eq!(challenge.consumed_at, None);
+    }
+
+    #[test]
+    fn execution_session_challenge_prefers_explicit_hash_over_legacy_attestation_pin_field() {
+        let expected_hash = Sha256Hash::digest_bytes(b"expected-hash");
+        let challenge: ExecutionSessionChallenge = serde_json::from_value(serde_json::json!({
+            "challenge_id": "c9d6c1ba-f52f-4466-b585-72d3ff030b32",
+            "agreement_hash": hash_bytes(3),
+            "session_id": "5a5926b3-7c26-49b6-a8dd-757ca35a37cd",
+            "challenge_nonce_hex": "abcd",
+            "challenge_nonce_hash": hash_bytes(4),
+            "resolved_selector_hash": hash_bytes(5),
+            "requester_ephemeral_pubkey": [1, 2, 3],
+            "expected_attestation_public_key_hash": expected_hash,
+            "expected_attestation_recipient_public_key": [9, 8, 7],
+            "issued_at": "2026-03-11T00:00:00Z",
+            "expires_at": "2026-03-11T00:15:00Z",
+            "consumed_at": null
+        }))
+        .expect("challenge should prefer explicit hash");
+
+        assert_eq!(
+            challenge.expected_attestation_public_key_hash,
+            Some(Sha256Hash::digest_bytes(b"expected-hash"))
+        );
     }
 }
